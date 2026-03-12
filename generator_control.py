@@ -29,6 +29,10 @@ CONFIG = {
     # Web server
     "HOST": "0.0.0.0",                  # Bind address
     "PORT": 9400,                       # Bind port
+    # Rate limiting (brute force protection)
+    "RATE_LIMIT_MAX_FAILURES": 5,       # Failed attempts before an IP is locked out
+    "RATE_LIMIT_LOCKOUT_SECONDS": 300,  # Lockout duration in seconds (5 minutes)
+    "RATE_LIMIT_CLEANUP_SECONDS": 600,  # How often to purge stale entries (10 minutes)
     # Logging
     "LOG_FILE": "generator_control.log",  # Log file name (relative to script dir)
     "LOG_MAX_BYTES": 10_485_760,        # 10 MB per log file
@@ -150,6 +154,79 @@ log.info(f"Loaded {len(AUTH_USERS)} user(s): {', '.join(AUTH_USERS.keys()) or 'n
 log.info(f"Log file: {log_path} (max {CONFIG['LOG_MAX_BYTES'] // 1_048_576}MB x {CONFIG['LOG_BACKUP_COUNT']} backups)")
 
 # ============================================================================
+# RATE LIMITING (brute force / enumeration protection)
+# ============================================================================
+# Tracks failed auth attempts per IP. After RATE_LIMIT_MAX_FAILURES consecutive
+# failures, the IP is locked out for RATE_LIMIT_LOCKOUT_SECONDS. A successful
+# login resets the counter for that IP. Stale entries are purged periodically.
+
+# _fail_tracker[ip] = {"count": int, "locked_until": float or None}
+_fail_tracker = {}
+_fail_tracker_lock = threading.Lock()
+_last_cleanup = time.monotonic()
+
+
+def _cleanup_tracker():
+    """Remove expired entries from the failure tracker."""
+    global _last_cleanup
+    now = time.monotonic()
+    if now - _last_cleanup < CONFIG["RATE_LIMIT_CLEANUP_SECONDS"]:
+        return
+    _last_cleanup = now
+    expired = [
+        ip for ip, entry in _fail_tracker.items()
+        if entry["locked_until"] is not None and entry["locked_until"] <= now
+    ]
+    for ip in expired:
+        del _fail_tracker[ip]
+    if expired:
+        log.debug(f"Rate limiter cleanup: purged {len(expired)} expired entries")
+
+
+def is_rate_limited(ip):
+    """Check if an IP is currently locked out. Returns seconds remaining or 0."""
+    with _fail_tracker_lock:
+        _cleanup_tracker()
+        entry = _fail_tracker.get(ip)
+        if not entry or entry["locked_until"] is None:
+            return 0
+        remaining = entry["locked_until"] - time.monotonic()
+        if remaining <= 0:
+            # Lockout expired, reset
+            del _fail_tracker[ip]
+            return 0
+        return remaining
+
+
+def record_failure(ip):
+    """Record a failed auth attempt. Returns True if the IP is now locked out."""
+    with _fail_tracker_lock:
+        entry = _fail_tracker.get(ip, {"count": 0, "locked_until": None})
+        entry["count"] += 1
+        max_failures = CONFIG["RATE_LIMIT_MAX_FAILURES"]
+
+        if entry["count"] >= max_failures:
+            lockout = CONFIG["RATE_LIMIT_LOCKOUT_SECONDS"]
+            entry["locked_until"] = time.monotonic() + lockout
+            _fail_tracker[ip] = entry
+            log.warning(
+                f"Rate limit: IP {ip} locked out for {lockout}s "
+                f"after {entry['count']} failed attempts"
+            )
+            return True
+
+        _fail_tracker[ip] = entry
+        return False
+
+
+def record_success(ip):
+    """Reset the failure counter for an IP after a successful login."""
+    with _fail_tracker_lock:
+        if ip in _fail_tracker:
+            del _fail_tracker[ip]
+
+
+# ============================================================================
 # AUTHENTICATION
 # ============================================================================
 def check_auth(username, password):
@@ -163,16 +240,33 @@ def auth_required(f):
     """Decorator that enforces HTTP Basic Auth on a route."""
     @wraps(f)
     def decorated(*args, **kwargs):
+        ip = request.remote_addr
+
+        # Check rate limit before doing anything else
+        remaining = is_rate_limited(ip)
+        if remaining > 0:
+            log.warning(f"Rate limited request from {ip} ({int(remaining)}s remaining)")
+            return Response(
+                f"Too many failed attempts. Try again in {int(remaining)} seconds.\n",
+                429,
+            )
+
         auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
-            # Log failed attempts with the username tried (not the password)
             attempted = auth.username if auth else "(none)"
-            log.warning(f"Auth failed for user '{attempted}' from {request.remote_addr}")
+            locked = record_failure(ip)
+            log.warning(
+                f"Auth failed for user '{attempted}' from {ip}"
+                + (" [NOW LOCKED OUT]" if locked else "")
+            )
             return Response(
                 "Authentication required.\n",
                 401,
                 {"WWW-Authenticate": 'Basic realm="Generator Control"'},
             )
+
+        # Successful auth -- clear any prior failures for this IP
+        record_success(ip)
         return f(*args, **kwargs)
     return decorated
 

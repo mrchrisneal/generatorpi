@@ -71,6 +71,9 @@ All settings have sensible defaults. Uncomment and change as needed:
 | `RETRY_DELAY` | `5.0` | Seconds between retry attempts |
 | `HOST` | `0.0.0.0` | Web server bind address |
 | `PORT` | `9400` | Web server port |
+| `RATE_LIMIT_MAX_FAILURES` | `5` | Failed login attempts before IP lockout |
+| `RATE_LIMIT_LOCKOUT_SECONDS` | `300` | Lockout duration in seconds (5 min) |
+| `RATE_LIMIT_CLEANUP_SECONDS` | `600` | Interval to purge expired lockouts |
 | `LOG_FILE` | `generator_control.log` | Log file name (relative to script dir) |
 | `LOG_MAX_BYTES` | `10485760` | Max log file size before rotation (10 MB) |
 | `LOG_BACKUP_COUNT` | `3` | Number of rotated log files to keep |
