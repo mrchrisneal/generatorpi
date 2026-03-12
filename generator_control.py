@@ -293,7 +293,7 @@ def is_rate_limited(ip):
 
 
 def record_failure(ip):
-    """Record a failed auth attempt. Returns True if the IP is now locked out."""
+    """Record a failed auth attempt. Returns (locked_out, fail_count)."""
     with _fail_tracker_lock:
         # Enforce hard cap -- if at limit and this is a new IP, evict the oldest entry
         max_ips = CONFIG["RATE_LIMIT_MAX_TRACKED_IPS"]
@@ -311,14 +311,10 @@ def record_failure(ip):
             lockout = CONFIG["RATE_LIMIT_LOCKOUT_SECONDS"]
             entry["locked_until"] = time.monotonic() + lockout
             _fail_tracker[ip] = entry
-            log.warning(
-                f"Rate limit: IP {ip} locked out for {lockout}s "
-                f"after {entry['count']} failed attempts"
-            )
-            return True
+            return True, entry["count"]
 
         _fail_tracker[ip] = entry
-        return False
+        return False, entry["count"]
 
 
 def record_success(ip):
@@ -368,10 +364,12 @@ def auth_required(f):
         auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
             attempted = auth.username if auth else "(none)"
-            locked = record_failure(ip)
+            locked, fail_count = record_failure(ip)
+            max_failures = CONFIG["RATE_LIMIT_MAX_FAILURES"]
             log.warning(
-                f"Auth failed for user '{attempted}' from {ip}"
-                + (" [NOW LOCKED OUT]" if locked else "")
+                f"Auth failed for '{attempted}'@{ip} "
+                f"({fail_count}/{max_failures} attempts)"
+                + (" [LOCKED OUT]" if locked else "")
             )
             return Response(
                 "Authentication required.\n",
@@ -381,6 +379,7 @@ def auth_required(f):
 
         # Successful auth -- clear any prior failures for this IP
         record_success(ip)
+        log.info(f"{auth.username}@{ip} -> {request.method} {request.path}")
         return f(*args, **kwargs)
     return decorated
 
@@ -726,8 +725,8 @@ def api_start():
     """REST endpoint to start generator"""
     # Check lock before spawning a thread to avoid creating throwaway threads
     if relay_lock.locked():
+        log.warning(f"Start rejected (relay busy) for {request.authorization.username}@{request.remote_addr}")
         return jsonify({"success": False, "message": "A relay sequence is already in progress"}), 409
-    log.info(f"Start requested by {request.authorization.username} from {request.remote_addr}")
     threading.Thread(target=start_generator, daemon=True).start()
     return jsonify({"success": True, "message": "Start sequence initiated in background"})
 
@@ -735,7 +734,6 @@ def api_start():
 @auth_required
 def api_stop():
     """REST endpoint to stop generator"""
-    log.info(f"Stop requested by {request.authorization.username} from {request.remote_addr}")
     result = stop_generator()
     return jsonify(result)
 
