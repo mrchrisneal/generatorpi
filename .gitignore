@@ -5,3 +5,4 @@ generator_control.env
 generator_control.log*
 ssl_cert.pem
 ssl_key.pem
+generator_control.original.py
