@@ -114,18 +114,72 @@ curl -k -u chris:mypassword https://generatorpi:9400/api/status
 ```bash
 ./setup.sh status      # Check if installed, running, and boot-enabled
 ./setup.sh install     # Install, enable on boot, and start
+./setup.sh reinstall   # Same as install, but non-interactive (no editor prompts)
 ./setup.sh uninstall   # Stop, disable, and remove the service
 ```
 
-### Updating
+### Restarting the Service
 
-Pull the latest code and restart:
+After any config change (adding users, changing settings), restart to pick up the changes:
+
+```bash
+sudo systemctl restart generator_control
+```
+
+### Adding a User
+
+1. Edit the config file:
+   ```bash
+   nano ~/generatorpi/generator_control.env
+   ```
+2. Add a line with the new username and password:
+   ```
+   USER_newperson=theirpassword
+   ```
+3. Restart the service (the plaintext password is auto-hashed on startup):
+   ```bash
+   sudo systemctl restart generator_control
+   ```
+
+### Removing a User
+
+1. Edit the config file and delete the `USER_` line for that user
+2. Restart the service:
+   ```bash
+   sudo systemctl restart generator_control
+   ```
+
+### Changing a Password
+
+1. Edit the config file and replace the user's hash with a new plaintext password:
+   ```
+   USER_chris=mynewpassword
+   ```
+2. Restart -- the plaintext is auto-hashed on startup:
+   ```bash
+   sudo systemctl restart generator_control
+   ```
+
+### Changing the Port or Other Settings
+
+1. Edit the config file and uncomment/change the value:
+   ```bash
+   nano ~/generatorpi/generator_control.env
+   ```
+2. Restart:
+   ```bash
+   sudo systemctl restart generator_control
+   ```
+
+### Updating to Latest Version
+
+Pull the latest code and restart (can be run locally or over SSH):
 
 ```bash
 ~/generatorpi/update.sh
 ```
 
-Or from another machine:
+From another machine:
 
 ```bash
 ssh pi@generatorpi "~/generatorpi/update.sh"
@@ -139,6 +193,21 @@ tail -f ~/generatorpi/generator_control.log
 
 # Systemd journal
 journalctl -u generator_control -f
+
+# Last 50 lines
+journalctl -u generator_control -n 50 --no-pager
+```
+
+### Checking if It's Running
+
+```bash
+sudo systemctl status generator_control
+```
+
+Or from another machine:
+
+```bash
+ssh pi@generatorpi "sudo systemctl status generator_control"
 ```
 
 ## Hardware
