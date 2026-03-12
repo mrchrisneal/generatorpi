@@ -2,9 +2,10 @@
 # Install, uninstall, or check status of the generator control systemd service.
 #
 # Usage:
-#   ./setup.sh install    - Install and enable the service (starts on boot)
-#   ./setup.sh uninstall  - Stop, disable, and remove the service
-#   ./setup.sh status     - Show service status and configuration
+#   ./setup.sh install      - Install and enable the service (starts on boot)
+#   ./setup.sh reinstall    - Same as install but non-interactive (for update.sh)
+#   ./setup.sh uninstall    - Stop, disable, and remove the service
+#   ./setup.sh status       - Show service status and configuration
 
 set -e
 
@@ -37,34 +38,40 @@ WantedBy=multi-user.target
 UNIT
 }
 
-case "${1}" in
-    install)
-        echo "Installing ${SERVICE_NAME} service..."
-        echo "  User: ${CURRENT_USER}"
-        echo "  Directory: ${SCRIPT_DIR}"
-        echo ""
+do_install() {
+    local interactive="${1:-true}"
 
-        # If no env file, copy from example and open editor for credentials
-        if [ ! -f "${ENV_FILE}" ]; then
-            if [ -f "${ENV_EXAMPLE}" ]; then
-                cp "${ENV_EXAMPLE}" "${ENV_FILE}"
-                echo "Created ${SERVICE_NAME}.env from example."
+    echo "Installing ${SERVICE_NAME} service..."
+    echo "  User: ${CURRENT_USER}"
+    echo "  Directory: ${SCRIPT_DIR}"
+    echo ""
+
+    # If no env file, copy from example
+    if [ ! -f "${ENV_FILE}" ]; then
+        if [ -f "${ENV_EXAMPLE}" ]; then
+            cp "${ENV_EXAMPLE}" "${ENV_FILE}"
+            echo "Created ${SERVICE_NAME}.env from example."
+            if [ "${interactive}" = "true" ]; then
                 echo "Opening editor -- add your username/password lines, then save and exit."
                 echo ""
                 sleep 1
                 ${EDITOR:-nano} "${ENV_FILE}"
             else
-                echo "ERROR: No ${SERVICE_NAME}.env or .env.example found."
-                echo "Create ${SERVICE_NAME}.env with at least one USER_<name>=<password> line."
-                exit 1
+                echo "NOTE: Edit ${ENV_FILE} to set credentials before use."
             fi
+        else
+            echo "ERROR: No ${SERVICE_NAME}.env or .env.example found."
+            echo "Create ${SERVICE_NAME}.env with at least one USER_<name>=<password> line."
+            exit 1
         fi
+    fi
 
-        # Verify at least one user is configured
-        if ! grep -q "^USER_" "${ENV_FILE}" 2>/dev/null; then
-            echo ""
-            echo "WARNING: No USER_ entries found in ${SERVICE_NAME}.env."
-            echo "The web UI will reject all logins until credentials are added."
+    # Verify at least one user is configured
+    if ! grep -q "^USER_" "${ENV_FILE}" 2>/dev/null; then
+        echo ""
+        echo "WARNING: No USER_ entries found in ${SERVICE_NAME}.env."
+        echo "The web UI will reject all logins until credentials are added."
+        if [ "${interactive}" = "true" ]; then
             read -p "Continue anyway? [y/N] " -n 1 -r
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -72,19 +79,30 @@ case "${1}" in
                 exit 1
             fi
         fi
+    fi
 
-        # Generate and install the service file
-        generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null
-        sudo systemctl daemon-reload
+    # Generate and install the service file
+    generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null
+    sudo systemctl daemon-reload
 
-        # Enable (start on boot) and start now
-        sudo systemctl enable "${SERVICE_NAME}.service"
-        sudo systemctl start "${SERVICE_NAME}.service"
+    # Enable (start on boot) and start now
+    sudo systemctl enable "${SERVICE_NAME}.service"
+    sudo systemctl start "${SERVICE_NAME}.service"
 
-        echo ""
-        echo "Installed and started. Service will start automatically on boot."
-        echo ""
-        systemctl status "${SERVICE_NAME}.service" --no-pager
+    echo ""
+    echo "Installed and started. Service will start automatically on boot."
+    echo ""
+    systemctl status "${SERVICE_NAME}.service" --no-pager
+}
+
+case "${1}" in
+    install)
+        do_install true
+        ;;
+
+    reinstall)
+        # Non-interactive install -- used by update.sh over SSH
+        do_install false
         ;;
 
     uninstall)
@@ -131,7 +149,7 @@ case "${1}" in
         ;;
 
     *)
-        echo "Usage: $0 {install|uninstall|status}"
+        echo "Usage: $0 {install|reinstall|uninstall|status}"
         exit 1
         ;;
 esac

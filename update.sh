@@ -29,8 +29,10 @@ echo "Pulling latest code..."
 git pull origin main
 
 echo "Re-installing service (picks up any service/script changes)..."
+./setup.sh reinstall
+
+# Only clear the flag after setup.sh reinstall succeeds (service is running)
 service_stopped=false
-./setup.sh install
 
 exit
 }

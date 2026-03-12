@@ -38,6 +38,7 @@ CONFIG = {
     "RATE_LIMIT_MAX_FAILURES": 5,       # Failed attempts before an IP is locked out
     "RATE_LIMIT_LOCKOUT_SECONDS": 300,  # Lockout duration in seconds (5 minutes)
     "RATE_LIMIT_CLEANUP_SECONDS": 600,  # How often to purge stale entries (10 minutes)
+    "RATE_LIMIT_MAX_TRACKED_IPS": 1000, # Hard cap on tracked IPs (prevents memory exhaustion)
     # Logging
     "LOG_FILE": "generator_control.log",  # Log file name (relative to script dir)
     "LOG_MAX_BYTES": 10_485_760,        # 10 MB per log file
@@ -179,25 +180,26 @@ SSL_CERT_PATH = SCRIPT_DIR / "ssl_cert.pem"
 SSL_KEY_PATH = SCRIPT_DIR / "ssl_key.pem"
 
 
-def _get_cert_expiry_days():
-    """Return days until the existing SSL cert expires, or -1 if unreadable."""
+def _cert_expires_within(days):
+    """Check if the SSL cert expires within the given number of days.
+
+    Uses 'openssl x509 -checkend' which returns exit code 0 if the cert is
+    still valid after the specified seconds, or 1 if it will expire. This
+    avoids fragile date string parsing and locale issues.
+    """
     import subprocess
+    seconds = days * 86400
     try:
         result = subprocess.run(
-            ["openssl", "x509", "-enddate", "-noout", "-in", str(SSL_CERT_PATH)],
+            ["openssl", "x509", "-checkend", str(seconds), "-noout",
+             "-in", str(SSL_CERT_PATH)],
             capture_output=True, text=True, timeout=5,
         )
-        if result.returncode != 0:
-            return -1
-        # Output format: notAfter=Mar 11 20:15:00 2027 GMT
-        date_str = result.stdout.strip().split("=", 1)[1]
-        from email.utils import parsedate_to_datetime
-        expiry = datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z")
-        remaining = (expiry - datetime.utcnow()).days
-        return remaining
+        # exit 0 = cert valid beyond the window, exit 1 = expires within window
+        return result.returncode != 0
     except Exception as e:
-        log.warning(f"Could not read cert expiry: {e}")
-        return -1
+        log.warning(f"Could not check cert expiry: {e}")
+        return True  # Assume expired if we can't check
 
 
 def ensure_ssl_cert():
@@ -213,14 +215,10 @@ def ensure_ssl_cert():
 
     # Check if cert/key exist and are still valid
     if SSL_CERT_PATH.exists() and SSL_KEY_PATH.exists():
-        remaining = _get_cert_expiry_days()
-        if remaining > renew_days:
-            log.info(f"SSL cert valid for {remaining} more days")
+        if not _cert_expires_within(renew_days):
+            log.info(f"SSL cert still valid (renew threshold: {renew_days} days)")
             return
-        elif remaining >= 0:
-            log.info(f"SSL cert expires in {remaining} days (threshold: {renew_days}), regenerating")
-        else:
-            log.info("SSL cert unreadable, regenerating")
+        log.info(f"SSL cert expires within {renew_days} days, regenerating")
     else:
         log.info("No SSL cert found, generating self-signed certificate")
 
@@ -297,6 +295,13 @@ def is_rate_limited(ip):
 def record_failure(ip):
     """Record a failed auth attempt. Returns True if the IP is now locked out."""
     with _fail_tracker_lock:
+        # Enforce hard cap -- if at limit and this is a new IP, evict the oldest entry
+        max_ips = CONFIG["RATE_LIMIT_MAX_TRACKED_IPS"]
+        if ip not in _fail_tracker and len(_fail_tracker) >= max_ips:
+            oldest_ip = min(_fail_tracker, key=lambda k: _fail_tracker[k]["last_attempt"])
+            del _fail_tracker[oldest_ip]
+            log.debug(f"Rate limiter at capacity ({max_ips}), evicted oldest entry")
+
         entry = _fail_tracker.get(ip, {"count": 0, "locked_until": None, "last_attempt": 0})
         entry["count"] += 1
         entry["last_attempt"] = time.monotonic()
@@ -326,11 +331,20 @@ def record_success(ip):
 # ============================================================================
 # AUTHENTICATION
 # ============================================================================
+# Dummy hash used when a username doesn't exist, so the response time is the
+# same whether the username is valid or not (prevents enumeration via timing).
+_DUMMY_HASH = generate_password_hash("timing-safe-dummy-value")
+
+
 def check_auth(username, password):
-    """Verify that the provided username and password are valid."""
-    if username not in AUTH_USERS:
-        return False
-    return check_password_hash(AUTH_USERS[username], password)
+    """Verify that the provided username and password are valid.
+
+    Uses a constant-time comparison path regardless of whether the username
+    exists, to prevent timing-based username enumeration.
+    """
+    stored_hash = AUTH_USERS.get(username, _DUMMY_HASH)
+    valid = check_password_hash(stored_hash, password)
+    return valid and username in AUTH_USERS
 
 
 def auth_required(f):
@@ -339,13 +353,16 @@ def auth_required(f):
     def decorated(*args, **kwargs):
         ip = request.remote_addr
 
-        # Check rate limit before doing anything else
+        # Check rate limit before doing anything else (avoids wasting CPU on scrypt)
         remaining = is_rate_limited(ip)
         if remaining > 0:
             log.warning(f"Rate limited request from {ip} ({int(remaining)}s remaining)")
             return Response(
-                f"Too many failed attempts. Try again in {int(remaining)} seconds.\n",
+                f"<html><body><h1>Too Many Attempts</h1>"
+                f"<p>Your IP has been temporarily locked out after too many failed login attempts.</p>"
+                f"<p>Try again in {int(remaining)} seconds.</p></body></html>",
                 429,
+                {"Content-Type": "text/html", "Retry-After": str(int(remaining))},
             )
 
         auth = request.authorization
@@ -682,6 +699,19 @@ HTML_TEMPLATE = """
 </html>
 """
 
+@app.after_request
+def set_security_headers(response):
+    """Add security headers to every response."""
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+    )
+    if CONFIG["SSL_ENABLED"]:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
 @app.route('/')
 @auth_required
 def index():
@@ -694,6 +724,9 @@ def index():
 @auth_required
 def api_start():
     """REST endpoint to start generator"""
+    # Check lock before spawning a thread to avoid creating throwaway threads
+    if relay_lock.locked():
+        return jsonify({"success": False, "message": "A relay sequence is already in progress"}), 409
     log.info(f"Start requested by {request.authorization.username} from {request.remote_addr}")
     threading.Thread(target=start_generator, daemon=True).start()
     return jsonify({"success": True, "message": "Start sequence initiated in background"})
