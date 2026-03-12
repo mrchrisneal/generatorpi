@@ -104,7 +104,7 @@ All endpoints require HTTP Basic Auth.
 Example:
 
 ```bash
-curl -u chris:mypassword http://generatorpi:9400/api/status
+curl -k -u chris:mypassword https://generatorpi:9400/api/status
 ```
 
 ## Management

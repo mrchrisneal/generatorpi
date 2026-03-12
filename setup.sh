@@ -85,9 +85,9 @@ do_install() {
     generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null
     sudo systemctl daemon-reload
 
-    # Enable (start on boot) and start now
+    # Enable (start on boot) and start/restart now
     sudo systemctl enable "${SERVICE_NAME}.service"
-    sudo systemctl start "${SERVICE_NAME}.service"
+    sudo systemctl restart "${SERVICE_NAME}.service"
 
     echo ""
     echo "Installed and started. Service will start automatically on boot."
