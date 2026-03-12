@@ -3,3 +3,5 @@ __pycache__/
 .env
 generator_control.env
 generator_control.log*
+ssl_cert.pem
+ssl_key.pem

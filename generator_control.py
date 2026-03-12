@@ -30,6 +30,10 @@ CONFIG = {
     # Web server
     "HOST": "0.0.0.0",                  # Bind address
     "PORT": 9400,                       # Bind port
+    # SSL / HTTPS
+    "SSL_ENABLED": 1,                   # 1 = HTTPS, 0 = plain HTTP
+    "SSL_CERT_DAYS": 365,              # Validity period for generated certs
+    "SSL_RENEW_DAYS": 30,              # Regenerate cert when fewer than this many days remain
     # Rate limiting (brute force protection)
     "RATE_LIMIT_MAX_FAILURES": 5,       # Failed attempts before an IP is locked out
     "RATE_LIMIT_LOCKOUT_SECONDS": 300,  # Lockout duration in seconds (5 minutes)
@@ -164,6 +168,84 @@ log.addHandler(console_handler)
 
 log.info(f"Loaded {len(AUTH_USERS)} user(s): {', '.join(AUTH_USERS.keys()) or 'none'}")
 log.info(f"Log file: {log_path} (max {CONFIG['LOG_MAX_BYTES'] // 1_048_576}MB x {CONFIG['LOG_BACKUP_COUNT']} backups)")
+
+# ============================================================================
+# SSL CERTIFICATE MANAGEMENT
+# ============================================================================
+# Self-signed cert is auto-generated on startup if missing or expiring soon.
+# Uses openssl (pre-installed on Raspberry Pi OS).
+
+SSL_CERT_PATH = SCRIPT_DIR / "ssl_cert.pem"
+SSL_KEY_PATH = SCRIPT_DIR / "ssl_key.pem"
+
+
+def _get_cert_expiry_days():
+    """Return days until the existing SSL cert expires, or -1 if unreadable."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["openssl", "x509", "-enddate", "-noout", "-in", str(SSL_CERT_PATH)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return -1
+        # Output format: notAfter=Mar 11 20:15:00 2027 GMT
+        date_str = result.stdout.strip().split("=", 1)[1]
+        from email.utils import parsedate_to_datetime
+        expiry = datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z")
+        remaining = (expiry - datetime.utcnow()).days
+        return remaining
+    except Exception as e:
+        log.warning(f"Could not read cert expiry: {e}")
+        return -1
+
+
+def ensure_ssl_cert():
+    """Generate a self-signed SSL cert if missing or expiring soon.
+
+    Checks on every startup so the cert is always valid. Regenerates when
+    fewer than SSL_RENEW_DAYS days remain.
+    """
+    import subprocess
+
+    cert_days = CONFIG["SSL_CERT_DAYS"]
+    renew_days = CONFIG["SSL_RENEW_DAYS"]
+
+    # Check if cert/key exist and are still valid
+    if SSL_CERT_PATH.exists() and SSL_KEY_PATH.exists():
+        remaining = _get_cert_expiry_days()
+        if remaining > renew_days:
+            log.info(f"SSL cert valid for {remaining} more days")
+            return
+        elif remaining >= 0:
+            log.info(f"SSL cert expires in {remaining} days (threshold: {renew_days}), regenerating")
+        else:
+            log.info("SSL cert unreadable, regenerating")
+    else:
+        log.info("No SSL cert found, generating self-signed certificate")
+
+    # Generate new self-signed cert + key in one openssl command
+    result = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", str(SSL_KEY_PATH),
+            "-out", str(SSL_CERT_PATH),
+            "-days", str(cert_days),
+            "-nodes",                           # No passphrase on the key
+            "-subj", "/CN=generatorpi",         # Minimal subject
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+
+    if result.returncode != 0:
+        log.error(f"Failed to generate SSL cert: {result.stderr.strip()}")
+        raise RuntimeError("SSL certificate generation failed")
+
+    # Restrict key file permissions (owner read-only)
+    os.chmod(SSL_KEY_PATH, 0o600)
+
+    log.info(f"Generated self-signed SSL cert (valid {cert_days} days)")
+
 
 # ============================================================================
 # RATE LIMITING (brute force / enumeration protection)
@@ -657,11 +739,26 @@ def main():
     log.info(f"Relay control: GPIO{CONFIG['RELAY_PIN']}")
     log.info(f"Max start retries: {CONFIG['MAX_START_RETRIES']}")
     log.info(f"Prime delay: {CONFIG['PRIME_DELAY']}s")
-    log.info(f"Web server: http://{CONFIG['HOST']}:{CONFIG['PORT']}")
+
+    # SSL setup -- generate or renew cert automatically
+    ssl_context = None
+    if CONFIG["SSL_ENABLED"]:
+        ensure_ssl_cert()
+        ssl_context = (str(SSL_CERT_PATH), str(SSL_KEY_PATH))
+        protocol = "https"
+    else:
+        protocol = "http"
+
+    log.info(f"Web server: {protocol}://{CONFIG['HOST']}:{CONFIG['PORT']}")
     log.info("=" * 60)
 
     try:
-        app.run(host=CONFIG["HOST"], port=CONFIG["PORT"], debug=False)
+        app.run(
+            host=CONFIG["HOST"],
+            port=CONFIG["PORT"],
+            ssl_context=ssl_context,
+            debug=False,
+        )
     except KeyboardInterrupt:
         log.info("Shutting down...")
     finally:

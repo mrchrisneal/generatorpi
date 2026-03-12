@@ -25,7 +25,7 @@ The generator cannot report its own state back, so status tracking is manual. Af
 SSH into the Pi and install prerequisites:
 
 ```bash
-sudo apt update && sudo apt install -y git python3 python3-flask python3-gpiozero python3-lgpio
+sudo apt update && sudo apt install -y git openssl python3 python3-flask python3-gpiozero python3-lgpio
 ```
 
 Then clone and install:
@@ -40,7 +40,7 @@ This will:
 3. **Add your login credentials** (edit the `USER_` lines at the bottom, then save and exit)
 4. Install and enable the systemd service (starts now and on every boot)
 
-The web UI will be available at `http://<pi-hostname>:9400`.
+The web UI will be available at `https://<pi-hostname>:9400`. Your browser will show a certificate warning on first visit (self-signed) -- accept it once and you're set.
 
 ## Configuration
 
@@ -77,6 +77,9 @@ All settings have sensible defaults. Uncomment and change as needed:
 | `RETRY_DELAY` | `5.0` | Seconds between retry attempts |
 | `HOST` | `0.0.0.0` | Web server bind address |
 | `PORT` | `9400` | Web server port |
+| `SSL_ENABLED` | `1` | `1` = HTTPS (auto-generates cert), `0` = plain HTTP |
+| `SSL_CERT_DAYS` | `365` | Validity period for generated certs |
+| `SSL_RENEW_DAYS` | `30` | Regenerate cert when fewer than this many days remain |
 | `RATE_LIMIT_MAX_FAILURES` | `5` | Failed login attempts before IP lockout |
 | `RATE_LIMIT_LOCKOUT_SECONDS` | `300` | Lockout duration in seconds (5 min) |
 | `RATE_LIMIT_CLEANUP_SECONDS` | `600` | Interval to purge expired lockouts |
