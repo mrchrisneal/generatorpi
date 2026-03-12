@@ -12,12 +12,13 @@ sudo systemctl stop generator_control.service
 echo "Pulling latest code..."
 git pull origin main
 
-echo "Installing dependencies..."
-pip3 install -r requirements.txt --break-system-packages -q
-
-echo "Restarting generator_control service..."
+echo "Reloading systemd (in case service file changed)..."
+sudo cp generator_control.service /etc/systemd/system/generator_control.service
 sudo systemctl daemon-reload
+
+echo "Starting generator_control service..."
 sudo systemctl start generator_control.service
 
+echo ""
 echo "Done. Service status:"
 systemctl status generator_control.service --no-pager
