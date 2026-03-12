@@ -1,6 +1,7 @@
 from gpiozero import OutputDevice
 import logging
 import logging.handlers
+import os
 import time
 import threading
 from functools import wraps
@@ -113,9 +114,20 @@ def parse_env_file():
             # Unknown key, preserve it
             new_lines.append(line)
 
-    # Rewrite file to replace plaintext passwords with hashes
+    # Rewrite file to replace plaintext passwords with hashes.
+    # Write to a temp file first, then atomic rename (POSIX guarantees this).
     if needs_rewrite:
-        ENV_FILE.write_text("\n".join(new_lines) + "\n")
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=SCRIPT_DIR, prefix=".env_tmp_")
+        try:
+            with os.fdopen(tmp_fd, "w") as tmp_f:
+                tmp_f.write("\n".join(new_lines) + "\n")
+            os.rename(tmp_path, ENV_FILE)
+        except Exception:
+            # Clean up temp file if rename fails
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
         print(f"Rewrote {ENV_FILE.name} with hashed passwords")
 
     return users
@@ -160,27 +172,29 @@ log.info(f"Log file: {log_path} (max {CONFIG['LOG_MAX_BYTES'] // 1_048_576}MB x 
 # failures, the IP is locked out for RATE_LIMIT_LOCKOUT_SECONDS. A successful
 # login resets the counter for that IP. Stale entries are purged periodically.
 
-# _fail_tracker[ip] = {"count": int, "locked_until": float or None}
+# _fail_tracker[ip] = {"count": int, "locked_until": float or None, "last_attempt": float}
 _fail_tracker = {}
 _fail_tracker_lock = threading.Lock()
 _last_cleanup = time.monotonic()
 
 
 def _cleanup_tracker():
-    """Remove expired entries from the failure tracker."""
+    """Remove expired lockouts and stale entries from the failure tracker."""
     global _last_cleanup
     now = time.monotonic()
-    if now - _last_cleanup < CONFIG["RATE_LIMIT_CLEANUP_SECONDS"]:
+    cleanup_interval = CONFIG["RATE_LIMIT_CLEANUP_SECONDS"]
+    if now - _last_cleanup < cleanup_interval:
         return
     _last_cleanup = now
     expired = [
         ip for ip, entry in _fail_tracker.items()
-        if entry["locked_until"] is not None and entry["locked_until"] <= now
+        if (entry["locked_until"] is not None and entry["locked_until"] <= now)
+        or (now - entry["last_attempt"] > cleanup_interval)
     ]
     for ip in expired:
         del _fail_tracker[ip]
     if expired:
-        log.debug(f"Rate limiter cleanup: purged {len(expired)} expired entries")
+        log.debug(f"Rate limiter cleanup: purged {len(expired)} stale entries")
 
 
 def is_rate_limited(ip):
@@ -201,8 +215,9 @@ def is_rate_limited(ip):
 def record_failure(ip):
     """Record a failed auth attempt. Returns True if the IP is now locked out."""
     with _fail_tracker_lock:
-        entry = _fail_tracker.get(ip, {"count": 0, "locked_until": None})
+        entry = _fail_tracker.get(ip, {"count": 0, "locked_until": None, "last_attempt": 0})
         entry["count"] += 1
+        entry["last_attempt"] = time.monotonic()
         max_failures = CONFIG["RATE_LIMIT_MAX_FAILURES"]
 
         if entry["count"] >= max_failures:
@@ -283,6 +298,9 @@ generator_state = {
 }
 state_lock = threading.Lock()
 
+# Prevents overlapping relay sequences (e.g. two simultaneous start requests)
+relay_lock = threading.Lock()
+
 # ============================================================================
 # GPIO SETUP
 # ============================================================================
@@ -311,79 +329,101 @@ def start_generator():
     2. Wait for prime delay
     3. Press again to start
     4. Repeat if retries configured
+
+    The relay_lock prevents overlapping sequences if multiple requests arrive.
     """
-    with state_lock:
-        if generator_state["running"]:
-            return {"success": False, "message": "Generator already marked as running"}
-        generator_state["last_command"] = "start"
-        generator_state["start_attempts"] = 0
+    # Acquire relay lock (non-blocking) -- reject if a sequence is already running
+    if not relay_lock.acquire(blocking=False):
+        log.warning("Start rejected: relay sequence already in progress")
+        return {"success": False, "message": "A relay sequence is already in progress"}
 
-    max_retries = CONFIG["MAX_START_RETRIES"]
-    prime_delay = CONFIG["PRIME_DELAY"]
-    retry_delay = CONFIG["RETRY_DELAY"]
-
-    log.info("Initiating generator start sequence")
-
-    for attempt in range(1, max_retries + 1):
+    try:
         with state_lock:
-            generator_state["start_attempts"] = attempt
-            generator_state["message"] = f"Start attempt {attempt}/{max_retries}"
+            if generator_state["running"]:
+                return {"success": False, "message": "Generator already marked as running"}
+            generator_state["last_command"] = "start"
+            generator_state["start_attempts"] = 0
 
-        log.info(f"Start attempt {attempt}/{max_retries}")
+        max_retries = CONFIG["MAX_START_RETRIES"]
+        prime_delay = CONFIG["PRIME_DELAY"]
+        retry_delay = CONFIG["RETRY_DELAY"]
 
-        # PM9400E sequence: prime press
-        log.info("Pressing button to prime")
-        press_button()
+        log.info("Initiating generator start sequence")
 
-        # Wait for prime/auto-choke
-        log.info(f"Waiting {prime_delay}s for prime...")
-        time.sleep(prime_delay)
+        for attempt in range(1, max_retries + 1):
+            with state_lock:
+                generator_state["start_attempts"] = attempt
+                generator_state["message"] = f"Start attempt {attempt}/{max_retries}"
 
-        # PM9400E sequence: start press
-        log.info("Pressing button to start")
-        press_button()
+            log.info(f"Start attempt {attempt}/{max_retries}")
 
+            # PM9400E sequence: prime press
+            log.info("Pressing button to prime")
+            press_button()
+
+            # Wait for prime/auto-choke
+            log.info(f"Waiting {prime_delay}s for prime...")
+            time.sleep(prime_delay)
+
+            # PM9400E sequence: start press
+            log.info("Pressing button to start")
+            press_button()
+
+            with state_lock:
+                generator_state["last_start_time"] = datetime.now().isoformat()
+
+            log.info(f"Start sequence {attempt} completed")
+
+            if attempt < max_retries:
+                log.info(f"Waiting {retry_delay}s before next attempt...")
+                time.sleep(retry_delay)
+
+        # Mark as running (assume success -- no auto-detect available)
         with state_lock:
-            generator_state["last_start_time"] = datetime.now().isoformat()
+            generator_state["running"] = True
+            generator_state["message"] = (
+                f"Start sequence completed ({max_retries} attempt(s)). "
+                "Verify generator manually."
+            )
 
-        log.info(f"Start sequence {attempt} completed")
-
-        if attempt < max_retries:
-            log.info(f"Waiting {retry_delay}s before next attempt...")
-            time.sleep(retry_delay)
-
-    # Mark as running (assume success -- no auto-detect available)
-    with state_lock:
-        generator_state["running"] = True
-        generator_state["message"] = (
-            f"Start sequence completed ({max_retries} attempt(s)). "
-            "Verify generator manually."
-        )
-
-    log.info("Start sequence finished")
-    return {
-        "success": True,
-        "message": (
-            f"Start sequence completed ({max_retries} attempt(s)). "
-            "Please verify generator is running."
-        ),
-    }
+        log.info("Start sequence finished")
+        return {
+            "success": True,
+            "message": (
+                f"Start sequence completed ({max_retries} attempt(s)). "
+                "Please verify generator is running."
+            ),
+        }
+    finally:
+        relay_lock.release()
 
 
 def stop_generator():
-    """Stop the generator by simulating stop button press."""
-    log.info("Stopping generator")
+    """Stop the generator by simulating stop button press.
 
-    with state_lock:
-        generator_state["last_command"] = "stop"
-        generator_state["running"] = False
-        generator_state["last_stop_time"] = datetime.now().isoformat()
-        generator_state["message"] = "Stop command sent"
+    The relay_lock prevents overlapping with a start sequence.
+    """
+    # Acquire relay lock (non-blocking) -- reject if a sequence is already running
+    if not relay_lock.acquire(blocking=False):
+        log.warning("Stop rejected: relay sequence already in progress")
+        return {"success": False, "message": "A relay sequence is already in progress"}
 
-    press_button()
+    try:
+        log.info("Stopping generator")
 
-    log.info("Stop button pressed")
-    return {"success": True, "message": "Stop button pressed. Generator should be stopping."}
+        # Press the button first, then update state (so state reflects reality)
+        press_button()
+
+        with state_lock:
+            generator_state["last_command"] = "stop"
+            generator_state["running"] = False
+            generator_state["last_stop_time"] = datetime.now().isoformat()
+            generator_state["message"] = "Stop command sent"
+
+        log.info("Stop button pressed")
+        return {"success": True, "message": "Stop button pressed. Generator should be stopping."}
+    finally:
+        relay_lock.release()
 
 # ============================================================================
 # FLASK WEB SERVER

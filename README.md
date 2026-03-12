@@ -22,7 +22,13 @@ The generator cannot report its own state back, so status tracking is manual. Af
 
 ## Quick Start
 
-SSH into the Pi and run:
+SSH into the Pi and install prerequisites:
+
+```bash
+sudo apt update && sudo apt install -y git python3 python3-flask python3-gpiozero python3-lgpio
+```
+
+Then clone and install:
 
 ```bash
 git clone https://github.com/mrchrisneal/generatorpi.git ~/generatorpi && ~/generatorpi/setup.sh install
@@ -146,13 +152,3 @@ journalctl -u generator_control -f
 | GND | GND | Common ground |
 
 The relay's normally-open (NO) contacts are wired in parallel with the generator's start/stop button.
-
-## Requirements
-
-System packages (install via `apt` if not already present):
-
-```bash
-sudo apt install python3-flask python3-gpiozero python3-lgpio
-```
-
-These are pre-installed on Raspberry Pi OS.
