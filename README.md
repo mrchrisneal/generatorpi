@@ -46,14 +46,14 @@ Each user gets a line in the format `USER_<name>=<password>`:
 
 ```
 USER_chris=mysecretpassword
-USER_dad=hispassword
+USER_alex=hispassword
 ```
 
 Plaintext passwords are **automatically hashed** on first startup. The file is rewritten in place so plaintext is never stored for long. After the first run, those lines will look like:
 
 ```
 USER_chris=scrypt:32768:8:1$...
-USER_dad=scrypt:32768:8:1$...
+USER_alex=scrypt:32768:8:1$...
 ```
 
 To add a new user later, just append a new `USER_` line with a plaintext password and restart the service.
