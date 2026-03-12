@@ -11,30 +11,70 @@ set -e
 SERVICE_NAME="generator_control"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOCAL_SERVICE_FILE="${SCRIPT_DIR}/${SERVICE_NAME}.service"
+CURRENT_USER="$(whoami)"
+ENV_FILE="${SCRIPT_DIR}/${SERVICE_NAME}.env"
+ENV_EXAMPLE="${SCRIPT_DIR}/${SERVICE_NAME}.env.example"
+
+# Generate a systemd service file pointing to the actual install location and user
+generate_service_file() {
+    cat <<UNIT
+[Unit]
+Description=Powermate PM9400E Generator Control (Flask + GPIOZero)
+After=network.target
+
+[Service]
+Type=simple
+User=${CURRENT_USER}
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=/usr/bin/python3 ${SCRIPT_DIR}/generator_control.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
 
 case "${1}" in
     install)
         echo "Installing ${SERVICE_NAME} service..."
+        echo "  User: ${CURRENT_USER}"
+        echo "  Directory: ${SCRIPT_DIR}"
+        echo ""
 
-        # Check that the env file exists (app won't work without credentials)
-        if [ ! -f "${SCRIPT_DIR}/${SERVICE_NAME}.env" ]; then
-            echo ""
-            echo "WARNING: ${SERVICE_NAME}.env not found."
-            echo "Copy the example and add your credentials first:"
-            echo "  cp ${SERVICE_NAME}.env.example ${SERVICE_NAME}.env"
-            echo "  nano ${SERVICE_NAME}.env"
-            echo ""
-            read -p "Continue anyway? [y/N] " -n 1 -r
-            echo ""
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                echo "Aborted."
+        # If no env file, copy from example and open editor for credentials
+        if [ ! -f "${ENV_FILE}" ]; then
+            if [ -f "${ENV_EXAMPLE}" ]; then
+                cp "${ENV_EXAMPLE}" "${ENV_FILE}"
+                echo "Created ${SERVICE_NAME}.env from example."
+                echo "Opening editor -- add your username/password lines, then save and exit."
+                echo ""
+                sleep 1
+                ${EDITOR:-nano} "${ENV_FILE}"
+            else
+                echo "ERROR: No ${SERVICE_NAME}.env or .env.example found."
+                echo "Create ${SERVICE_NAME}.env with at least one USER_<name>=<password> line."
                 exit 1
             fi
         fi
 
-        # Copy service file and reload systemd
-        sudo cp "${LOCAL_SERVICE_FILE}" "${SERVICE_FILE}"
+        # Verify at least one user is configured
+        if ! grep -q "^USER_" "${ENV_FILE}" 2>/dev/null; then
+            echo ""
+            echo "WARNING: No USER_ entries found in ${SERVICE_NAME}.env."
+            echo "The web UI will reject all logins until credentials are added."
+            read -p "Continue anyway? [y/N] " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo "Aborted. Add credentials and re-run: ./setup.sh install"
+                exit 1
+            fi
+        fi
+
+        # Generate and install the service file
+        generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null
         sudo systemctl daemon-reload
 
         # Enable (start on boot) and start now
