@@ -2,10 +2,13 @@ from gpiozero import OutputDevice
 import logging
 import logging.handlers
 import os
+import sys
 import time
 import threading
+import hmac
+import secrets
 from functools import wraps
-from flask import Flask, render_template_string, jsonify, request, Response
+from flask import Flask, render_template_string, jsonify, request, Response, g
 from datetime import datetime
 from pathlib import Path
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -34,6 +37,9 @@ CONFIG = {
     "SSL_ENABLED": 1,                   # 1 = HTTPS, 0 = plain HTTP
     "SSL_CERT_DAYS": 365,              # Validity period for generated certs
     "SSL_RENEW_DAYS": 30,              # Regenerate cert when fewer than this many days remain
+    # API authentication (for machine callers, e.g. HomeAssistant)
+    "API_KEY_ENABLED": 1,               # 1 = accept API-key auth, 0 = disable it (basic auth only)
+    "API_KEY": "",                      # Static bearer key; auto-generated into the env file on startup when enabled+empty
     # Rate limiting (brute force protection)
     "RATE_LIMIT_MAX_FAILURES": 5,       # Failed attempts before an IP is locked out
     "RATE_LIMIT_LOCKOUT_SECONDS": 300,  # Lockout duration in seconds (5 minutes)
@@ -102,12 +108,32 @@ def parse_env_file():
                 new_lines.append(f"USER_{username}={hashed}")
                 needs_rewrite = True
                 print(f"Hashed plaintext password for user '{username}'")
+        elif key == "API_KEY":
+            # Special-cased so duplicate API_KEY lines can't shadow the real key.
+            # The FIRST API_KEY line wins; any later one is dropped on rewrite, so a
+            # stray/empty duplicate can't blank the key and force regeneration
+            # (which would silently break HomeAssistant on every restart).
+            if CONFIG["API_KEY"]:
+                needs_rewrite = True
+                print("Dropping duplicate API_KEY line from settings file")
+                continue  # skip append -> the duplicate line is removed on rewrite
+            CONFIG["API_KEY"] = value
+            new_lines.append(line)
         elif key in CONFIG:
             # Config override -- cast to the same type as the default
             default = CONFIG[key]
             try:
                 if isinstance(default, int):
-                    CONFIG[key] = int(value)
+                    # Accept boolean words for on/off toggles so that e.g.
+                    # API_KEY_ENABLED=false actually disables key auth -- int('false')
+                    # would raise and silently keep the (enabled) default.
+                    low = value.strip().lower()
+                    if low in ("true", "yes", "on"):
+                        CONFIG[key] = 1
+                    elif low in ("false", "no", "off"):
+                        CONFIG[key] = 0
+                    else:
+                        CONFIG[key] = int(value)
                 elif isinstance(default, float):
                     CONFIG[key] = float(value)
                 else:
@@ -119,8 +145,36 @@ def parse_env_file():
             # Unknown key, preserve it
             new_lines.append(line)
 
-    # Rewrite file to replace plaintext passwords with hashes.
-    # Write to a temp file first, then atomic rename (POSIX guarantees this).
+    # Auto-provision the API key: when key auth is enabled but no key is set yet
+    # (first startup, or the value was cleared/deleted to rotate it), generate a
+    # strong random key and persist it into THIS settings file (no separate file).
+    if CONFIG["API_KEY_ENABLED"] and not CONFIG["API_KEY"]:
+        generated = secrets.token_urlsafe(32)  # 256-bit, URL-safe (no query escaping)
+        CONFIG["API_KEY"] = generated
+        # Fill an existing "API_KEY=" line in place; otherwise append a documented
+        # block. Rotation stays clean: clear the value or delete the line, restart,
+        # and a fresh key lands right back here.
+        for i, existing in enumerate(new_lines):
+            if existing.split("=", 1)[0].strip() == "API_KEY":
+                new_lines[i] = f"API_KEY={generated}"
+                break
+        else:
+            new_lines.append("")
+            new_lines.append("# API key for machine callers (e.g. HomeAssistant).")
+            new_lines.append("# Auto-generated on startup. To rotate: clear the value")
+            new_lines.append("# (leave 'API_KEY=') or delete the line, then restart:")
+            new_lines.append("#   sudo systemctl restart generator_control")
+            new_lines.append("# A fresh key is generated + written here on startup;")
+            new_lines.append("# update HomeAssistant's key to match or its calls 401.")
+            new_lines.append("# Set API_KEY_ENABLED=0 to disable key auth entirely.")
+            new_lines.append(f"API_KEY={generated}")
+        needs_rewrite = True
+        print("Generated a new API key and wrote it to the settings file")
+
+    # Persist changes (hashed passwords and/or a generated API key). Write to a
+    # temp file first, then atomic rename (POSIX guarantees atomicity). mkstemp
+    # creates the temp file 0600, so after the rename the settings file is
+    # owner-only -- correct for a file holding secrets.
     if needs_rewrite:
         import tempfile
         tmp_fd, tmp_path = tempfile.mkstemp(dir=SCRIPT_DIR, prefix=".env_tmp_")
@@ -128,17 +182,89 @@ def parse_env_file():
             with os.fdopen(tmp_fd, "w") as tmp_f:
                 tmp_f.write("\n".join(new_lines) + "\n")
             os.rename(tmp_path, ENV_FILE)
-        except Exception:
-            # Clean up temp file if rename fails
+        except OSError as e:
+            # Couldn't persist -- clean up and fail fast rather than silently
+            # dropping a generated key / password hashes.
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-            raise
-        print(f"Rewrote {ENV_FILE.name} with hashed passwords")
+            print(f"CRITICAL: could not write settings file {ENV_FILE} ({e}). "
+                  f"Refusing to start -- check its permissions/ownership.",
+                  file=sys.stderr)
+            sys.exit(1)
+        # Belt-and-suspenders: ensure owner-only perms even if the rename inherited
+        # something looser from an unusual umask/filesystem.
+        try:
+            os.chmod(ENV_FILE, 0o600)
+        except OSError:
+            pass
+        print(f"Rewrote {ENV_FILE.name} (secrets persisted, owner-only)")
 
     return users
 
 
-# Load config and credentials before anything else
+def check_settings_file_security():
+    """Startup guard: refuse to run if the settings file's ownership or permissions
+    would break functionality or expose its secrets (the API key + password hashes).
+
+    Runs BEFORE the file is read or rewritten. Logging isn't configured yet at this
+    point, so failures are printed to stderr and the process exits non-zero -- a
+    clean 'critical error and stop' rather than a mid-run traceback. A missing file
+    is not fatal here (parse_env_file handles that; setup.sh creates it).
+    """
+    if not ENV_FILE.exists():
+        return
+
+    problems = []
+
+    # Refuse a symlinked settings file: a swapped symlink could redirect our
+    # chmod/rewrite at another file. exists() above already followed the link, so a
+    # symlink here points at a real file (the stat below is safe).
+    if ENV_FILE.is_symlink():
+        problems.append("is a symlink (refusing to follow it)")
+
+    st = ENV_FILE.stat()
+
+    # Ownership: we must be able to secure (chmod) and rewrite the file. root can
+    # always do both, so only REQUIRE ownership when NOT running as root -- otherwise
+    # a root-run service (common for GPIO access) would false-positive on a file
+    # owned by the 'pi' user and refuse to start.
+    euid = os.geteuid() if hasattr(os, "geteuid") else None
+    if euid is not None and euid != 0 and st.st_uid != euid:
+        problems.append(
+            f"is owned by uid {st.st_uid}, but this non-root process runs as uid "
+            f"{euid} -- it cannot secure or update the settings file")
+
+    # Readability: required to load config + credentials at all. (os.access uses the
+    # real uid and always returns True for root; under root an unreadable file
+    # surfaces later as a clean read error instead.)
+    if not os.access(ENV_FILE, os.R_OK):
+        problems.append("is not readable by the service user")
+
+    # Permissions: the file holds secrets, so group/other must have NO access.
+    # Try to tighten to 0600 in place; only fail if we cannot.
+    mode = st.st_mode & 0o777
+    if mode & 0o077:
+        try:
+            os.chmod(ENV_FILE, 0o600)
+            print(f"NOTICE: tightened {ENV_FILE.name} permissions {oct(mode)} -> 0o600",
+                  file=sys.stderr)
+        except OSError as e:
+            problems.append(
+                f"has permissions {oct(mode)} (group/other can read its secrets) "
+                f"and they could not be tightened: {e}")
+
+    if problems:
+        print("CRITICAL: settings-file startup check FAILED -- refusing to start:",
+              file=sys.stderr)
+        for p in problems:
+            print(f"  - {ENV_FILE} {p}", file=sys.stderr)
+        print("Fix ownership/permissions (owner-only, owned by the service user), "
+              "then restart the service.", file=sys.stderr)
+        sys.exit(1)
+
+
+# Enforce settings-file security BEFORE touching it, then load config + credentials.
+check_settings_file_security()
 AUTH_USERS = parse_env_file()
 
 # ============================================================================
@@ -169,6 +295,13 @@ log.addHandler(console_handler)
 
 log.info(f"Loaded {len(AUTH_USERS)} user(s): {', '.join(AUTH_USERS.keys()) or 'none'}")
 log.info(f"Log file: {log_path} (max {CONFIG['LOG_MAX_BYTES'] // 1_048_576}MB x {CONFIG['LOG_BACKUP_COUNT']} backups)")
+
+# Suppress Werkzeug's built-in per-request access log. That log prints the full
+# request line -- INCLUDING the "?key=..." query string -- to stdout/journald,
+# which would leak the API key into logs. Our own audit line (in auth_required)
+# records only method + path (never the query string), so we lose nothing useful
+# by silencing Werkzeug's access log while closing the key-leak vector.
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 # ============================================================================
 # SSL CERTIFICATE MANAGEMENT
@@ -343,8 +476,35 @@ def check_auth(username, password):
     return valid and username in AUTH_USERS
 
 
+def check_api_key():
+    """Verify a machine-caller API key (e.g. from HomeAssistant).
+
+    The key may arrive either as a URL query parameter (?key=...) -- the primary
+    path used by our HomeAssistant rest_command -- or as an "X-API-Key" header.
+    Returns True only if key auth is ENABLED (API_KEY_ENABLED) and CONFIGURED
+    (non-empty API_KEY) and the presented key matches, compared in constant time
+    via hmac.compare_digest to avoid leaking the key through timing. Returns False
+    when key auth is disabled or no/incorrect key is presented, so the caller falls
+    through to basic auth.
+    """
+    if not CONFIG["API_KEY_ENABLED"]:
+        return False  # Key auth turned off via the settings file
+    configured = CONFIG["API_KEY"]
+    if not configured:
+        return False  # No key configured -- basic auth only
+    # Query param takes precedence, then header
+    presented = request.args.get("key") or request.headers.get("X-API-Key")
+    if not presented:
+        return False
+    # Compare on BYTES, not str: hmac.compare_digest raises TypeError on a str with
+    # any non-ASCII char, which would otherwise 500 (bypassing the failure counter
+    # and flooding the log with tracebacks). Bytes are defined for all inputs and
+    # stay constant-time.
+    return hmac.compare_digest(presented.encode("utf-8"), configured.encode("utf-8"))
+
+
 def auth_required(f):
-    """Decorator that enforces HTTP Basic Auth on a route."""
+    """Decorator that enforces authentication (API key OR HTTP Basic Auth)."""
     @wraps(f)
     def decorated(*args, **kwargs):
         ip = request.remote_addr
@@ -361,6 +521,21 @@ def auth_required(f):
                 {"Content-Type": "text/html", "Retry-After": str(int(remaining))},
             )
 
+        # Path 1 -- API key (query ?key=... or X-API-Key header), for machine
+        # callers like HomeAssistant. Checked before basic auth so keyed callers
+        # never get a browser auth challenge. A valid key clears prior failures.
+        if check_api_key():
+            record_success(ip)
+            # Record HOW we authed so downstream audit logs don't trust a spoofable
+            # Authorization header a keyed caller might also send (see caller_identity).
+            g.auth_method = "apikey"
+            # Log method + path ONLY -- never request.full_path / query_string,
+            # which would contain the key.
+            log.info(f"apikey@{ip} -> {request.method} {request.path}")
+            return f(*args, **kwargs)
+
+        # Path 2 -- HTTP Basic Auth (browser login / manual fallback). A present
+        # but WRONG key falls through to here and is recorded as a failed attempt.
         auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
             attempted = auth.username if auth else "(none)"
@@ -377,11 +552,27 @@ def auth_required(f):
                 {"WWW-Authenticate": 'Basic realm="Generator Control"'},
             )
 
-        # Successful auth -- clear any prior failures for this IP
+        # Successful basic auth -- clear any prior failures for this IP
         record_success(ip)
+        g.auth_method = "basic"
         log.info(f"{auth.username}@{ip} -> {request.method} {request.path}")
         return f(*args, **kwargs)
     return decorated
+
+
+def caller_identity():
+    """Human-readable identity of the authenticated caller, for log lines.
+
+    Trusts g.auth_method (set by auth_required) rather than inferring from
+    request.authorization -- a key-authenticated caller can ALSO send an arbitrary
+    Authorization header, and inferring from it would let them forge the audit-log
+    identity. Returns "apikey" for keyed callers, else the validated basic-auth
+    username. Safe from any authenticated route.
+    """
+    if getattr(g, "auth_method", None) == "apikey":
+        return "apikey"
+    auth = request.authorization
+    return auth.username if auth else "apikey"
 
 # ============================================================================
 # GLOBAL STATE
@@ -526,7 +717,11 @@ def stop_generator():
 # ============================================================================
 # FLASK WEB SERVER
 # ============================================================================
-app = Flask(__name__)
+# static_folder=None disables Flask's built-in /static/<path> route entirely.
+# We serve zero static files (the UI is one inline template), so this removes an
+# unused file-serving surface -- nothing under the app dir (incl. the settings
+# file) can be reached over HTTP.
+app = Flask(__name__, static_folder=None)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -725,7 +920,7 @@ def api_start():
     """REST endpoint to start generator"""
     # Check lock before spawning a thread to avoid creating throwaway threads
     if relay_lock.locked():
-        log.warning(f"Start rejected (relay busy) for {request.authorization.username}@{request.remote_addr}")
+        log.warning(f"Start rejected (relay busy) for {caller_identity()}@{request.remote_addr}")
         return jsonify({"success": False, "message": "A relay sequence is already in progress"}), 409
     threading.Thread(target=start_generator, daemon=True).start()
     return jsonify({"success": True, "message": "Start sequence initiated in background"})
@@ -749,14 +944,25 @@ def api_status():
 @auth_required
 def api_set_running():
     """Manual override to set running state (for manual verification)"""
-    data = request.get_json() or {}
-    running = data.get('running', False)
+    # silent=True avoids a 415 on a bodyless/wrong-content-type POST; the isinstance
+    # guard then tolerates a NON-dict JSON body (a list/number/string would otherwise
+    # 500 on .get). Both cases default to STOPPED.
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    # Coerce 'running' to a real bool. Interpret common string forms so that
+    # {"running": "false"} / "0" / "no" map to STOPPED rather than a truthy string.
+    raw = data.get('running', False)
+    if isinstance(raw, str):
+        running = raw.strip().lower() in ("true", "1", "yes", "on")
+    else:
+        running = bool(raw)
 
     with state_lock:
         generator_state["running"] = running
         generator_state["message"] = f"Manually set to {'RUNNING' if running else 'STOPPED'}"
 
-    log.info(f"State manually set to {'RUNNING' if running else 'STOPPED'} by {request.authorization.username}")
+    log.info(f"State manually set to {'RUNNING' if running else 'STOPPED'} by {caller_identity()}")
     return jsonify({"success": True, "running": running})
 
 # ============================================================================
@@ -775,6 +981,14 @@ def main():
     ssl_context = None
     if CONFIG["SSL_ENABLED"]:
         ensure_ssl_cert()
+        # Fail fast if the cert/key exist but aren't readable by us (e.g. wrong
+        # owner from a prior run); app.run() would otherwise die with an opaque
+        # SSL error instead of a clear "fix the permissions" message.
+        for path in (SSL_CERT_PATH, SSL_KEY_PATH):
+            if not os.access(path, os.R_OK):
+                log.critical(f"SSL file not readable: {path} -- refusing to start. "
+                             f"Fix its permissions/ownership.")
+                sys.exit(1)
         ssl_context = (str(SSL_CERT_PATH), str(SSL_KEY_PATH))
         protocol = "https"
     else:

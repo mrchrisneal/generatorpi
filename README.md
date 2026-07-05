@@ -80,6 +80,8 @@ All settings have sensible defaults. Uncomment and change as needed:
 | `SSL_ENABLED` | `1` | `1` = HTTPS (auto-generates cert), `0` = plain HTTP |
 | `SSL_CERT_DAYS` | `365` | Validity period for generated certs |
 | `SSL_RENEW_DAYS` | `30` | Regenerate cert when fewer than this many days remain |
+| `API_KEY_ENABLED` | `1` | `1` = accept API-key auth alongside Basic Auth, `0` = disable it (accepts `0/1/true/false/yes/no/on/off`) |
+| `API_KEY` | *(auto)* | Machine-caller API key; **auto-generated** on first startup when enabled and empty (see [API authentication](#api-authentication)) |
 | `RATE_LIMIT_MAX_FAILURES` | `5` | Failed login attempts before IP lockout |
 | `RATE_LIMIT_LOCKOUT_SECONDS` | `300` | Lockout duration in seconds (5 min) |
 | `RATE_LIMIT_CLEANUP_SECONDS` | `600` | Interval to purge expired lockouts |
@@ -91,7 +93,10 @@ All settings have sensible defaults. Uncomment and change as needed:
 
 ## API
 
-All endpoints require HTTP Basic Auth.
+All endpoints require authentication: a valid **API key OR HTTP Basic Auth**. The
+API key is checked first; if it is absent or wrong, the request falls back to Basic
+Auth (the browser login). A present-but-wrong key counts as a failed login attempt
+and feeds the same IP lockout as a bad password.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -101,11 +106,70 @@ All endpoints require HTTP Basic Auth.
 | `GET` | `/api/status` | Get current state as JSON |
 | `POST` | `/api/set_running` | Manually override the running state |
 
-Example:
+Basic Auth example (browser login credentials):
 
 ```bash
 curl -k -u chris:mypassword https://generatorpi:9400/api/status
 ```
+
+API-key example (query parameter):
+
+```bash
+curl -k "https://generatorpi:9400/api/status?key=<key>"
+```
+
+API-key example (header — preferred, see the security note below):
+
+```bash
+curl -k -H "X-API-Key: <key>" https://generatorpi:9400/api/status
+```
+
+### API authentication
+
+Machine callers (e.g. HomeAssistant) authenticate with a static API key instead of
+a username and password. The key may be passed either way:
+
+- **Query parameter:** append `?key=<key>` to the URL.
+- **Header:** send `X-API-Key: <key>`.
+
+**Enable / disable.** API-key auth is controlled by `API_KEY_ENABLED` in
+`generator_control.env` (default `1`). Set it to `0` to turn key auth off entirely
+and require Basic Auth for every request.
+
+**Auto-generation.** When key auth is enabled and `API_KEY` is empty, a strong random
+key is generated and written back into `generator_control.env` on the first startup.
+You do not have to invent one yourself — start the service once and read the key out
+of the file.
+
+**Rotation.** To roll the key, clear its value (leave `API_KEY=` with nothing after
+it) or delete the `API_KEY=` line entirely, then restart the service:
+
+```bash
+sudo systemctl restart generator_control
+```
+
+A fresh key is generated and written back on startup. **After rotating, update
+HomeAssistant's stored key to match** — the old key stops working immediately. If the
+file somehow contains more than one `API_KEY=` line, the first non-empty value wins
+and the extras are dropped.
+
+### Security
+
+- The settings file (`generator_control.env`) holds secret material, so it is forced
+  to **`0600` (owner read/write only)** and is **never served over HTTP** — Flask's
+  static file serving is disabled, so no file on disk is reachable through the web
+  server.
+- The service **fails fast on startup** and refuses to run if the settings file has
+  wrong ownership or permissions, is a symlink, or is not readable/writable — closing
+  off tampered-config attacks. (These checks are root-aware and won't false-positive
+  when the service runs as root.)
+- The Werkzeug access log is suppressed so a `?key=` in a request URL never lands in
+  the logs.
+- **In a browser, use the login prompt (Basic Auth) — do NOT put `?key=` in the URL.**
+  The `?key=` / `X-API-Key` path is for machine callers like HomeAssistant. When you
+  do use a key programmatically, **prefer the `X-API-Key` header over the query
+  string** where possible: query strings leak more easily via browser history, proxy
+  logs, and referrers.
 
 ## Management
 
@@ -209,6 +273,20 @@ Or from another machine:
 ```bash
 ssh pi@generatorpi "sudo systemctl status generator_control"
 ```
+
+## Running the tests
+
+The test suite runs off-device (no GPIO or Pi required — the hardware is mocked).
+From the repo root, create a virtualenv, install the dev dependencies, and run
+pytest with coverage:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r tests/requirements-dev.txt
+.venv/bin/python -m pytest --cov=generator_control
+```
+
+The current suite is **132 tests at 99% coverage**.
 
 ## Hardware
 

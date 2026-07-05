@@ -1,0 +1,7 @@
+# Development / test dependencies for the generator_control test suite.
+# NOTE: gpiozero is deliberately NOT listed -- it requires real Raspberry Pi
+# hardware (lgpio) and is mocked in tests/conftest.py before import.
+flask
+werkzeug
+pytest
+pytest-cov
