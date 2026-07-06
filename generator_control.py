@@ -2013,13 +2013,49 @@ function projectedLevel(){var f=fuel();if(!f)return null;var run=Math.max(0,live
 function hoursTo(target){var f=fuel();if(!f||!state.running)return null;var lvl=projectedLevel();if(f.drain_rate>0&&lvl>target)return (lvl-target)/f.drain_rate;return null;}
 
 /* ---------- odometer wheels ---------- */
-var odoReels=[];
+var odoReels=[];var ODO_CELL=46;
 function buildOdometer(){var odo=$('odometer');odo.innerHTML='';
-  function wheel(cls){var w=document.createElement('div');w.className='wheel '+cls;var reel=document.createElement('div');reel.className='reel';for(var i=0;i<=10;i++){var c=document.createElement('div');c.className='cell';c.textContent=i%10;reel.appendChild(c);}w.appendChild(reel);odo.appendChild(w);return reel;}
-  odoReels=[];for(var i=0;i<4;i++)odoReels.push(wheel('wheel-int'));
+  // Each wheel is a .reel of 11 .cells (0..9 then a DUPLICATE 0 at index 10).
+  // The 11th cell is the seamless-wrap landing pad: on a 9->0 rollover we roll
+  // FORWARD onto it, then invisibly snap back to the real 0 -- never backward.
+  function wheel(cls,dur){var w=document.createElement('div');w.className='wheel '+cls;var reel=document.createElement('div');reel.className='reel';for(var i=0;i<=10;i++){var c=document.createElement('div');c.className='cell';c.textContent=i%10;reel.appendChild(c);}w.appendChild(reel);odo.appendChild(w);
+    // Per-reel animation state: pos = current -translateY() magnitude in px;
+    // dur = this wheel's CSS transition duration (ms, must match the stylesheet);
+    // wrapping = true while a rollover roll+snap is in flight (re-entrancy guard);
+    // pending = latest requested target px queued while that wrap runs.
+    return {el:reel,pos:0,dur:dur,wrapping:false,pending:null};}
+  odoReels=[];for(var i=0;i<4;i++)odoReels.push(wheel('wheel-int',700));
   var dot=document.createElement('span');dot.className='odo-dot';dot.textContent='.';odo.appendChild(dot);
-  odoReels.push(wheel('wheel-tenths'));}
-function updateOdometer(hours){var intPart=Math.min(9999,Math.floor(hours));var ds=('0000'+intPart).slice(-4);for(var i=0;i<4;i++){odoReels[i].style.transform='translateY(-'+(parseInt(ds.charAt(i),10)*46)+'px)';}var frac=hours-Math.floor(hours);odoReels[4].style.transform='translateY(-'+((frac*10)*46)+'px)';}
+  odoReels.push(wheel('wheel-tenths',1000));}
+// Move one reel toward a target px magnitude. total_run_hours only ever INCREASES
+// within a session, so a target that is LOWER than the current position is always a
+// wrap-past-9-to-0, never a real decrease -- handle it as a forward roll, not a
+// backward spin.
+function setReel(r,target){
+  // A wrap animation is already running for this reel: don't disturb it -- just
+  // record the newest target so the snap step lands on the latest value.
+  if(r.wrapping){r.pending=target;return;}
+  if(target>=r.pos){
+    // Forward (or no) motion: the reel climbs up the strip; the CSS transition
+    // animates it normally. Record the new resting position.
+    r.pos=target;r.el.style.transform='translateY(-'+target+'px)';return;}
+  // WRAP: target moved back toward 0. Roll FORWARD onto the duplicate 0 (11th cell
+  // at 10*ODO_CELL) using the wheel's normal transition, so it reads 9 -> 0 upward.
+  r.wrapping=true;r.pending=target;
+  r.el.style.transform='translateY(-'+(10*ODO_CELL)+'px)';
+  // After that roll finishes, snap (no animation) to the equivalent low position so
+  // the next real forward move continues cleanly. Timer matched to the wheel's
+  // transition duration (+ small buffer to guarantee the roll has landed).
+  setTimeout(function(){
+    var t=(r.pending==null?target:r.pending); // apply the freshest queued value
+    r.el.style.transition='none';
+    r.el.style.transform='translateY(-'+t+'px)';
+    void r.el.offsetHeight;                    // force reflow so the snap commits
+    r.el.style.transition='';                  // restore the stylesheet transition
+    r.pos=t;r.wrapping=false;r.pending=null;
+  },r.dur+40);
+}
+function updateOdometer(hours){var intPart=Math.min(9999,Math.floor(hours));var ds=('0000'+intPart).slice(-4);for(var i=0;i<4;i++){setReel(odoReels[i],parseInt(ds.charAt(i),10)*ODO_CELL);}var frac=hours-Math.floor(hours);setReel(odoReels[4],frac*10*ODO_CELL);}
 
 /* ---------- state render ---------- */
 function cmdLabel(c){return {start:'START',stop:'STOP',mark_run:'MARK RUN',mark_stop:'MARK STOP'}[c]||DASH;}
