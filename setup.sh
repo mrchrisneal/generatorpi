@@ -50,6 +50,10 @@ do_install() {
     if [ ! -f "${ENV_FILE}" ]; then
         if [ -f "${ENV_EXAMPLE}" ]; then
             cp "${ENV_EXAMPLE}" "${ENV_FILE}"
+            # Lock the copy down to owner-only immediately. It will hold plaintext
+            # USER_ passwords (added below/by the operator) and inherits the ambient
+            # umask from cp until the service later tightens it -- close that window now.
+            chmod 600 "${ENV_FILE}"
             echo "Created ${SERVICE_NAME}.env from example."
             if [ "${interactive}" = "true" ]; then
                 echo "Opening editor -- add your username/password lines, then save and exit."
@@ -78,6 +82,24 @@ do_install() {
                 echo "Aborted. Add credentials and re-run: ./setup.sh install"
                 exit 1
             fi
+        fi
+    fi
+
+    # Web Push (OPTIONAL): the controller runs fine without it, but push notifications
+    # need the 'pywebpush' library. Best-effort install -- never fatal.
+    if ! /usr/bin/python3 -c "import pywebpush" 2>/dev/null; then
+        echo ""
+        echo "Web Push dependency 'pywebpush' not found -- attempting a best-effort install."
+        echo "(Push is OPTIONAL; the controller runs without it. See the README.)"
+        sudo apt-get install -y python3-cryptography >/dev/null 2>&1 || true
+        # Newer Raspberry Pi OS / Debian mark the system Python "externally managed",
+        # so fall back to --break-system-packages if a plain pip install is refused.
+        if ! sudo pip3 install pywebpush >/dev/null 2>&1 \
+           && ! sudo pip3 install --break-system-packages pywebpush >/dev/null 2>&1; then
+            echo "  Could not auto-install pywebpush. To enable push later, run:"
+            echo "    sudo apt install -y python3-cryptography"
+            echo "    sudo pip3 install --break-system-packages pywebpush"
+            echo "  then: sudo systemctl restart ${SERVICE_NAME}"
         fi
     fi
 

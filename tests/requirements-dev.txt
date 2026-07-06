@@ -1,0 +1,10 @@
+# Development / test dependencies for the generator_control test suite.
+# NOTE: gpiozero is deliberately NOT listed -- it requires real Raspberry Pi
+# hardware (lgpio) and is mocked in tests/conftest.py before import.
+flask
+werkzeug
+pytest
+pytest-cov
+# Web Push: the send path is mocked in tests, but the import must resolve so the
+# push code + VAPID key generation are importable/exercised.
+pywebpush
