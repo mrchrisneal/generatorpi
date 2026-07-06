@@ -21,10 +21,13 @@ import time
 import threading
 import hmac
 import json
+import math
+import ipaddress
 import secrets
 import socket
 import sqlite3
 from functools import wraps
+from urllib.parse import urlparse
 from flask import Flask, render_template_string, jsonify, request, Response, g
 from datetime import datetime
 from pathlib import Path
@@ -91,6 +94,11 @@ CONFIG = {
     "VAPID_PUBLIC_KEY": "",             # base64url uncompressed point -- the browser's applicationServerKey (non-secret)
     "VAPID_PRIVATE_KEY": "",            # base64url 32-byte EC private scalar (SECRET)
     "VAPID_SUBJECT": "mailto:admin@localhost",  # VAPID 'sub' claim sent to push services
+    # Hard cap on stored push subscriptions. Unlike the event log this table had no
+    # bound, so an authenticated caller (or a browser re-subscribing under churning
+    # endpoints) could grow it without limit. 100 is far more than the handful of
+    # devices a home controller ever serves; the oldest rows are evicted past this.
+    "SUBSCRIPTION_MAX": 100,
     # How often (seconds) the background monitor re-checks the fuel projection to fire a
     # low-fuel push. Cheap; low fuel develops over many minutes of runtime.
     "FUEL_MONITOR_SECONDS": 60,
@@ -639,6 +647,16 @@ def add_subscription(endpoint, p256dh, auth):
                 "p256dh = excluded.p256dh, auth = excluded.auth",
                 (endpoint, p256dh, auth, time.time()),
             )
+            # Cap the table like the event log: keep only the newest SUBSCRIPTION_MAX
+            # rows (by created_ts) and evict any older ones. Prevents an authenticated
+            # caller -- or a browser re-subscribing under many churning endpoints --
+            # from growing this table without bound. Done under the same _event_lock.
+            max_subs = CONFIG["SUBSCRIPTION_MAX"]
+            _event_conn.execute(
+                "DELETE FROM subscriptions WHERE endpoint NOT IN ("
+                "SELECT endpoint FROM subscriptions ORDER BY created_ts DESC LIMIT ?)",
+                (max_subs,),
+            )
             _event_conn.commit()
     except Exception as e:
         log.warning(f"Failed to store push subscription: {e}")
@@ -716,11 +734,15 @@ def send_push(title, body, tag=None):
     for sub in subs:
         try:
             # pywebpush MUTATES vapid_claims (adds aud/exp), so pass a FRESH dict each call.
+            # timeout=(connect, read): a black-hole or slow push endpoint must not hang
+            # the daemon send thread forever -- bound both the connect and read phases so
+            # a stuck service fails fast and we move on to the next subscription.
             webpush(
                 subscription_info=sub,
                 data=payload,
                 vapid_private_key=vapid,
                 vapid_claims={"sub": subject},
+                timeout=(5, 10),
             )
         except WebPushException as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
@@ -835,18 +857,29 @@ def _generate_self_signed():
     ]
     san = _build_san()
     cmd = base + (["-addext", f"subjectAltName={san}"] if san else [])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if result.returncode != 0 and san:
-        # Older openssl doesn't understand -addext; retry without a SAN rather than fail.
-        log.warning(
-            f"openssl -addext unsupported; generating cert without SAN "
-            f"({result.stderr.strip()})"
-        )
-        result = subprocess.run(base, capture_output=True, text=True, timeout=30)
+    # Tighten the umask to 0o077 around the openssl run so the freshly-written private
+    # key is owner-only from the instant of creation. Without this, openssl creates the
+    # key under the process's ambient umask (commonly 0o022 -> world-readable 0644), so
+    # the secret key would be briefly readable by other users in the window before the
+    # os.chmod(0o600) below. Restore the prior umask in the finally so this side effect
+    # never leaks out to the rest of the process.
+    old_umask = os.umask(0o077)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0 and san:
+            # Older openssl doesn't understand -addext; retry without a SAN rather than fail.
+            log.warning(
+                f"openssl -addext unsupported; generating cert without SAN "
+                f"({result.stderr.strip()})"
+            )
+            result = subprocess.run(base, capture_output=True, text=True, timeout=30)
+    finally:
+        os.umask(old_umask)
     if result.returncode != 0:
         log.error(f"Failed to generate SSL cert: {result.stderr.strip()}")
         raise RuntimeError("SSL certificate generation failed")
-    # Restrict key file permissions (owner read-only) -- we created it.
+    # Restrict key file permissions (owner read-only) -- we created it. (The tightened
+    # umask above already makes it owner-only; this stays as belt-and-suspenders.)
     try:
         os.chmod(SSL_KEY_PATH, 0o600)
     except OSError:
@@ -1068,8 +1101,13 @@ def auth_required(f):
             attempted = auth.username if auth else "(none)"
             locked, fail_count = record_failure(ip)
             max_failures = CONFIG["RATE_LIMIT_MAX_FAILURES"]
+            # Log the attempted username via !r (repr), NOT raw: it comes from the
+            # base64-decoded Authorization header and can carry CR/LF/other control
+            # chars. repr escapes them (e.g. '\r\nInjected') so a crafted username
+            # can't forge extra log lines (log injection). repr also supplies its own
+            # quoting, so the surrounding literal quotes are dropped.
             log.warning(
-                f"Auth failed for '{attempted}'@{ip} "
+                f"Auth failed for {attempted!r}@{ip} "
                 f"({fail_count}/{max_failures} attempts)"
                 + (" [LOCKED OUT]" if locked else "")
             )
@@ -1531,20 +1569,29 @@ def set_alerts(enabled=None, threshold=None, fuel_enabled=None):
 def _json_number(data, field):
     """Pull a numeric `field` from a JSON dict body. Returns (value, error_message);
     error_message is None on success. Accepts numeric strings; rejects bools (a bool
-    is an int subclass but is never a valid level/rate/threshold)."""
+    is an int subclass but is never a valid level/rate/threshold); rejects non-finite
+    values (Infinity/-Infinity/NaN, incl. their string forms 'inf'/'nan'/'1e999')."""
     if not isinstance(data, dict) or field not in data:
         return None, f"missing '{field}'"
     v = data[field]
     if isinstance(v, bool):
         return None, f"'{field}' is not a number"
     if isinstance(v, (int, float)):
-        return float(v), None
-    if isinstance(v, str):
+        parsed = float(v)
+    elif isinstance(v, str):
         try:
-            return float(v.strip()), None
+            parsed = float(v.strip())
         except ValueError:
             return None, f"'{field}' is not a number"
-    return None, f"'{field}' is not a number"
+    else:
+        return None, f"'{field}' is not a number"
+    # Reject non-finite values. float("inf"/"nan"/"1e999") all parse successfully but
+    # a non-finite level/rate/threshold is meaningless and dangerous: it would persist
+    # Infinity/NaN into the kv store (corrupting /api/state's JSON), and int(float("inf"))
+    # raises OverflowError -> a 500 on the alerts threshold path. Fail closed with 400.
+    if not math.isfinite(parsed):
+        return None, f"'{field}' is not a finite number"
+    return parsed, None
 
 
 # ============================================================================
@@ -1555,6 +1602,13 @@ def _json_number(data, field):
 # unused file-serving surface -- nothing under the app dir (incl. the settings
 # file) can be reached over HTTP.
 app = Flask(__name__, static_folder=None)
+
+# Cap the request body at 64 KiB (defense in depth). Every body this app accepts is
+# tiny JSON -- a state toggle, a fuel number, or a push subscription (endpoint + two
+# short keys) -- so 64 KiB is orders of magnitude of headroom. Werkzeug rejects a
+# larger body with 413 before it's buffered, so a malicious/oversized upload can't
+# exhaust memory on the Pi.
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 
 # The UI is ONE self-contained page: inline <style> + inline vanilla JS, no external
 # assets, no framework, no build step (see the design handoff). Split into HEAD/BODY
@@ -2322,6 +2376,66 @@ HTML_TEMPLATE = HTML_TEMPLATE_HEAD + """
 """
 
 
+# Methods that mutate server state -- the only ones the CSRF origin check guards.
+# GET/HEAD/OPTIONS are safe/idempotent and are exempt (they change nothing).
+_CSRF_PROTECTED_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+@app.before_request
+def csrf_origin_guard():
+    """Reject cross-origin state-changing browser requests (CSRF defense).
+
+    The control routes use HTTP Basic Auth, which the browser AUTO-SENDS on every
+    same-origin request once the user has logged in. Combined with a body-less action
+    like POST /api/start (it reads NO request body), that means a malicious page on
+    another site could auto-submit a form to this app and crank the engine using the
+    victim's cached Basic-Auth credentials -- a classic CSRF. We block it by checking
+    the browser-set Origin/Referer against our own origin on every mutating method:
+
+      expected = "{scheme}://{host}"  (the origin this request was actually served on)
+
+      * Origin present and != expected  -> reject 403 (a real cross-site request).
+      * Origin absent but Referer present and not under expected -> reject 403
+        (older browsers omit Origin on some requests but still send Referer).
+      * NEITHER header present -> ALLOW. Browsers always attach at least one of them
+        to a cross-site state-changing request, so "neither" means a NON-browser
+        caller: our HomeAssistant rest_command, curl, the test client, etc. Those
+        authenticate with the API key (not an ambient cookie/Basic session) and are
+        not a CSRF vector, so blocking them would break legitimate automation for no
+        security gain. GET/HEAD/OPTIONS are exempt entirely (safe methods).
+    """
+    if request.method not in _CSRF_PROTECTED_METHODS:
+        return None  # safe method -- nothing to guard
+
+    # The origin this request was actually served on (scheme + host[:port]). request.host
+    # includes the port when non-default, matching how a browser builds the Origin value.
+    expected = f"{request.scheme}://{request.host}"
+
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        # Origin is the authoritative signal: a browser sets it on cross-site (and most
+        # same-site) state-changing requests and it CANNOT be forged by page JS.
+        if origin != expected:
+            return jsonify(
+                {"success": False, "message": "cross-origin request rejected"}
+            ), 403
+        return None  # same-origin -- allow
+
+    referer = request.headers.get("Referer")
+    if referer is not None:
+        # Fallback when Origin is absent: the Referer must point at our own origin.
+        # Require it to be exactly `expected` or start with `expected + "/"` so a host
+        # like "https://evilexpected.com" can't prefix-match our "https://expected".
+        if referer != expected and not referer.startswith(expected + "/"):
+            return jsonify(
+                {"success": False, "message": "cross-origin request rejected"}
+            ), 403
+        return None  # same-origin Referer -- allow
+
+    # Neither header present -> a non-browser (API-key/curl/HomeAssistant) caller. Allow.
+    return None
+
+
 @app.after_request
 def set_security_headers(response):
     """Add security headers to every response."""
@@ -2340,7 +2454,11 @@ def set_security_headers(response):
         "connect-src 'self'; "
         "img-src 'self' data:; "
         "base-uri 'none'; "
-        "form-action 'none'"
+        "form-action 'none'; "
+        # frame-ancestors has NO default-src fallback, so it must be set explicitly.
+        # 'none' forbids the page being framed anywhere -- the CSP-level equivalent of
+        # X-Frame-Options: DENY (which older browsers still honor), closing clickjacking.
+        "frame-ancestors 'none'"
     )
     if CONFIG["SSL_ENABLED"]:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -2613,6 +2731,40 @@ def service_worker():
     )
 
 
+def _push_endpoint_error(endpoint):
+    """Validate a push-subscription endpoint URL, returning an error string if it is
+    unacceptable, or None if it is safe to store + later POST to.
+
+    send_push() makes an outbound HTTP request to whatever endpoint we store, so an
+    attacker who can subscribe an arbitrary URL turns this into a Server-Side Request
+    Forgery primitive against the Pi's own network (localhost admin panels, LAN
+    devices, cloud metadata IPs, etc.). We therefore require:
+
+      * an https:// URL (a real push service is always https; http:// is rejected), and
+      * a host that is NOT an IP literal in a private/loopback/link-local/reserved
+        range. A normal push-service DNS hostname (fcm.googleapis.com, *.notify.
+        windows.com, ...) is NOT an IP literal, so ipaddress.ip_address() raises and it
+        passes. Only a bare private/internal IP is blocked.
+    """
+    if not isinstance(endpoint, str) or not endpoint:
+        return "missing endpoint or keys"
+    parsed = urlparse(endpoint)
+    if parsed.scheme != "https":
+        return "endpoint must be an https:// URL"
+    host = parsed.hostname
+    if not host:
+        return "endpoint has no host"
+    try:
+        # If the host parses as an IP literal, block internal/non-routable ranges.
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # Not an IP literal -> an ordinary DNS hostname (the normal case) -> allow.
+        return None
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        return "endpoint host is not a routable public address"
+    return None
+
+
 @app.route('/api/push/subscribe', methods=['POST'])
 @auth_required
 def api_push_subscribe():
@@ -2626,6 +2778,12 @@ def api_push_subscribe():
     auth = keys.get("auth")
     if not endpoint or not p256dh or not auth:
         return jsonify({"success": False, "message": "missing endpoint or keys"}), 400
+    # SSRF hardening: only accept an https:// endpoint whose host is not an internal
+    # IP literal (see _push_endpoint_error). send_push() will POST to this URL, so an
+    # unvalidated endpoint would let a caller aim the daemon at the loopback/LAN.
+    ep_err = _push_endpoint_error(endpoint)
+    if ep_err:
+        return jsonify({"success": False, "message": ep_err}), 400
     add_subscription(endpoint, p256dh, auth)
     log.info(f"Push subscription added by {caller_identity()}")
     return jsonify({"success": True, "subscriptions": subscription_count()})

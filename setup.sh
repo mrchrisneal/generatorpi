@@ -50,6 +50,10 @@ do_install() {
     if [ ! -f "${ENV_FILE}" ]; then
         if [ -f "${ENV_EXAMPLE}" ]; then
             cp "${ENV_EXAMPLE}" "${ENV_FILE}"
+            # Lock the copy down to owner-only immediately. It will hold plaintext
+            # USER_ passwords (added below/by the operator) and inherits the ambient
+            # umask from cp until the service later tightens it -- close that window now.
+            chmod 600 "${ENV_FILE}"
             echo "Created ${SERVICE_NAME}.env from example."
             if [ "${interactive}" = "true" ]; then
                 echo "Opening editor -- add your username/password lines, then save and exit."
