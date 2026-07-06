@@ -22,6 +22,7 @@ import threading
 import hmac
 import json
 import secrets
+import socket
 import sqlite3
 from functools import wraps
 from flask import Flask, render_template_string, jsonify, request, Response, g
@@ -64,7 +65,11 @@ CONFIG = {
     # SSL / HTTPS
     "SSL_ENABLED": 1,                   # 1 = HTTPS, 0 = plain HTTP
     "SSL_CERT_DAYS": 365,              # Validity period for generated certs
-    "SSL_RENEW_DAYS": 30,              # Regenerate cert when fewer than this many days remain
+    "SSL_RENEW_DAYS": 30,              # Regenerate cert when fewer than this many days remain (auto mode only)
+    "SSL_CERT_MODE": "auto",           # "auto" = self-signed, auto-provision + auto-renew; "manual" = use the provided cert/key, never generate or overwrite
+    "SSL_CERT_FILE": "ssl_cert.pem",   # Certificate path (relative to the script dir, or absolute)
+    "SSL_KEY_FILE": "ssl_key.pem",     # Private key path (relative to the script dir, or absolute)
+    "SSL_SAN": "",                     # Extra SubjectAltName entries for the SELF-SIGNED cert, comma-separated, e.g. "DNS:gen.home,IP:192.168.1.50"
     # API authentication (for machine callers, e.g. HomeAssistant)
     "API_KEY_ENABLED": 1,               # 1 = accept API-key auth, 0 = disable it (basic auth only)
     "API_KEY": "",                      # Static bearer key; auto-generated into the env file on startup when enabled+empty
@@ -747,8 +752,17 @@ init_event_store()
 # Self-signed cert is auto-generated on startup if missing or expiring soon.
 # Uses openssl (pre-installed on Raspberry Pi OS).
 
-SSL_CERT_PATH = SCRIPT_DIR / "ssl_cert.pem"
-SSL_KEY_PATH = SCRIPT_DIR / "ssl_key.pem"
+def _resolve_ssl_path(value):
+    """Resolve an SSL path from config: an absolute path is used as-is, a relative
+    path is taken relative to the script directory."""
+    p = Path(value)
+    return p if p.is_absolute() else (SCRIPT_DIR / p)
+
+
+# Cert/key locations come from config so an operator can point at their own files
+# (e.g. a real cert) instead of the default self-signed ones next to the script.
+SSL_CERT_PATH = _resolve_ssl_path(CONFIG["SSL_CERT_FILE"])
+SSL_KEY_PATH = _resolve_ssl_path(CONFIG["SSL_KEY_FILE"])
 
 
 def _cert_expires_within(days):
@@ -773,47 +787,122 @@ def _cert_expires_within(days):
         return True  # Assume expired if we can't check
 
 
-def ensure_ssl_cert():
-    """Generate a self-signed SSL cert if missing or expiring soon.
+def _build_san():
+    """Build the SubjectAltName string for the self-signed cert: the Pi's hostname
+    (+ its .local mDNS name), localhost, 127.0.0.1, and any operator-configured extras
+    (SSL_SAN). Modern browsers validate against SANs, not the CN, so this makes the
+    self-signed cert actually match how the Pi is reached on the LAN (and lets a
+    trusted self-signed cert satisfy the secure-context requirement for Web Push)."""
+    entries = []
+    try:
+        hn = socket.gethostname()
+        if hn:
+            entries.append(f"DNS:{hn}")
+            if not hn.endswith(".local"):
+                entries.append(f"DNS:{hn}.local")
+    except Exception:
+        pass
+    entries += ["DNS:localhost", "IP:127.0.0.1"]
+    # Operator extras, e.g. the Pi's static LAN IP or a friendly hostname.
+    extra = str(CONFIG.get("SSL_SAN", "") or "").strip()
+    if extra:
+        for e in extra.split(","):
+            e = e.strip()
+            if e:
+                entries.append(e)
+    # De-duplicate, preserving order.
+    seen, out = set(), []
+    for e in entries:
+        if e not in seen:
+            seen.add(e)
+            out.append(e)
+    return ",".join(out)
 
-    Checks on every startup so the cert is always valid. Regenerates when
-    fewer than SSL_RENEW_DAYS days remain.
-    """
+
+def _generate_self_signed():
+    """Generate a self-signed cert+key at the configured paths, with SANs. Falls back
+    to a no-SAN cert if the local openssl predates -addext support (<1.1.1)."""
     import subprocess
 
     cert_days = CONFIG["SSL_CERT_DAYS"]
-    renew_days = CONFIG["SSL_RENEW_DAYS"]
-
-    # Check if cert/key exist and are still valid
-    if SSL_CERT_PATH.exists() and SSL_KEY_PATH.exists():
-        if not _cert_expires_within(renew_days):
-            log.info(f"SSL cert still valid (renew threshold: {renew_days} days)")
-            return
-        log.info(f"SSL cert expires within {renew_days} days, regenerating")
-    else:
-        log.info("No SSL cert found, generating self-signed certificate")
-
-    # Generate new self-signed cert + key in one openssl command
-    result = subprocess.run(
-        [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048",
-            "-keyout", str(SSL_KEY_PATH),
-            "-out", str(SSL_CERT_PATH),
-            "-days", str(cert_days),
-            "-nodes",                           # No passphrase on the key
-            "-subj", "/CN=generatorpi",         # Minimal subject
-        ],
-        capture_output=True, text=True, timeout=30,
-    )
-
+    base = [
+        "openssl", "req", "-x509", "-newkey", "rsa:2048",
+        "-keyout", str(SSL_KEY_PATH),
+        "-out", str(SSL_CERT_PATH),
+        "-days", str(cert_days),
+        "-nodes",                           # No passphrase on the key
+        "-subj", "/CN=generatorpi",         # CN kept for legacy display; SANs do the work
+    ]
+    san = _build_san()
+    cmd = base + (["-addext", f"subjectAltName={san}"] if san else [])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0 and san:
+        # Older openssl doesn't understand -addext; retry without a SAN rather than fail.
+        log.warning(
+            f"openssl -addext unsupported; generating cert without SAN "
+            f"({result.stderr.strip()})"
+        )
+        result = subprocess.run(base, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         log.error(f"Failed to generate SSL cert: {result.stderr.strip()}")
         raise RuntimeError("SSL certificate generation failed")
+    # Restrict key file permissions (owner read-only) -- we created it.
+    try:
+        os.chmod(SSL_KEY_PATH, 0o600)
+    except OSError:
+        pass
+    log.info(
+        f"Generated self-signed SSL cert (valid {cert_days} days"
+        + (f", SAN={san}" if san else "") + ")"
+    )
 
-    # Restrict key file permissions (owner read-only)
-    os.chmod(SSL_KEY_PATH, 0o600)
 
-    log.info(f"Generated self-signed SSL cert (valid {cert_days} days)")
+def ensure_ssl_cert():
+    """Ensure a usable cert + key exist at the configured paths.
+
+    SSL_CERT_MODE controls how:
+      * "auto"  (default) -- a SELF-SIGNED cert is auto-generated if missing or within
+                 SSL_RENEW_DAYS of expiry, and auto-renewed on startup. Includes SANs.
+      * "manual"         -- use the OPERATOR-PROVIDED cert/key as-is. Never generate or
+                 overwrite them. Fail fast if they're missing; warn (don't touch) if
+                 they're expiring. Point at them with SSL_CERT_FILE / SSL_KEY_FILE.
+    """
+    mode = str(CONFIG.get("SSL_CERT_MODE", "auto") or "auto").strip().lower()
+
+    if mode == "manual":
+        # Operator opted out of self-signing -- respect their files, never clobber them.
+        missing = [str(p) for p in (SSL_CERT_PATH, SSL_KEY_PATH) if not p.exists()]
+        if missing:
+            log.critical(
+                "SSL_CERT_MODE=manual but the cert/key file(s) are missing: "
+                + ", ".join(missing)
+                + ". Provide them via SSL_CERT_FILE/SSL_KEY_FILE, or set SSL_CERT_MODE=auto."
+            )
+            sys.exit(1)
+        if _cert_expires_within(CONFIG["SSL_RENEW_DAYS"]):
+            log.warning(
+                f"Manual SSL cert {SSL_CERT_PATH} expires within "
+                f"{CONFIG['SSL_RENEW_DAYS']} days -- renew it yourself "
+                f"(auto-renew is disabled in manual mode)."
+            )
+        else:
+            log.info(f"Using operator-provided SSL cert: {SSL_CERT_PATH}")
+        return
+
+    if mode != "auto":
+        log.warning(f"Unknown SSL_CERT_MODE={mode!r}; falling back to 'auto'.")
+
+    # auto mode: generate if missing, renew if expiring soon.
+    if SSL_CERT_PATH.exists() and SSL_KEY_PATH.exists():
+        if not _cert_expires_within(CONFIG["SSL_RENEW_DAYS"]):
+            log.info(
+                f"SSL cert still valid (renew threshold: {CONFIG['SSL_RENEW_DAYS']} days)"
+            )
+            return
+        log.info(f"SSL cert expires within {CONFIG['SSL_RENEW_DAYS']} days, regenerating")
+    else:
+        log.info("No SSL cert found, generating self-signed certificate")
+    _generate_self_signed()
 
 
 # ============================================================================

@@ -82,9 +82,13 @@ All settings have sensible defaults. Uncomment and change as needed:
 | `RETRY_DELAY` | `5.0` | Seconds between retry attempts |
 | `HOST` | `0.0.0.0` | Web server bind address |
 | `PORT` | `9400` | Web server port |
-| `SSL_ENABLED` | `1` | `1` = HTTPS (auto-generates cert), `0` = plain HTTP |
-| `SSL_CERT_DAYS` | `365` | Validity period for generated certs |
-| `SSL_RENEW_DAYS` | `30` | Regenerate cert when fewer than this many days remain |
+| `SSL_ENABLED` | `1` | `1` = HTTPS, `0` = plain HTTP |
+| `SSL_CERT_MODE` | `auto` | `auto` = self-signed, auto-provisioned + auto-renewed; `manual` = use your own cert/key, never overwrite (see [TLS certificate](#tls--https-certificate)) |
+| `SSL_CERT_FILE` | `ssl_cert.pem` | Certificate path (relative to the script dir, or absolute) |
+| `SSL_KEY_FILE` | `ssl_key.pem` | Private key path (relative to the script dir, or absolute) |
+| `SSL_SAN` | *(empty)* | Extra SubjectAltName entries for the **self-signed** cert, comma-separated, e.g. `DNS:gen.home,IP:192.168.1.50` |
+| `SSL_CERT_DAYS` | `365` | Validity period for generated (auto-mode) certs |
+| `SSL_RENEW_DAYS` | `30` | Auto-mode: regenerate when fewer than this many days remain (manual mode: just warns) |
 | `API_KEY_ENABLED` | `1` | `1` = accept API-key auth alongside Basic Auth, `0` = disable it (accepts `0/1/true/false/yes/no/on/off`) |
 | `API_KEY` | *(auto)* | Machine-caller API key; **auto-generated** on first startup when enabled and empty (see [API authentication](#api-authentication)) |
 | `RATE_LIMIT_MAX_FAILURES` | `5` | Failed login attempts before IP lockout |
@@ -289,6 +293,48 @@ total-runtime odometer, the event log (with infinite scroll), and two sliding dr
 for **Fuel Projection** and **Advanced** manual state overrides (which correct the
 *tracked* state only and never touch the relay). It is keyboard-accessible and works on
 phone, tablet, and desktop.
+
+### TLS / HTTPS certificate
+
+The controller serves HTTPS on `:9400`. There are two ways to provide the certificate,
+chosen with **`SSL_CERT_MODE`**:
+
+**`auto` (default) — self-signed, zero-touch.** On startup the app generates a
+self-signed cert + key (`ssl_cert.pem` / `ssl_key.pem` next to the script) if they're
+missing, and auto-renews when fewer than `SSL_RENEW_DAYS` remain. The generated cert
+includes **SubjectAltName** entries so it matches how the Pi is actually reached: its
+**hostname**, its **`.local`** mDNS name, **`localhost`**, and **`127.0.0.1`**. Add your
+Pi's static LAN IP or a friendly name with **`SSL_SAN`**:
+
+```
+SSL_SAN=DNS:generatorpi.home,IP:192.168.1.50
+```
+
+> **Trusting the self-signed cert.** Browsers show a warning for a self-signed cert. You
+> can click through it for the UI, **but Web Push requires a *trusted* cert** (see below).
+> To make push work, import `ssl_cert.pem` into each device's trust store (or your OS/
+> browser's "trusted certificates"), so the origin becomes a proper secure context. The
+> SANs above are what let the trusted cert validate against the Pi's name/IP.
+
+**`manual` — bring your own cert.** Set `SSL_CERT_MODE=manual` and point
+`SSL_CERT_FILE` / `SSL_KEY_FILE` at your own certificate and key (e.g. one issued by your
+LAN CA, or a real domain cert):
+
+```
+SSL_CERT_MODE=manual
+SSL_CERT_FILE=/etc/ssl/generatorpi/fullchain.pem
+SSL_KEY_FILE=/etc/ssl/generatorpi/privkey.pem
+```
+
+In manual mode the app **uses your files as-is and never generates or overwrites them**.
+It **refuses to start** if they're missing (so it never silently falls back to a
+self-signed cert), and it only **warns** — never auto-renews — when your cert is nearing
+expiry, so renewal stays in your hands. A proper cert is the reliable way to get Web Push
+working without per-device trust steps.
+
+Set `SSL_ENABLED=0` to serve plain HTTP instead (no cert) — note that **Web Push then
+only works when browsing from the Pi itself** (`http://localhost` is the only
+plain-HTTP secure context).
 
 ### Web Push notifications
 
