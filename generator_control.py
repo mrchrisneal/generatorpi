@@ -7,6 +7,7 @@ import time
 import threading
 import hmac
 import secrets
+import sqlite3
 from functools import wraps
 from flask import Flask, render_template_string, jsonify, request, Response, g
 from datetime import datetime
@@ -50,6 +51,9 @@ CONFIG = {
     "LOG_MAX_BYTES": 10_485_760,        # 10 MB per log file
     "LOG_BACKUP_COUNT": 3,              # Number of rotated log files to keep
     "LOG_LEVEL": "INFO",                # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    # Event store (persistent, capped log of generator events)
+    "EVENT_LOG_DB": "events.db",        # SQLite DB file name (relative to script dir)
+    "EVENT_LOG_MAX": 10000,             # Cap on stored events; oldest are evicted past this
 }
 
 # Werkzeug password hashes always start with one of these method prefixes
@@ -302,6 +306,178 @@ log.info(f"Log file: {log_path} (max {CONFIG['LOG_MAX_BYTES'] // 1_048_576}MB x 
 # records only method + path (never the query string), so we lose nothing useful
 # by silencing Werkzeug's access log while closing the key-leak vector.
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+# ============================================================================
+# EVENT STORE (persistent, capped log of generator events)
+# ============================================================================
+# A durable, on-disk log of notable generator events (start/stop/manual
+# overrides/rejections), stored in a small SQLite database next to this script.
+# The front-end reads it back over /api/events to show recent activity and page
+# backwards through history (~100 rows at a time).
+#
+# Design notes:
+#   * SQLite (stdlib sqlite3) gives us durability + a monotonic primary key for
+#     free -- no external service, one file, survives restarts.
+#   * seq is INTEGER PRIMARY KEY AUTOINCREMENT: it never repeats or gets reused,
+#     even after old rows are evicted, so a client cursor (before=/after=) stays
+#     unambiguous forever.
+#   * ts is a unix timestamp (time.time(), float seconds) so the UI can render an
+#     absolute wall-clock time without depending on server-local formatting.
+#   * The table is capped at CONFIG["EVENT_LOG_MAX"] rows; the oldest rows are
+#     evicted on every insert so the file can't grow without bound.
+#   * The app is multithreaded (a relay worker thread + Flask request threads), so
+#     a single shared connection (opened check_same_thread=False) is guarded by a
+#     module-level lock. Events are human-frequency, so this coarse lock is fine.
+
+# Guards the shared connection below -- every read/write takes this lock.
+_event_lock = threading.Lock()
+# The single shared sqlite3 connection. Opened by init_event_store(); None until then.
+_event_conn = None
+# The resolved on-disk path of the current event DB (set by init_event_store()).
+_event_db_path = None
+
+
+def init_event_store(db_path=None):
+    """Open (or reopen) the event-store database and ensure its schema exists.
+
+    Called once at startup, after logging is configured. Opens a single shared
+    connection (check_same_thread=False -- see the section header), enables WAL
+    mode for better concurrent read/write behavior, creates the events table if
+    it doesn't already exist, and records a one-off "startup" event.
+
+    db_path lets tests point the store at a throwaway database; production passes
+    nothing and the DB lives at SCRIPT_DIR / CONFIG["EVENT_LOG_DB"].
+    """
+    global _event_conn, _event_db_path
+
+    # Resolve the target path (default: alongside this script).
+    if db_path is None:
+        db_path = SCRIPT_DIR / CONFIG["EVENT_LOG_DB"]
+
+    with _event_lock:
+        # Close any previously-open connection first so a reopen (e.g. in tests)
+        # doesn't leak file handles or leave two connections fighting the same file.
+        if _event_conn is not None:
+            try:
+                _event_conn.close()
+            except Exception:
+                pass
+            _event_conn = None
+
+        _event_db_path = Path(db_path)
+        # check_same_thread=False: the relay worker thread and Flask request
+        # threads all share this one connection; _event_lock serializes access.
+        _event_conn = sqlite3.connect(str(_event_db_path), check_same_thread=False)
+        # WAL mode: readers don't block the writer (and vice versa) and it's more
+        # crash-resilient than the default rollback journal.
+        _event_conn.execute("PRAGMA journal_mode=WAL")
+        # Schema. AUTOINCREMENT guarantees seq is monotonic and never reused, even
+        # after the DELETEs done during eviction -- so client cursors stay valid.
+        _event_conn.execute(
+            "CREATE TABLE IF NOT EXISTS events ("
+            "seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts REAL NOT NULL, "
+            "type TEXT NOT NULL, "
+            "message TEXT NOT NULL)"
+        )
+        _event_conn.commit()
+
+    log.info(f"Event store ready: {_event_db_path}")
+    # Record process start in the durable log. Done outside the lock above --
+    # record_event acquires _event_lock itself.
+    record_event("startup", "Controller started")
+
+
+def record_event(event_type, message):
+    """Append an event to the durable store, then evict the oldest rows past cap.
+
+    Inserts (ts=time.time(), type, message) and deletes any rows beyond
+    CONFIG["EVENT_LOG_MAX"] so the table stays bounded.
+
+    This MUST NOT raise into its caller: recording an event is only a side effect
+    of starting/stopping the generator and must never be able to break the relay
+    control path. Any failure is swallowed and logged as a warning.
+    """
+    try:
+        max_rows = CONFIG["EVENT_LOG_MAX"]
+        with _event_lock:
+            if _event_conn is None:
+                # Store not initialized (shouldn't happen in normal operation);
+                # drop the event rather than crash the caller.
+                log.warning("record_event called before init_event_store; dropping event")
+                return
+            _event_conn.execute(
+                "INSERT INTO events (ts, type, message) VALUES (?, ?, ?)",
+                (time.time(), event_type, message),
+            )
+            # Evict everything older than the newest max_rows rows. seq is
+            # monotonic, so "keep the highest max_rows seq values" is exactly
+            # "delete where seq <= MAX(seq) - max_rows".
+            _event_conn.execute(
+                "DELETE FROM events WHERE seq <= (SELECT MAX(seq) FROM events) - ?",
+                (max_rows,),
+            )
+            _event_conn.commit()
+    except Exception as e:
+        # Never propagate -- a broken event log must not stop the generator.
+        log.warning(f"Failed to record event ({event_type!r}): {e}")
+
+
+def get_events(limit=100, before=None, after=None):
+    """Return events newest-first as a list of dicts {seq, ts, type, message}.
+
+    limit  -- max rows to return.
+    before -- if given, only rows with seq < before (page backwards / older).
+    after  -- if given (and before is not), only rows with seq > after (fetch
+              what's new since a cursor the client already holds).
+    before takes precedence over after: a client pages in one direction at a time.
+    """
+    try:
+        with _event_lock:
+            if _event_conn is None:
+                return []
+            # Build the cursor WHERE clause. Parameterized -- never string-formatted
+            # with user input -- so there's no SQL-injection surface.
+            where = ""
+            params = []
+            if before is not None:
+                where = "WHERE seq < ?"
+                params.append(before)
+            elif after is not None:
+                where = "WHERE seq > ?"
+                params.append(after)
+            params.append(limit)
+            rows = _event_conn.execute(
+                f"SELECT seq, ts, type, message FROM events {where} "
+                "ORDER BY seq DESC LIMIT ?",
+                params,
+            ).fetchall()
+        # Map row tuples -> dicts outside the lock (pure CPU, no DB access).
+        return [
+            {"seq": r[0], "ts": r[1], "type": r[2], "message": r[3]}
+            for r in rows
+        ]
+    except Exception as e:
+        log.warning(f"Failed to read events: {e}")
+        return []
+
+
+def get_latest_seq():
+    """Return the highest seq currently in the store, or 0 if it's empty."""
+    try:
+        with _event_lock:
+            if _event_conn is None:
+                return 0
+            row = _event_conn.execute("SELECT MAX(seq) FROM events").fetchone()
+        # MAX() over an empty table returns (None,); treat that as 0.
+        return row[0] if row and row[0] is not None else 0
+    except Exception as e:
+        log.warning(f"Failed to read latest event seq: {e}")
+        return 0
+
+
+# Bring the store up now that logging is live. This also records the startup event.
+init_event_store()
 
 # ============================================================================
 # SSL CERTIFICATE MANAGEMENT
@@ -624,11 +800,15 @@ def start_generator():
     # Acquire relay lock (non-blocking) -- reject if a sequence is already running
     if not relay_lock.acquire(blocking=False):
         log.warning("Start rejected: relay sequence already in progress")
+        # Record the rejection so the event log shows the attempt was refused.
+        record_event("start_rejected", "relay sequence already in progress")
         return {"success": False, "message": "A relay sequence is already in progress"}
 
     try:
         with state_lock:
             if generator_state["running"]:
+                # Reject a start when we already believe the generator is running.
+                record_event("start_rejected", "generator already marked as running")
                 return {"success": False, "message": "Generator already marked as running"}
             generator_state["last_command"] = "start"
             generator_state["start_attempts"] = 0
@@ -638,6 +818,8 @@ def start_generator():
         retry_delay = CONFIG["RETRY_DELAY"]
 
         log.info("Initiating generator start sequence")
+        # Durable record that a start sequence began (paired with start_complete).
+        record_event("start", "Start sequence initiated")
 
         for attempt in range(1, max_retries + 1):
             with state_lock:
@@ -676,6 +858,9 @@ def start_generator():
             )
 
         log.info("Start sequence finished")
+        # Durable record that the start sequence completed (paired with the
+        # "start" initiate event above).
+        record_event("start_complete", f"Start sequence completed ({max_retries} attempt(s))")
         return {
             "success": True,
             "message": (
@@ -709,6 +894,8 @@ def stop_generator():
             generator_state["last_stop_time"] = datetime.now().isoformat()
             generator_state["message"] = "Stop command sent"
 
+        # Durable record of the stop command.
+        record_event("stop", "Stop command sent")
         log.info("Stop button pressed")
         return {"success": True, "message": "Stop button pressed. Generator should be stopping."}
     finally:
@@ -921,6 +1108,7 @@ def api_start():
     # Check lock before spawning a thread to avoid creating throwaway threads
     if relay_lock.locked():
         log.warning(f"Start rejected (relay busy) for {caller_identity()}@{request.remote_addr}")
+        record_event("start_rejected", "relay busy")
         return jsonify({"success": False, "message": "A relay sequence is already in progress"}), 409
     threading.Thread(target=start_generator, daemon=True).start()
     return jsonify({"success": True, "message": "Start sequence initiated in background"})
@@ -962,8 +1150,41 @@ def api_set_running():
         generator_state["running"] = running
         generator_state["message"] = f"Manually set to {'RUNNING' if running else 'STOPPED'}"
 
+    # Durable record of the manual state override.
+    record_event("set_running", f"State manually set to {'RUNNING' if running else 'STOPPED'}")
     log.info(f"State manually set to {'RUNNING' if running else 'STOPPED'} by {caller_identity()}")
     return jsonify({"success": True, "running": running})
+
+@app.route('/api/events', methods=['GET'])
+@auth_required
+def api_events():
+    """Return recent events from the persistent store, newest-first.
+
+    Query params:
+      limit  -- number of events to return (default 100, clamped to 1..1000).
+      before -- optional int cursor: only events with seq < before (page older).
+      after  -- optional int cursor: only events with seq > after (new since).
+
+    Response JSON:
+      {"events": [{"seq","ts","type","message"}, ...], "latest_seq": <int>}
+    latest_seq lets the client cheaply tell whether new events exist without
+    re-fetching the whole list.
+    """
+    # limit: default 100, clamped to a sane 1..1000 window. request.args.get with a
+    # default + type=int returns the default (100) for a missing OR unparseable
+    # value, so `limit` is always an int here.
+    limit = request.args.get("limit", default=100, type=int)
+    limit = max(1, min(limit, 1000))
+
+    # Optional cursors. type=int yields None when absent or non-numeric, which the
+    # store treats as "no cursor" -- so a garbage value degrades to the default view.
+    before = request.args.get("before", default=None, type=int)
+    after = request.args.get("after", default=None, type=int)
+
+    return jsonify({
+        "events": get_events(limit, before, after),
+        "latest_seq": get_latest_seq(),
+    })
 
 # ============================================================================
 # MAIN

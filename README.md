@@ -105,6 +105,7 @@ and feeds the same IP lockout as a bad password.
 | `POST` | `/api/stop` | Stop the generator |
 | `GET` | `/api/status` | Get current state as JSON |
 | `POST` | `/api/set_running` | Manually override the running state |
+| `GET` | `/api/events` | Read the persistent event log (newest-first) |
 
 Basic Auth example (browser login credentials):
 
@@ -152,6 +153,56 @@ A fresh key is generated and written back on startup. **After rotating, update
 HomeAssistant's stored key to match** — the old key stops working immediately. If the
 file somehow contains more than one `API_KEY=` line, the first non-empty value wins
 and the extras are dropped.
+
+### Event log
+
+The controller keeps a **persistent, on-disk log** of notable events (starts, stops,
+manual overrides, and rejected commands). It lives in a small SQLite database
+(`events.db`, next to the script) so it **survives restarts**. The store is **capped at
+10,000 rows** — once full, the oldest events are evicted automatically, so the file can
+never grow without bound. (The cap and DB filename are configurable via `EVENT_LOG_MAX`
+and `EVENT_LOG_DB` in `generator_control.env`.)
+
+Each event has:
+
+- `seq` — a **monotonic, ever-increasing integer ID** that is never reused, even after
+  old rows are evicted. Use it as a stable cursor for paging.
+- `ts` — a **unix timestamp** (float seconds) of when the event was recorded.
+- `type` — one of `startup`, `start`, `start_complete`, `start_rejected`, `stop`,
+  `set_running`.
+- `message` — a short human-readable description.
+
+**`GET /api/events`** returns events **newest-first**. Query parameters:
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `limit` | `100` | How many events to return (clamped to `1`–`1000`). |
+| `before` | — | Only events with `seq < before` — page **backwards** into older history. |
+| `after` | — | Only events with `seq > after` — fetch what's **new since** a cursor you already hold. |
+
+Response shape:
+
+```json
+{
+  "events": [
+    {"seq": 42, "ts": 1751692800.123, "type": "start", "message": "Start sequence initiated"}
+  ],
+  "latest_seq": 42
+}
+```
+
+`latest_seq` is the highest `seq` in the store (or `0` if empty), so a client can cheaply
+poll for new activity. Example — fetch the 100 most recent events:
+
+```bash
+curl -k -H "X-API-Key: <key>" "https://generatorpi:9400/api/events?limit=100"
+```
+
+Page backwards from the oldest event you've seen (`seq` = 42):
+
+```bash
+curl -k -H "X-API-Key: <key>" "https://generatorpi:9400/api/events?before=42"
+```
 
 ### Security
 

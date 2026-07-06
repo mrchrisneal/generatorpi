@@ -27,6 +27,18 @@ if str(_APP_DIR) not in sys.path:
 # (no env file -> {} users, no key), logging config, and relay OutputDevice(...) mock.
 import generator_control as gc  # noqa: E402
 
+# The suite assumes a pristine, default CONFIG (no key set, key auth enabled, HTTPS on)
+# and no users. But generator_control reads a real generator_control.env at import if
+# one is present in the app dir -- and on a deployed Pi (or any dev box that has run the
+# app) it always is, which would populate CONFIG["API_KEY"] / AUTH_USERS / SSL_ENABLED
+# and skew the baseline the tests restore to. Neutralize those env-derived values here
+# so the suite is HERMETIC regardless of a stray env file. (Tests that exercise real env
+# parsing use the env_paths fixture, which redirects ENV_FILE to an isolated tmp dir.)
+gc.CONFIG["API_KEY"] = ""
+gc.CONFIG["API_KEY_ENABLED"] = 1
+gc.CONFIG["SSL_ENABLED"] = 1
+gc.AUTH_USERS.clear()
+
 
 # A pristine copy of CONFIG exactly as defined at import time. Used to fully restore
 # CONFIG after every test so mutations (via monkeypatch.setitem or direct writes)
