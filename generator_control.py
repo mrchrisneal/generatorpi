@@ -1195,9 +1195,23 @@ def load_persisted_state():
     """Restore durable state (total run-hours, fuel model, alerts) from the kv store
     at startup. Missing keys keep the in-memory defaults above (first boot)."""
     with state_lock:
-        generator_state["total_run_hours"] = float(
-            kv_get("total_run_hours", generator_state["total_run_hours"])
-        )
+        # total_run_hours is the lifetime odometer -- the one piece of durable state
+        # we must never lose silently. kv_get returns the JSON-decoded value, which is
+        # normally a number but could be a non-numeric JSON value (e.g. a hand-edited
+        # events.db holding the string "abc"). float() on that raises ValueError/
+        # TypeError and would crash the whole controller at startup. Guard the
+        # coercion, but do NOT silently fall back to 0: a bad odometer value must be
+        # impossible to miss, so we log LOUDLY at CRITICAL and KEEP the in-memory
+        # default (whatever total_run_hours already holds) rather than clobber it.
+        raw_total = kv_get("total_run_hours", generator_state["total_run_hours"])
+        try:
+            generator_state["total_run_hours"] = float(raw_total)
+        except (TypeError, ValueError):
+            log.critical(
+                f"Persisted total_run_hours is corrupt ({raw_total!r}); the lifetime "
+                f"run-hours total could not be restored -- check events.db. Keeping the "
+                f"in-memory default ({generator_state['total_run_hours']})."
+            )
         saved_fuel = kv_get("fuel_state")
         if isinstance(saved_fuel, dict):
             # Only copy known keys so a stale/foreign field can't leak in.
@@ -1272,9 +1286,18 @@ def press_button():
     duration = CONFIG["BUTTON_PRESS_DURATION"]
     log.debug(f"Pressing relay ({duration}s)")
     relay_start_stop.on()   # Energize relay (closes contacts)
-    time.sleep(duration)
-    relay_start_stop.off()  # De-energize relay (opens contacts)
-    time.sleep(0.1)         # Small debounce delay
+    # HARDWARE SAFETY: the off() MUST run even if something raises between on() and
+    # off() (e.g. a KeyboardInterrupt/SystemExit during shutdown while we're asleep,
+    # or a signal-driven exception). Without the finally, an exception here would
+    # leave the relay energized -- i.e. the physical start/stop button held DOWN
+    # indefinitely -- which is exactly the failure mode we must never allow. The
+    # try/finally guarantees the relay is de-energized on every exit path; the
+    # exception still propagates to the caller afterwards.
+    try:
+        time.sleep(duration)
+    finally:
+        relay_start_stop.off()  # De-energize relay (opens contacts) -- ALWAYS runs
+    time.sleep(0.1)         # Small debounce delay (only reached on the normal path)
 
 # ============================================================================
 # GENERATOR CONTROL LOGIC
@@ -1511,7 +1534,19 @@ def record_fuel_reading(level):
         new_rate = max(0.1, (fuel_state["fill_level"] - level) / run_since_fill)
         fuel_state["drain_rate"] = _round1(0.5 * fuel_state["drain_rate"] + 0.5 * new_rate)
         snapshot = dict(fuel_state)
-    kv_set("fuel_state", snapshot)
+        # ATOMICITY: snapshot AND persist under the SAME state_lock. If kv_set ran
+        # after releasing the lock, two overlapping mutators could interleave so the
+        # LAST writer to reach kv_set persists a STALE snapshot -- kv would diverge
+        # from memory and a field would silently revert on the next restart.
+        # Persisting in-lock makes the (memory-mutate, kv-write) pair atomic.
+        # LOCK ORDER (verified across the whole file): the only ordering that ever
+        # occurs is state_lock -> _event_lock (kv_set/kv_get/record_event each take
+        # _event_lock internally; already relied on at _apply_running_transition_locked
+        # and load_persisted_state). NO code path takes _event_lock and THEN state_lock
+        # -- every _event_lock holder (record_event/kv_get/kv_set/get_events/
+        # subscription helpers) is a self-contained DB op that never touches state_lock.
+        # So there is no lock-order inversion and no deadlock from calling kv_set here.
+        kv_set("fuel_state", snapshot)
     return snapshot["drain_rate"]
 
 
@@ -1521,7 +1556,10 @@ def set_fuel_rate(rate):
     with state_lock:
         fuel_state["drain_rate"] = rate
         snapshot = dict(fuel_state)
-    kv_set("fuel_state", snapshot)
+        # Persist in-lock so the snapshot can't go stale between two overlapping
+        # writers (see record_fuel_reading for the atomicity + lock-order rationale;
+        # state_lock -> _event_lock is the only ordering, so no deadlock).
+        kv_set("fuel_state", snapshot)
     return rate
 
 
@@ -1531,7 +1569,9 @@ def reset_fuel_rate():
         fuel_state["drain_rate"] = _round1(fuel_state["default_rate"])
         rate = fuel_state["drain_rate"]
         snapshot = dict(fuel_state)
-    kv_set("fuel_state", snapshot)
+        # Persist in-lock so the snapshot can't go stale between two overlapping
+        # writers (see record_fuel_reading for the atomicity + lock-order rationale).
+        kv_set("fuel_state", snapshot)
     return rate
 
 
@@ -1546,7 +1586,9 @@ def set_fuel_fill(level):
         # Refuelling re-arms the low-fuel alert so the next real low crossing pushes.
         _low_fuel_alerted = False
         snapshot = dict(fuel_state)
-    kv_set("fuel_state", snapshot)
+        # Persist in-lock so the snapshot can't go stale between two overlapping
+        # writers (see record_fuel_reading for the atomicity + lock-order rationale).
+        kv_set("fuel_state", snapshot)
     return snapshot
 
 
@@ -1562,7 +1604,9 @@ def set_alerts(enabled=None, threshold=None, fuel_enabled=None):
         if fuel_enabled is not None:
             alerts_state["fuel_enabled"] = bool(fuel_enabled)
         snapshot = dict(alerts_state)
-    kv_set("alerts_state", snapshot)
+        # Persist in-lock so the snapshot can't go stale between two overlapping
+        # writers (see record_fuel_reading for the atomicity + lock-order rationale).
+        kv_set("alerts_state", snapshot)
     return snapshot
 
 
