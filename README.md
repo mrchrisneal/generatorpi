@@ -4,6 +4,14 @@ Remote start/stop controller for a **Powermate PM9400E** generator via a Raspber
 
 The Pi triggers the generator's electric start button through a GPIO-controlled relay. A Flask web server provides both a browser interface and a REST API for starting, stopping, and checking status from any device on the network.
 
+<p align="center">
+  <img src="docs/screenshots/web-ui.png" alt="GeneratorPi web UI — industrial control panel with status annunciator, hero power switch, current-run readout, total-runtime odometer, event log, and collapsible Fuel Projection and Advanced drawers" width="640">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/fuel-projection.png" alt="Fuel Projection drawer — a vertical tank gauge beside LEVEL, DRAIN RATE, REACHES-threshold, LOW AT, EMPTY IN, and EMPTY AT readouts" width="560">
+</p>
+
 ## How It Works
 
 ```
@@ -394,6 +402,10 @@ works whenever a tab is open, and the app degrades gracefully.
 
 #### Enabling push (per device)
 
+<p align="center">
+  <img src="docs/screenshots/advanced-drawer.png" alt="Advanced drawer — Push Notifications toggle and test button, Low-Fuel Alerts with threshold, the Fuel Projection feature switch, and the Manual Override card" width="420">
+</p>
+
 Open the **Advanced** drawer → flip **PUSH NOTIFICATIONS** on → allow the permission
 prompt. Each browser/device subscribes itself (the toggle reflects *this* device). Use
 **SEND TEST NOTIFICATION** to confirm delivery. Flip it off to unsubscribe that device.
@@ -588,3 +600,7 @@ Licensed under the **GNU Affero General Public License v3.0** — see [`LICENSE`
 or <https://www.gnu.org/licenses/agpl-3.0.html>. The AGPL's network-use clause means
 that if you run a modified version of this controller as a network service, you must
 offer its corresponding source to users of that service.
+
+The 3D power-switch styling is adapted from
+[empty-snail-69 by Nawsome](https://uiverse.io/Nawsome/empty-snail-69) under the MIT
+License — see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

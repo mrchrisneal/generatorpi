@@ -1633,7 +1633,8 @@ button{font-family:inherit}
 .detail-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:#ffb347;box-shadow:0 0 8px 2px rgba(255,180,71,.6)}
 .detail span:last-child{font:600 14px var(--mono);color:#ffcf8a;text-shadow:0 0 6px rgba(255,180,71,.45)}
 
-/* ---- hero rocker switch (Uiverse/Nawsome, keyboard-accessible variant) ---- */
+/* ---- hero rocker switch -- CSS adapted from Uiverse.io "empty-snail-69" by Nawsome
+   (MIT, (c) 2026 Nawsome; see THIRD-PARTY-NOTICES.md), keyboard-accessible variant ---- */
 .switch-wrap{display:flex;justify-content:center;padding:6px 0}
 .switch{display:block;background:#000;width:150px;height:195px;
   box-shadow:0 0 10px 2px rgba(0,0,0,.4),0 0 1px 2px #000,inset 0 2px 2px -2px #fff,inset 0 0 2px 15px #47434c,inset 0 0 2px 22px #000;
@@ -1682,7 +1683,7 @@ button{font-family:inherit}
    light digit, instead of the ivory drum + dark digit of the integer wheels. */
 .wheel-tenths{background:linear-gradient(180deg,#050506 0%,#26262b 24%,#3a3a42 50%,#26262b 76%,#050506 100%)}
 .wheel-tenths .cell{color:#fffef9}
-.odo-dot{font:800 34px var(--mono);color:#ff7a3a;align-self:flex-end;margin:0 -2px 2px}
+.odo-dot{font:800 34px var(--mono);color:#9f9f9f;align-self:flex-end;margin:0 -3px -1px}
 
 /* ---- system registers ---- */
 /* Always a 2x2 grid (4 registers) at every width -- not auto-fit, which flowed 3+1. */
