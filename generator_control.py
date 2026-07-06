@@ -2077,14 +2077,53 @@ function loadOlderEvents(){if(loadingOlder||oldestSeq==null)return;loadingOlder=
 
 /* ---------- actions ---------- */
 function refresh(){fetchState(function(s){if(s)applyState(s);});loadNewEvents();}
-function settle(target){var n=0;(function step(){setTimeout(function(){fetchState(function(s){if(s)applyState(s);if((s&&s.running===target)||++n>20){busy=false;if(s)applyState(s);loadNewEvents();}else step();});},600);})();}
+function settle(target){var n=0;(function step(){setTimeout(function(){fetchState(function(s){if(s)applyState(s);if((s&&s.running===target)||++n>20){busy=false;sw.disabled=false;if(s)applyState(s);loadNewEvents();}else step();});},600);})();}
 var sw=$('powerSwitch');
-sw.addEventListener('change',function(){if(sw.checked){confirmOpen=true;$('confirmOverlay').className='confirm-overlay show';}else{doStop();}});
-function closeConfirm(revert){confirmOpen=false;$('confirmOverlay').className='confirm-overlay';if(revert){sw.checked=false;}}
+var confirmOverlayEl=$('confirmOverlay');
+/* Element focused before the dialog opened (normally #powerSwitch) so we can
+   restore focus to it on close for keyboard/AT users. */
+var confirmPrevFocus=null;
+/* Toggle the `inert` attribute on the two regions that hold every background
+   control (.body + footer). inert makes them non-interactive AND hides them from
+   assistive tech while the modal is up. We deliberately do NOT inert #panel or
+   #confirmOverlay: the overlay is a CHILD of #panel and must stay interactive. */
+function setBackgroundInert(on){
+  var body=panel.querySelector('.body'),foot=panel.querySelector('footer');
+  if(body){if(on){body.setAttribute('inert','');}else{body.removeAttribute('inert');}}
+  if(foot){if(on){foot.setAttribute('inert','');}else{foot.removeAttribute('inert');}}
+}
+function openConfirm(){
+  confirmOpen=true;
+  confirmPrevFocus=document.activeElement;           /* remember where focus was */
+  confirmOverlayEl.className='confirm-overlay show';  /* keep existing show class */
+  setBackgroundInert(true);                           /* trap: bg non-interactive */
+  $('confirmStart').focus();                          /* move focus into the dialog */
+}
+sw.addEventListener('change',function(){if(sw.checked){openConfirm();}else{doStop();}});
+function closeConfirm(revert){
+  confirmOpen=false;
+  confirmOverlayEl.className='confirm-overlay';
+  setBackgroundInert(false);                          /* restore bg BEFORE focusing */
+  if(revert){sw.checked=false;}
+  /* Restore focus to the pre-open element, falling back to the power switch. */
+  var restore=confirmPrevFocus||$('powerSwitch');
+  confirmPrevFocus=null;
+  if(restore&&typeof restore.focus==='function'){restore.focus();}
+}
 $('confirmCancel').addEventListener('click',function(){closeConfirm(true);});
 $('confirmStart').addEventListener('click',function(){closeConfirm(false);doStart();});
-function doStart(){busy=true;post('/api/start').then(function(d){if(d&&d.success===false){busy=false;sw.checked=false;refresh();}else{settle(true);}}).catch(function(){busy=false;sw.checked=false;refresh();});}
-function doStop(){busy=true;sw.checked=false;post('/api/stop').then(function(){settle(false);}).catch(function(){busy=false;refresh();});}
+/* Escape cancels the dialog (reverting the switch) while it is open. */
+document.addEventListener('keydown',function(e){if(confirmOpen&&(e.key==='Escape'||e.key==='Esc')){e.preventDefault();closeConfirm(true);}});
+/* Backdrop click cancels — only when the click lands on the overlay itself,
+   not on anything inside the confirm card. */
+confirmOverlayEl.addEventListener('click',function(e){if(e.target===confirmOverlayEl){closeConfirm(true);}});
+/* Disable the switch for the whole in-flight start/stop so a mid-settle flip
+   can't kick off a second concurrent settle() loop. Re-enabled wherever busy is
+   cleared (settle completion + every failure/reject path). */
+function doStart(){busy=true;sw.disabled=true;post('/api/start').then(function(d){if(d&&d.success===false){busy=false;sw.disabled=false;sw.checked=false;refresh();}else{settle(true);}}).catch(function(){busy=false;sw.disabled=false;sw.checked=false;refresh();});}
+/* /api/stop returns {success:false} when the relay is busy with an in-progress
+   start; honor it (like doStart) instead of settling to OFF and flipping back. */
+function doStop(){busy=true;sw.disabled=true;sw.checked=false;post('/api/stop').then(function(d){if(d&&d.success===false){busy=false;sw.disabled=false;refresh();return;}settle(false);}).catch(function(){busy=false;sw.disabled=false;refresh();});}
 $('markRunBtn').addEventListener('click',function(){post('/api/set_running',{running:true}).then(refresh);});
 $('markStopBtn').addEventListener('click',function(){post('/api/set_running',{running:false}).then(refresh);});
 
@@ -2141,7 +2180,7 @@ function refreshPushUI(){
       var on=!!sub;setTog('pushToggle',on);
       setPushHelp(on?'Push enabled on this device.':'Push available \\u2014 flip to enable on this device.');
       testBtn.disabled=!on;
-    });
+    }).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');testBtn.disabled=true;});
   }else{setTog('pushToggle',false);setPushHelp('Push available \\u2014 flip to enable on this device.');testBtn.disabled=true;}
 }
 function registerSW(){
@@ -2152,13 +2191,15 @@ function registerSW(){
        SERVER has it too -- the browser's local subscription and the server's stored
        record can drift (server db reset, subscription pruned, different instance).
        This idempotent upsert re-syncs it so the test button + pushes actually work. */
-    reg.pushManager.getSubscription().then(function(sub){if(sub){post('/api/push/subscribe',sub.toJSON());}});
+    reg.pushManager.getSubscription().then(function(sub){if(sub){post('/api/push/subscribe',sub.toJSON());}}).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');});
     refreshPushUI();
   }).catch(function(){pushSupported=false;refreshPushUI();});
 }
 function enablePush(){
   if(!pushSupported||!serverPush.supported||!serverPush.vapidKey||!swReg)return;
-  Notification.requestPermission().then(function(perm){
+  /* Promise.resolve() tolerates BOTH a returned promise (modern) and undefined
+     (legacy callback-only requestPermission that would otherwise throw on .then). */
+  Promise.resolve(Notification.requestPermission()).then(function(perm){
     if(perm!=='granted'){refreshPushUI();return;}
     swReg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8(serverPush.vapidKey)})
       .then(function(sub){post('/api/push/subscribe',sub.toJSON()).then(function(){refreshPushUI();refresh();});})
@@ -2170,8 +2211,10 @@ function disablePush(){
   swReg.pushManager.getSubscription().then(function(sub){
     if(!sub){refreshPushUI();return;}
     var ep=sub.endpoint;
-    sub.unsubscribe().then(function(){post('/api/push/unsubscribe',{endpoint:ep}).then(function(){refreshPushUI();refresh();});});
-  });
+    /* Catch an out-of-band unsubscribe rejection so it doesn't become an
+       unhandled rejection or leave the toggle stale. */
+    sub.unsubscribe().then(function(){post('/api/push/unsubscribe',{endpoint:ep}).then(function(){refreshPushUI();refresh();});}).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');});
+  }).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');});
 }
 function togglePush(){var on=$('pushToggle').getAttribute('aria-checked')==='true';if(on)disablePush();else enablePush();}
 $('pushToggle').addEventListener('click',togglePush);
@@ -2302,7 +2345,7 @@ HTML_TEMPLATE_BODY = """
               <div class="helper">Estimated automatically from readings, or set it here directly.</div>
             </div>
 
-            <div class="alert-banner" id="alertBanner">
+            <div class="alert-banner" id="alertBanner" role="alert">
               <span class="alert-dot"></span>LOW FUEL — projected level at or below alert threshold. Refuel soon.
             </div>
 
