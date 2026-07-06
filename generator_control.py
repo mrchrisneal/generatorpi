@@ -4,7 +4,7 @@
 # (API key + Basic Auth), a durable event log + fuel/runtime state (SQLite), the
 # relay start/stop sequence, and the inline HTML/CSS/JS control panel.
 #
-# Copyright (C) 2026 Alex Neal <https://neal.tools> and Chris Neal <https://neal.media>
+# Copyright (C) 2026 Chris Neal <https://neal.media> and Alex Neal <https://neal.tools>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # This program is free software: you can redistribute it and/or modify it under the

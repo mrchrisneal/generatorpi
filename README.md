@@ -107,6 +107,8 @@ All settings have sensible defaults. Uncomment and change as needed:
 | `LOG_MAX_BYTES` | `10485760` | Max log file size before rotation (10 MB) |
 | `LOG_BACKUP_COUNT` | `3` | Number of rotated log files to keep |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
+| `EVENT_LOG_DB` | `events.db` | SQLite file for the persistent event log + durable state (run-hours, fuel, subscriptions) |
+| `EVENT_LOG_MAX` | `10000` | Cap on stored events; oldest are evicted past this |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | *(auto)* | Web Push keypair; **auto-generated** on first startup when push is available (see [Web Push](#web-push-notifications)). Private key is secret. |
 | `VAPID_SUBJECT` | `mailto:admin@localhost` | VAPID `sub` claim sent to push services |
 | `FUEL_MONITOR_SECONDS` | `60` | How often the background monitor re-checks the fuel projection for a low-fuel push |
@@ -572,7 +574,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest --cov=generator_control
 ```
 
-The current suite is **255 tests at 99% coverage**.
+The current suite is **373 tests at 97% coverage**.
 
 ## Hardware
 
