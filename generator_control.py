@@ -1566,7 +1566,7 @@ HTML_TEMPLATE_HEAD = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>GENERATOR CONTROL</title>
+<title>GeneratorPi</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <!-- Empty inline icon: suppresses the browser's default /favicon.ico request (which
@@ -1605,7 +1605,7 @@ button{font-family:inherit}
 .col{display:flex;flex-direction:column;gap:20px;min-width:0}
 .col-left{flex:1 1 262px}
 .col-right{flex:1.6 1 344px}
-.section-label{font:600 11px var(--mono);letter-spacing:.2em;color:#7d786f;margin-bottom:8px}
+.section-label{font:600 12px var(--mono);letter-spacing:.16em;color:#969085;margin-bottom:8px}
 
 /* ---- status annunciator ---- */
 .annunciator{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:11px;
@@ -1620,7 +1620,7 @@ button{font-family:inherit}
   background:radial-gradient(circle at 40% 35%,#ffb0a0,#ff2a12 55%,#7a0e04);
   box-shadow:0 0 16px 3px rgba(255,50,25,.75),inset 0 2px 3px rgba(0,0,0,.5)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.82}}
-.ann-label{font:600 12px var(--mono);letter-spacing:.24em;color:#807b71}
+.ann-label{font:600 12px var(--mono);letter-spacing:.24em;color:#9a9488}
 .ann-value{font:800 28px var(--mono);letter-spacing:.08em;color:#8f8a80;text-shadow:0 0 12px currentColor}
 .panel[data-running="true"] .ann-value{color:#ff5a4a}
 
@@ -1691,12 +1691,12 @@ button{font-family:inherit}
   background:radial-gradient(120% 130% at 50% -10%,#0d1210,#050806 75%);box-shadow:inset 0 2px 8px rgba(0,0,0,.75)}
 .reg::after{content:"";position:absolute;inset:0;pointer-events:none;
   background:repeating-linear-gradient(0deg,rgba(0,0,0,.22) 0 1px,transparent 1px 3px);mix-blend-mode:multiply}
-.reg-label{font:600 10px var(--mono);letter-spacing:.2em;color:#4f7d64;margin-bottom:6px}
+.reg-label{font:600 12px var(--mono);letter-spacing:.08em;color:#4f7d64;margin-bottom:6px}
 .reg-value{font:700 17px var(--mono);color:#6fe6a0;text-shadow:0 0 7px rgba(80,224,140,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* ---- event log (VFD) ---- */
 .log-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
-.log-count{font:600 11px var(--mono);letter-spacing:.14em;color:#5a564f}
+.log-count{font:600 12px var(--mono);letter-spacing:.1em;color:#6c675f}
 .log{container-type:inline-size;position:relative;height:190px;overflow-y:auto;padding:8px 10px;border-radius:8px;
   background:radial-gradient(120% 100% at 50% 0%,#04120a,#010704 75%);box-shadow:inset 0 2px 10px rgba(0,0,0,.85)}
 .log::-webkit-scrollbar{width:8px}.log::-webkit-scrollbar-track{background:#020604}
@@ -1711,16 +1711,17 @@ button{font-family:inherit}
   .evt{display:block}.evt .t,.evt .g,.evt .m{flex:none;display:inline}
   .evt .t::after,.evt .g::after{content:" "}
 }
-.log-foot{margin-top:6px;text-align:center;font:600 10px var(--mono);letter-spacing:.16em;color:#2f5a40}
 
 /* ---- drawers (shared) ---- */
 .drawer{border-radius:11px;overflow:hidden;background:linear-gradient(180deg,#141416,#0b0b0d);border:1px solid #000}
 .drawer.fuel{--tint:#0e1416}.drawer.adv{--tint:#160f0e}
 .drawer-face{display:flex;align-items:center;justify-content:space-between;gap:12px;
   min-height:54px;padding:0 16px;cursor:pointer;border:0;width:100%;text-align:left;color:#d7d3cc;
-  background:linear-gradient(180deg,#34343b 0%,#26262c 52%,#1e1e23 100%);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.13),inset 0 -2px 5px rgba(0,0,0,.5),0 3px 6px rgba(0,0,0,.45)}
-.drawer-face:hover{filter:brightness(1.12)}.drawer-face:active{filter:brightness(.94)}
+  background:linear-gradient(180deg,#2a2a2f 0%,#1e1e23 52%,#18181c 100%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.11),inset 0 -2px 5px rgba(0,0,0,.55),0 3px 6px rgba(0,0,0,.45)}
+/* No hover effect on the drawer face -- the brightness change read as inconsistent
+   with the static darkened face. A subtle press dim is kept for tactile feedback. */
+.drawer-face:active{filter:brightness(.92)}
 .drawer-face:focus-visible{outline:3px solid #ffca7a;outline-offset:-3px}
 .face-left{display:flex;align-items:center;gap:10px;font:700 12px sans-serif;letter-spacing:.14em}
 .face-right{display:flex;align-items:center;gap:10px;font:700 13px var(--mono)}
@@ -1730,14 +1731,18 @@ button{font-family:inherit}
 .drawer-cavity{padding:16px;display:flex;flex-direction:column;gap:14px;
   background:linear-gradient(180deg,#0a0a0c,#0d0d10);
   box-shadow:inset 0 13px 16px -11px rgba(0,0,0,.95),inset 7px 0 10px -8px rgba(0,0,0,.9),inset -7px 0 10px -8px rgba(0,0,0,.9),inset 0 -9px 12px -8px rgba(0,0,0,.9)}
-.drawer-base{height:10px;background:linear-gradient(180deg,#2c2c32,#161619);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 2px 4px rgba(0,0,0,.5)}
+.drawer-base{height:10px;background:linear-gradient(180deg,#1a1a1e,#0b0b0d);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 2px 4px rgba(0,0,0,.6)}
 .engrave{display:inline-flex;filter:drop-shadow(0 1px 0 rgba(255,255,255,.14)) drop-shadow(0 -1px 1px rgba(0,0,0,.5))}
 .engrave svg{width:18px;height:18px;display:block}
 .warn-copy{font:600 12px var(--mono);color:#e0b090;line-height:1.5}
 
 /* ---- fuel drawer internals ---- */
-.fuel-top{display:flex;gap:14px;flex-wrap:wrap;align-items:stretch}
+/* Tank stays on the left with the indicator cards always beside it (nowrap); this row
+   is a query container so the card grid can respond to ITS width (container queries
+   need an ancestor with container-type -- previously absent, so the grid never
+   reflowed and stayed 3-across, clobbering the cards). */
+.fuel-top{display:flex;gap:14px;flex-wrap:nowrap;align-items:stretch;container-type:inline-size}
 .tank-col{flex:0 0 60px;display:flex;flex-direction:column;align-items:center;gap:6px}
 .tank{position:relative;width:52px;flex:1 1 auto;min-height:70px;border-radius:6px;overflow:hidden;
   background:linear-gradient(180deg,#0c0c0e,#050506);box-shadow:inset 0 0 0 2px #000,inset 0 2px 8px rgba(0,0,0,.9)}
@@ -1746,13 +1751,23 @@ button{font-family:inherit}
 .tank.low .tank-fill{background:linear-gradient(180deg,#ff5a4a,#a01810);box-shadow:0 0 12px rgba(255,70,50,.6)}
 .tank-line{position:absolute;left:0;right:0;height:3px;background:#ff2a1a;
   box-shadow:0 0 0 1px rgba(0,0,0,.85),0 1px 3px rgba(0,0,0,.9),0 0 7px rgba(255,50,25,.65)}
-.tank-label{font:600 10px var(--mono);letter-spacing:.2em;color:#807b71}
-.fuel-grid{flex:1 1 200px;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
-@container (max-width:520px){.fuel-grid{grid-template-columns:1fr 1fr}}
-@container (max-width:340px){.fuel-grid{grid-template-columns:1fr}}
+.tank-label{font:600 12px var(--mono);letter-spacing:.08em;color:#9a9488}
+/* Default 2x3 (two columns) -- the clean layout for the mid range that was clobbering.
+   3-across only when the row is genuinely roomy (roomy stacked view / desktop), and a
+   single column when very narrow so the cards stay legible beside the tank. min-width:0
+   lets the grid actually shrink inside the flex row. */
+.fuel-grid{flex:1 1 200px;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:9px}
+@container (min-width:480px){.fuel-grid{grid-template-columns:repeat(3,1fr)}}
+/* Single column when very narrow -- and shave ~10px off the tank (not half) so the lone
+   card column gets a little more width beside it while the tank stays readable. */
+@container (max-width:300px){
+  .fuel-grid{grid-template-columns:1fr}
+  .tank-col{flex:0 0 50px}
+  .tank{width:42px}
+}
 .fcard{padding:10px 12px;border-radius:8px;background:linear-gradient(160deg,#0b1214,#04080a);
   border:1px solid #08161a;box-shadow:inset 0 2px 7px rgba(0,0,0,.7)}
-.fcard-label{font:600 10px var(--mono);letter-spacing:.18em;color:#4f7d8a;margin-bottom:5px}
+.fcard-label{font:600 12px var(--mono);letter-spacing:.08em;color:#4f7d8a;margin-bottom:5px}
 .fcard-value{font:700 16px var(--mono);color:#8fd6e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .fuel-io{display:flex;gap:9px;align-items:stretch}
 .crt-input{flex:1 1 auto;min-width:0;padding:0 12px;height:48px;border-radius:8px;border:1px solid #000;
@@ -1761,17 +1776,31 @@ button{font-family:inherit}
   box-shadow:inset 0 2px 7px rgba(0,0,0,.75)}
 .crt-input::placeholder{color:#3f7d64}
 .crt-input:focus{outline:3px solid #ffca7a;outline-offset:2px}
-.helper{font:500 11px var(--mono);color:#6f6a62;line-height:1.5}
+.helper{font:500 12px var(--mono);color:#ada79d;line-height:1.55;margin-top:9px}
+/* Centered hairline divider between form rows in the drawers: ~30% width, 1px, faded
+   ends, with 10px of margin above and below the line. */
+.drawer-divider{width:30%;height:1px;border:0;margin:10px auto;background:linear-gradient(90deg,transparent,rgba(255,255,255,.24),transparent)}
+.drawer-cavity > .drawer-divider{margin:10px auto}
+.alert-cfg > .drawer-divider{margin:10px auto}
 .alert-banner{display:none;align-items:center;gap:10px;padding:11px 14px;border-radius:8px;
   background:linear-gradient(180deg,#2a0f0c,#1a0906);border:1px solid #6a2018;
   font:600 12px var(--mono);color:#ffb0a0}
 .alert-banner.show{display:flex}
 .alert-dot{width:9px;height:9px;border-radius:50%;background:#ff3a22;box-shadow:0 0 8px 2px rgba(255,60,30,.7);animation:pulse 1s ease-in-out infinite}
-.alert-cfg{padding:12px 14px;border-radius:8px;background:linear-gradient(160deg,#0b1214,#04080a);border:1px solid #08161a;display:flex;flex-direction:column;gap:12px}
+.alert-cfg{padding:12px 14px;border-radius:8px;background:linear-gradient(160deg,#0b1214,#04080a);border:1px solid #08161a;display:flex;flex-direction:column;gap:12px;container-type:inline-size}
 .alert-cfg-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .alert-cfg-row .lbl{display:flex;align-items:center;gap:9px;font:700 12px sans-serif;letter-spacing:.1em;color:#9fdcec}
 .thresh-row{display:flex;align-items:center;gap:12px}
 .thresh-row .tval{font:700 15px var(--mono);color:#ffb347;min-width:44px;text-align:right}
+/* When the alert card gets narrow (~440px viewport and below) the label+slider+value
+   no longer fit on one line and the slider gets squeezed. Reflow to: slider + value on
+   top, the THRESHOLD label centered beneath. */
+@container (max-width:280px){
+  .thresh-row{flex-wrap:wrap;justify-content:center;row-gap:8px}
+  .thresh-row .thresh{order:1;flex:1 1 auto}
+  .thresh-row .tval{order:2}
+  .thresh-row .section-label{order:3;flex:1 1 100%;text-align:center;margin:0}
+}
 input[type=range].thresh{-webkit-appearance:none;appearance:none;flex:1 1 auto;height:6px;border-radius:3px;
   background:linear-gradient(90deg,#ff7a3a,#7a3a08);outline-offset:4px}
 input[type=range].thresh::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;
@@ -1815,8 +1844,9 @@ input[type=range].thresh::-moz-range-thumb{width:20px;height:20px;border:0;borde
   font:600 12px var(--mono);color:#d8ac60;line-height:1.5}
 footer{border-top:1px solid rgba(255,255,255,.06);padding-top:16px;
   display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center}
-footer .frow{font:500 11.5px var(--mono);color:#6f6a62}
-footer a{color:#9b9689;text-decoration:underline}
+footer .frow{font:500 12px var(--mono);color:#a6a094}
+footer a{color:rgba(255,255,255,.9);text-decoration:none}
+footer a:hover{text-decoration:underline}
 
 /* ---- start confirm dialog ---- */
 /* position:fixed (not absolute) so the overlay + card center in the VIEWPORT, not
@@ -2067,7 +2097,7 @@ HTML_TEMPLATE_BODY = """
   <span class="rivet bl"></span><span class="rivet br"></span>
 
   <!-- Header placard -->
-  <div class="placard"><h1>GENERATOR CONTROL</h1></div>
+  <div class="placard"><h1>GeneratorPi</h1></div>
 
   <div class="body">
     <!-- ===== LEFT COLUMN ===== -->
@@ -2134,7 +2164,6 @@ HTML_TEMPLATE_BODY = """
           <span class="log-count" id="logCount">0 EVENTS</span>
         </div>
         <div class="log" id="log"></div>
-        <div class="log-foot">SCROLL FOR OLDER · AUTO-LOADS</div>
       </div>
 
       <!-- Fuel Projection drawer -->
@@ -2163,11 +2192,13 @@ HTML_TEMPLATE_BODY = """
               </div>
             </div>
 
+            <div class="drawer-divider"></div>
+
             <div>
               <div class="fuel-io">
                 <input class="crt-input" id="rateInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="drain %/hr" aria-label="Set drain rate percent per hour">
                 <button type="button" class="btn3d cyan" id="setRateBtn">SET</button>
-                <button type="button" class="btn3d steel btn3dsm" id="resetRateBtn" aria-label="Reset drain rate to default"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v4h4"/></svg></span>RESET</button>
+                <button type="button" class="btn3d steel btn3dsm" id="resetRateBtn" aria-label="Reset drain rate to default">RESET</button>
               </div>
               <div class="helper">Estimated automatically from readings, or set it here directly.</div>
             </div>
@@ -2176,34 +2207,24 @@ HTML_TEMPLATE_BODY = """
               <span class="alert-dot"></span>LOW FUEL — projected level at or below alert threshold. Refuel soon.
             </div>
 
+            <div class="drawer-divider"></div>
+
             <div>
               <div class="fuel-io">
                 <input class="crt-input" id="readingInput" type="number" step="1" min="0" max="100" inputmode="numeric" placeholder="e.g. 48" aria-label="Record observed level percent">
-                <button type="button" class="btn3d cyan" id="recordBtn"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span>RECORD</button>
+                <button type="button" class="btn3d cyan" id="recordBtn">RECORD</button>
               </div>
               <div class="helper">Each reading refines the linear drain estimate (level = start − rate × run-hours). More readings on one tank → better projection.</div>
             </div>
 
+            <div class="drawer-divider"></div>
+
             <div>
               <div class="fuel-io">
                 <input class="crt-input" id="fillInput" type="number" step="1" min="0" max="100" inputmode="numeric" placeholder="e.g. 100" aria-label="Set gas tank level percent">
-                <button type="button" class="btn3d green" id="fillBtn"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="9" height="18" rx="1"/><line x1="4" y1="9" x2="13" y2="9"/><path d="M13 8h3l2 2v7a2 2 0 0 0 2 2 2 2 0 0 0 2-2V9l-3-3"/></svg></span>SET</button>
+                <button type="button" class="btn3d green" id="fillBtn">SET</button>
               </div>
               <div class="helper">Resets the baseline level to the new fill; drain rate is retained.</div>
-            </div>
-
-            <div class="alert-cfg">
-              <div class="alert-cfg-row">
-                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>LOW-FUEL ALERTS</span>
-                <div class="iotoggle" id="alertToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Low-fuel alerts on or off">
-                  <span class="half i">I</span><span class="half o">O</span>
-                </div>
-              </div>
-              <div class="thresh-row">
-                <span class="section-label" style="margin:0">THRESHOLD</span>
-                <input type="range" class="thresh" id="threshSlider" min="5" max="40" step="1" value="20" aria-label="Low-fuel threshold percent">
-                <span class="tval" id="threshVal">20%</span>
-              </div>
             </div>
           </div>
         </div>
@@ -2228,6 +2249,19 @@ HTML_TEMPLATE_BODY = """
               </div>
               <div class="helper" id="pushHelp">Checking push support…</div>
               <button type="button" class="btn3d cyan" id="testPushBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>SEND TEST NOTIFICATION</button>
+              <div class="drawer-divider"></div>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>LOW-FUEL ALERTS</span>
+                <div class="iotoggle" id="alertToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Low-fuel alerts on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="thresh-row">
+                <span class="section-label" style="margin:0">THRESHOLD</span>
+                <input type="range" class="thresh" id="threshSlider" min="5" max="40" step="1" value="20" aria-label="Low-fuel threshold percent">
+                <span class="tval" id="threshVal">20%</span>
+              </div>
+              <div class="drawer-divider"></div>
               <div class="alert-cfg-row">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>FUEL PROJECTION</span>
                 <div class="iotoggle" id="fuelToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Fuel projection feature on or off">
@@ -2236,10 +2270,13 @@ HTML_TEMPLATE_BODY = """
               </div>
               <div class="helper">Turn the fuel-projection panel and low-fuel alerts on or off for everyone.</div>
             </div>
-            <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
-            <div class="adv-btns">
-              <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
-              <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
+            <div class="section-label" style="margin:0">MANUAL OVERRIDE</div>
+            <div class="alert-cfg">
+              <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
+              <div class="adv-btns">
+                <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
+                <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
+              </div>
             </div>
           </div>
         </div>
@@ -2256,9 +2293,8 @@ HTML_TEMPLATE_BODY = """
 
   <!-- Footer -->
   <footer>
-    <div class="frow">&copy; 2026 <a href="https://neal.tools" target="_blank" rel="noopener">Alex Neal</a> &amp; <a href="https://neal.media" target="_blank" rel="noopener">Chris Neal</a></div>
-    <div class="frow">Running <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">v1.0.0</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
-    <a class="btn3d steel" href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener"><span class="engrave"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></span>GITHUB</a>
+    <div class="frow">&copy; 2026 <a href="https://neal.media" target="_blank" rel="noopener">Chris Neal</a> &amp; <a href="https://neal.tools" target="_blank" rel="noopener">Alex Neal</a></div>
+    <div class="frow"><a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">v1.0.0</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
   </footer>
 
   <!-- Start confirmation dialog -->

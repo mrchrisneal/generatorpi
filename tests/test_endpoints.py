@@ -30,7 +30,7 @@ class TestIndex:
         resp = client.get(_q("/"))
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
-        assert "GENERATOR CONTROL" in body
+        assert "GeneratorPi" in body
         # Default state is server-rendered STOPPED (annunciator word).
         assert "STOPPED" in body
 

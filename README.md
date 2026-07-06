@@ -580,7 +580,7 @@ The relay's normally-open (NO) contacts are wired in parallel with the generator
 
 ## Credits & License
 
-Built by **[Alex Neal](https://neal.tools)** and **[Chris Neal](https://neal.media)**.
+Built by **[Chris Neal](https://neal.media)** and **[Alex Neal](https://neal.tools)**.
 
 Source: <https://github.com/mrchrisneal/generatorpi>
 
