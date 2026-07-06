@@ -39,6 +39,20 @@ gc.CONFIG["API_KEY_ENABLED"] = 1
 gc.CONFIG["SSL_ENABLED"] = 1
 gc.AUTH_USERS.clear()
 
+# The UI-redesign globals (lifetime run-hours + fuel model + alerts) are restored
+# from a real events.db kv table by load_persisted_state() at import. Neutralize
+# them to their code defaults here -- BEFORE the pristine snapshots below -- so the
+# suite baseline is hermetic regardless of any on-disk kv values, exactly like the
+# API_KEY/SSL neutralization above.
+gc.generator_state["total_run_hours"] = 0.0
+gc.generator_state["current_run_started_at"] = None
+gc.fuel_state["fill_level"] = 100.0
+gc.fuel_state["fill_run_hours"] = 0.0
+gc.fuel_state["drain_rate"] = gc.FUEL_DEFAULT_RATE
+gc.fuel_state["default_rate"] = gc.FUEL_DEFAULT_RATE
+gc.alerts_state["alerts_on"] = True
+gc.alerts_state["alert_threshold"] = 20
+
 
 # A pristine copy of CONFIG exactly as defined at import time. Used to fully restore
 # CONFIG after every test so mutations (via monkeypatch.setitem or direct writes)
@@ -47,6 +61,11 @@ _PRISTINE_CONFIG = copy.deepcopy(gc.CONFIG)
 
 # The initial generator_state shape, snapshotted before any test mutates it.
 _PRISTINE_STATE = copy.deepcopy(gc.generator_state)
+
+# Fuel model + alert config are separate mutable module globals (added with the UI
+# redesign); snapshot them too so reset_globals can restore them between tests.
+_PRISTINE_FUEL = copy.deepcopy(gc.fuel_state)
+_PRISTINE_ALERTS = copy.deepcopy(gc.alerts_state)
 
 
 @pytest.fixture
@@ -70,6 +89,11 @@ def reset_globals():
     gc.generator_state.clear()
     gc.generator_state.update(copy.deepcopy(_PRISTINE_STATE))
 
+    gc.fuel_state.clear()
+    gc.fuel_state.update(copy.deepcopy(_PRISTINE_FUEL))
+    gc.alerts_state.clear()
+    gc.alerts_state.update(copy.deepcopy(_PRISTINE_ALERTS))
+
     gc.AUTH_USERS.clear()
 
     with gc._fail_tracker_lock:
@@ -90,6 +114,10 @@ def reset_globals():
     gc.CONFIG.update(copy.deepcopy(_PRISTINE_CONFIG))
     gc.generator_state.clear()
     gc.generator_state.update(copy.deepcopy(_PRISTINE_STATE))
+    gc.fuel_state.clear()
+    gc.fuel_state.update(copy.deepcopy(_PRISTINE_FUEL))
+    gc.alerts_state.clear()
+    gc.alerts_state.update(copy.deepcopy(_PRISTINE_ALERTS))
     gc.AUTH_USERS.clear()
     with gc._fail_tracker_lock:
         gc._fail_tracker.clear()

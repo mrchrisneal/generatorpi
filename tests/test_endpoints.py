@@ -30,8 +30,8 @@ class TestIndex:
         resp = client.get(_q("/"))
         assert resp.status_code == 200
         body = resp.get_data(as_text=True)
-        assert "Powermate PM9400E Control" in body
-        # Default state is STOPPED.
+        assert "GENERATOR CONTROL" in body
+        # Default state is server-rendered STOPPED (annunciator word).
         assert "STOPPED" in body
 
     def test_reflects_running_state(self, client, module):
@@ -213,7 +213,11 @@ class TestSecurityHeaders:
         resp = client.get(_q("/api/status"))
         assert resp.headers["X-Frame-Options"] == "DENY"
         assert resp.headers["X-Content-Type-Options"] == "nosniff"
-        assert "default-src 'self'" in resp.headers["Content-Security-Policy"]
+        # Redesign tightened the CSP: default-deny, inline-only, same-origin fetch.
+        csp = resp.headers["Content-Security-Policy"]
+        assert "default-src 'none'" in csp
+        assert "connect-src 'self'" in csp
+        assert "script-src 'self' 'unsafe-inline'" in csp
 
     def test_headers_present_on_401_response(self, client, module):
         # Security headers are applied via after_request to EVERY response,

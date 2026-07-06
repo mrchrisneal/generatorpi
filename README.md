@@ -100,12 +100,18 @@ and feeds the same IP lockout as a bad password.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/` | Web UI |
+| `GET` | `/` | Web UI (single self-contained page) |
 | `POST` | `/api/start` | Start the generator |
 | `POST` | `/api/stop` | Stop the generator |
-| `GET` | `/api/status` | Get current state as JSON |
-| `POST` | `/api/set_running` | Manually override the running state |
+| `GET` | `/api/status` | Get current state as JSON (legacy/HomeAssistant shape) |
+| `GET` | `/api/state` | Full state snapshot for the web UI (state + fuel + alerts + `server_now`) |
+| `POST` | `/api/set_running` | Manually override the tracked running state |
 | `GET` | `/api/events` | Read the persistent event log (newest-first) |
+| `POST` | `/api/fuel/reading` | Record an observed tank level (`{"level": %}`), refining the drain estimate |
+| `POST` | `/api/fuel/rate` | Set the drain rate directly (`{"rate": %/hr}`) |
+| `POST` | `/api/fuel/rate/reset` | Restore the drain rate to its default |
+| `POST` | `/api/fuel/fill` | "Add gas": reset the baseline fill level (`{"level": %}`) |
+| `POST` | `/api/alerts` | Update low-fuel alert config (`{"enabled": bool, "threshold": 5–40}`) |
 
 Basic Auth example (browser login credentials):
 
@@ -169,7 +175,7 @@ Each event has:
   old rows are evicted. Use it as a stable cursor for paging.
 - `ts` — a **unix timestamp** (float seconds) of when the event was recorded.
 - `type` — one of `startup`, `start`, `start_complete`, `start_rejected`, `stop`,
-  `set_running`.
+  `set_running`, `fuel`.
 - `message` — a short human-readable description.
 
 **`GET /api/events`** returns events **newest-first**. Query parameters:
@@ -203,6 +209,72 @@ Page backwards from the oldest event you've seen (`seq` = 42):
 ```bash
 curl -k -H "X-API-Key: <key>" "https://generatorpi:9400/api/events?before=42"
 ```
+
+### State snapshot
+
+**`GET /api/state`** returns everything the web UI renders, in one call:
+
+```json
+{
+  "running": false,
+  "last_command": "stop",
+  "last_start_time": "2026-07-05T19:31:00",
+  "last_stop_time": "2026-07-05T20:04:00",
+  "start_attempts": 1,
+  "message": "Stop command sent",
+  "current_run_started_at": null,
+  "total_run_hours": 12.4,
+  "fuel": {"fill_level": 100.0, "fill_run_hours": 8.0, "drain_rate": 6.4, "default_rate": 6.4},
+  "alerts": {"alerts_on": true, "alert_threshold": 20},
+  "server_now": 1751745840.5
+}
+```
+
+`server_now` is the server's unix clock; the UI aligns its live uptime / odometer to
+it rather than the (possibly-skewed) browser clock. `/api/status` is retained
+unchanged for HomeAssistant and other machine callers.
+
+### Total runtime
+
+The controller accumulates **lifetime run-hours** across every run. Each run's
+elapsed time is banked into `total_run_hours` when it stops (whether via the stop
+command or a manual "mark stopped"), and the value is **persisted** to a small kv
+table in `events.db` so it survives restarts. The UI shows it on a mechanical
+odometer that ticks live while running.
+
+### Fuel projection
+
+A lightweight **linear drain model** projects the tank level and warns before it runs
+low. It assumes fuel drops at a roughly constant rate while the engine runs:
+
+```
+projected_level = fill_level − drain_rate × (total_run_hours − fill_run_hours)
+```
+
+- **Record an observed level** (`POST /api/fuel/reading {"level": 48}`) to refine the
+  `drain_rate` — each reading is blended 50/50 with the running estimate, so more
+  readings on one tank converge on the real consumption. Returns the new `drain_rate`.
+- **Set the rate directly** (`POST /api/fuel/rate {"rate": 6.4}`) or **reset** it to the
+  default (`POST /api/fuel/rate/reset`).
+- **"Add gas"** (`POST /api/fuel/fill {"level": 100}`) resets the baseline fill to the
+  entered %, marking the current run-hour as the new baseline; the drain rate is kept.
+- **Low-fuel alerts** (`POST /api/alerts {"enabled": true, "threshold": 20}`): when the
+  projected level reaches the threshold (5–40%), the UI shows a low-fuel banner. The
+  fuel model + alert config are persisted like the run-hours total.
+
+All fuel/alert mutations append a `fuel`-type event to the log.
+
+### Web UI
+
+The page at `/` is a **single self-contained file** — inline CSS + inline vanilla JS,
+no framework, no build step, and **no external requests** (all icons are inline SVG),
+so it loads instantly on a Pi and a phone under a strict Content-Security-Policy. It
+presents an industrial control-panel aesthetic: a hero power switch (flip **up** to
+start — with a safety confirmation — **down** to stop), a live current-run readout, the
+total-runtime odometer, the event log (with infinite scroll), and two sliding drawers
+for **Fuel Projection** and **Advanced** manual state overrides (which correct the
+*tracked* state only and never touch the relay). It is keyboard-accessible and works on
+phone, tablet, and desktop.
 
 ### Security
 
@@ -337,7 +409,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest --cov=generator_control
 ```
 
-The current suite is **132 tests at 99% coverage**.
+The current suite is **255 tests at 99% coverage**.
 
 ## Hardware
 
@@ -354,3 +426,14 @@ The current suite is **132 tests at 99% coverage**.
 | GND | GND | Common ground |
 
 The relay's normally-open (NO) contacts are wired in parallel with the generator's start/stop button.
+
+## Credits & License
+
+Built by **[Alex Neal](https://neal.tools)** and **[Chris Neal](https://neal.media)**.
+
+Source: <https://github.com/mrchrisneal/generatorpi>
+
+Licensed under the **GNU Affero General Public License v3.0** — see [`LICENSE`](LICENSE)
+or <https://www.gnu.org/licenses/agpl-3.0.html>. The AGPL's network-use clause means
+that if you run a modified version of this controller as a network service, you must
+offer its corresponding source to users of that service.
