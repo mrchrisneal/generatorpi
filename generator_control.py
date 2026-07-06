@@ -1197,6 +1197,9 @@ HTML_TEMPLATE_HEAD = """<!DOCTYPE html>
 <title>GENERATOR CONTROL</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<!-- Empty inline icon: suppresses the browser's default /favicon.ico request (which
+     would 404 -- static serving is disabled) without any external asset. -->
+<link rel="icon" href="data:,">
 {% raw %}<style>
 /* ---- reset + page frame ---- */
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1465,7 +1468,12 @@ var state=null, clockOffset=0, busy=false, confirmOpen=false;
 var newestSeq=0, oldestSeq=null, loadingOlder=false, totalEvents=0;
 
 /* ---------- fetch helpers ---------- */
-function api(path,opts){return fetch(path,opts||{}).then(function(r){return r.json().catch(function(){return {};});});}
+/* Build request URLs from location.origin (which never includes userinfo) rather
+   than a bare relative path: if the page was opened via a credentials-in-URL
+   bookmark (http://user:pass@host/), a relative fetch would resolve against that
+   document URL and the Fetch API rejects constructing a Request from a URL that
+   embeds credentials. location.origin strips them, so fetch works either way. */
+function api(path,opts){return fetch(location.origin+path,opts||{}).then(function(r){return r.json().catch(function(){return {};});});}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});}
 function fetchState(cb){api('/api/state').then(cb).catch(function(){cb(null);});}
 
