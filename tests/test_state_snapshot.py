@@ -50,7 +50,9 @@ class TestStateSnapshotShape:
         assert set(data["fuel"].keys()) == {
             "fill_level", "fill_run_hours", "drain_rate", "default_rate"
         }
-        assert set(data["alerts"].keys()) == {"alerts_on", "alert_threshold"}
+        assert set(data["alerts"].keys()) == {
+            "alerts_on", "alert_threshold", "fuel_enabled"
+        }
 
     def test_server_now_is_a_float(self, client, module, monkeypatch):
         # server_now must be the server's unix clock as a float. Pin time.time so

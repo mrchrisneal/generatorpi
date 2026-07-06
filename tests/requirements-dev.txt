@@ -5,3 +5,6 @@ flask
 werkzeug
 pytest
 pytest-cov
+# Web Push: the send path is mocked in tests, but the import must resolve so the
+# push code + VAPID key generation are importable/exercised.
+pywebpush

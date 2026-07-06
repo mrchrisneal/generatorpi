@@ -29,6 +29,18 @@ from datetime import datetime
 from pathlib import Path
 from werkzeug.security import generate_password_hash, check_password_hash
 
+# Web Push is OPTIONAL: the controller must still run on a Pi that doesn't have
+# pywebpush installed (push simply becomes unavailable server-side). Import is guarded
+# so a missing dependency degrades gracefully instead of crashing at startup.
+try:
+    from pywebpush import webpush, WebPushException
+    from py_vapid import Vapid
+    from py_vapid.utils import b64urlencode as _vapid_b64
+    from cryptography.hazmat.primitives import serialization as _crypto_serialization
+    _PUSH_AVAILABLE = True
+except Exception:  # ImportError, or a partially-installed crypto stack
+    _PUSH_AVAILABLE = False
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -69,6 +81,14 @@ CONFIG = {
     # Event store (persistent, capped log of generator events)
     "EVENT_LOG_DB": "events.db",        # SQLite DB file name (relative to script dir)
     "EVENT_LOG_MAX": 10000,             # Cap on stored events; oldest are evicted past this
+    # Web Push (VAPID). Keys are auto-generated into the settings file on first startup
+    # when push is available and they're empty (like API_KEY). Private key is secret.
+    "VAPID_PUBLIC_KEY": "",             # base64url uncompressed point -- the browser's applicationServerKey (non-secret)
+    "VAPID_PRIVATE_KEY": "",            # base64url 32-byte EC private scalar (SECRET)
+    "VAPID_SUBJECT": "mailto:admin@localhost",  # VAPID 'sub' claim sent to push services
+    # How often (seconds) the background monitor re-checks the fuel projection to fire a
+    # low-fuel push. Cheap; low fuel develops over many minutes of runtime.
+    "FUEL_MONITOR_SECONDS": 60,
 }
 
 # Werkzeug password hashes always start with one of these method prefixes
@@ -189,6 +209,59 @@ def parse_env_file():
             new_lines.append(f"API_KEY={generated}")
         needs_rewrite = True
         print("Generated a new API key and wrote it to the settings file")
+
+    # Auto-provision a VAPID keypair for Web Push, same pattern as the API key: when
+    # push support is installed and no private key is set yet, generate a keypair and
+    # persist it here. If pywebpush/crypto isn't installed, this is skipped entirely and
+    # push stays unavailable (the app still runs fine).
+    if _PUSH_AVAILABLE and not CONFIG["VAPID_PRIVATE_KEY"]:
+        try:
+            v = Vapid()
+            v.generate_keys()
+            # Store the private key as the raw 32-byte scalar (base64url) and the public
+            # key as the uncompressed EC point (base64url) -- the latter is exactly the
+            # applicationServerKey the browser needs. Both are single-line, env-safe.
+            priv_b64 = _vapid_b64(
+                v.private_key.private_numbers().private_value.to_bytes(32, "big")
+            )
+            pub_b64 = _vapid_b64(
+                v.public_key.public_bytes(
+                    _crypto_serialization.Encoding.X962,
+                    _crypto_serialization.PublicFormat.UncompressedPoint,
+                )
+            )
+            CONFIG["VAPID_PRIVATE_KEY"] = priv_b64
+            CONFIG["VAPID_PUBLIC_KEY"] = pub_b64
+
+            def _upsert(lines, key, value):
+                # Replace an existing "key=" line in place, else append a new one.
+                for i, ex in enumerate(lines):
+                    if ex.split("=", 1)[0].strip() == key:
+                        lines[i] = f"{key}={value}"
+                        return
+                lines.append(f"{key}={value}")
+
+            have_any = any(
+                ln.split("=", 1)[0].strip() in ("VAPID_PRIVATE_KEY", "VAPID_PUBLIC_KEY")
+                for ln in new_lines
+            )
+            if not have_any:
+                # Fresh file: append a documented block so operators understand rotation.
+                new_lines.append("")
+                new_lines.append("# Web Push (VAPID) keys -- auto-generated on startup.")
+                new_lines.append("# VAPID_PRIVATE_KEY is SECRET. To rotate: clear both")
+                new_lines.append("# values (or delete both lines) and restart -- a fresh")
+                new_lines.append("# keypair is generated + written here. Rotation forces")
+                new_lines.append("# browsers to re-subscribe (handled automatically).")
+                new_lines.append(f"VAPID_PUBLIC_KEY={pub_b64}")
+                new_lines.append(f"VAPID_PRIVATE_KEY={priv_b64}")
+            else:
+                _upsert(new_lines, "VAPID_PUBLIC_KEY", pub_b64)
+                _upsert(new_lines, "VAPID_PRIVATE_KEY", priv_b64)
+            needs_rewrite = True
+            print("Generated a VAPID keypair for Web Push and wrote it to the settings file")
+        except Exception as e:
+            print(f"WARNING: could not generate VAPID keys ({e}); Web Push disabled")
 
     # Persist changes (hashed passwords and/or a generated API key). Write to a
     # temp file first, then atomic rename (POSIX guarantees atomicity). mkstemp
@@ -405,6 +478,16 @@ def init_event_store(db_path=None):
             "key TEXT PRIMARY KEY, "
             "value TEXT NOT NULL)"
         )
+        # Web Push subscriptions (one row per subscribed browser+device). endpoint is
+        # unique and is the pushService URL; p256dh/auth are the client keys needed to
+        # encrypt payloads. Dead subscriptions are pruned on a 404/410 from send_push.
+        _event_conn.execute(
+            "CREATE TABLE IF NOT EXISTS subscriptions ("
+            "endpoint TEXT PRIMARY KEY, "
+            "p256dh TEXT NOT NULL, "
+            "auth TEXT NOT NULL, "
+            "created_ts REAL NOT NULL)"
+        )
         _event_conn.commit()
 
     log.info(f"Event store ready: {_event_db_path}")
@@ -536,6 +619,123 @@ def kv_set(key, value):
             _event_conn.commit()
     except Exception as e:
         log.warning(f"Failed to write kv {key!r}: {e}")
+
+
+def add_subscription(endpoint, p256dh, auth):
+    """Store (or refresh) a browser push subscription. Never raises into its caller."""
+    try:
+        with _event_lock:
+            if _event_conn is None:
+                return
+            _event_conn.execute(
+                "INSERT INTO subscriptions (endpoint, p256dh, auth, created_ts) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(endpoint) DO UPDATE SET "
+                "p256dh = excluded.p256dh, auth = excluded.auth",
+                (endpoint, p256dh, auth, time.time()),
+            )
+            _event_conn.commit()
+    except Exception as e:
+        log.warning(f"Failed to store push subscription: {e}")
+
+
+def remove_subscription(endpoint):
+    """Delete a push subscription by endpoint. Never raises into its caller."""
+    try:
+        with _event_lock:
+            if _event_conn is None:
+                return
+            _event_conn.execute("DELETE FROM subscriptions WHERE endpoint = ?", (endpoint,))
+            _event_conn.commit()
+    except Exception as e:
+        log.warning(f"Failed to remove push subscription: {e}")
+
+
+def get_subscriptions():
+    """Return all push subscriptions as pywebpush-shaped dicts. Never raises."""
+    try:
+        with _event_lock:
+            if _event_conn is None:
+                return []
+            rows = _event_conn.execute(
+                "SELECT endpoint, p256dh, auth FROM subscriptions"
+            ).fetchall()
+        return [
+            {"endpoint": r[0], "keys": {"p256dh": r[1], "auth": r[2]}}
+            for r in rows
+        ]
+    except Exception as e:
+        log.warning(f"Failed to read push subscriptions: {e}")
+        return []
+
+
+def subscription_count():
+    """Return the number of stored push subscriptions (0 on any error)."""
+    try:
+        with _event_lock:
+            if _event_conn is None:
+                return 0
+            row = _event_conn.execute("SELECT COUNT(*) FROM subscriptions").fetchone()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
+def push_available():
+    """True when Web Push can actually be sent: the library is importable AND a VAPID
+    private key is configured. Used by the UI + guards on the send path."""
+    return bool(_PUSH_AVAILABLE and CONFIG.get("VAPID_PRIVATE_KEY"))
+
+
+def send_push(title, body, tag=None):
+    """Send a Web Push notification to every subscribed browser.
+
+    MUST NOT raise into its caller (it is fired from state-transition paths + a
+    monitor thread). No-ops when push is unavailable or there are no subscriptions.
+    A 404/410 from a push service means the subscription is dead -> prune it.
+    """
+    if not push_available():
+        return
+    subs = get_subscriptions()
+    if not subs:
+        return
+    payload = json.dumps({"title": title, "body": body, "tag": tag or "generatorpi"})
+    subject = CONFIG.get("VAPID_SUBJECT") or "mailto:admin@localhost"
+    try:
+        # One Vapid instance signs a fresh JWT (with the correct per-endpoint audience)
+        # on every webpush() call, so it's safe to build once and reuse across sends.
+        vapid = Vapid.from_raw(CONFIG["VAPID_PRIVATE_KEY"].encode("utf-8"))
+    except Exception as e:
+        log.warning(f"Invalid VAPID key, cannot send push: {e}")
+        return
+    for sub in subs:
+        try:
+            # pywebpush MUTATES vapid_claims (adds aud/exp), so pass a FRESH dict each call.
+            webpush(
+                subscription_info=sub,
+                data=payload,
+                vapid_private_key=vapid,
+                vapid_claims={"sub": subject},
+            )
+        except WebPushException as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (404, 410):
+                log.info(f"Pruning dead push subscription ({status})")
+                remove_subscription(sub["endpoint"])
+            else:
+                log.warning(f"Web push failed (status={status}): {e}")
+        except Exception as e:
+            log.warning(f"Web push error: {e}")
+
+
+def send_push_async(title, body, tag=None):
+    """Fire-and-forget send_push on a daemon thread so a slow/blocked push to N devices
+    never stalls a request handler or the relay control path."""
+    if not push_available():
+        return
+    threading.Thread(
+        target=send_push, args=(title, body, tag), daemon=True
+    ).start()
 
 
 # Bring the store up now that logging is live. This also records the startup event.
@@ -847,10 +1047,21 @@ fuel_state = {
 }
 
 # Low-fuel alert config. PERSISTED. threshold is a % (slider range 5..40).
+# fuel_enabled gates the ENTIRE fuel-projection feature (drawer + monitor + banner);
+# default on. alerts_on gates only the low-fuel alerting within it.
 alerts_state = {
     "alerts_on": True,
     "alert_threshold": 20,
+    "fuel_enabled": True,
 }
+
+# Edge-trigger flag for the low-fuel push: True once we've alerted for the current
+# below-threshold crossing, cleared when we climb back above threshold+hysteresis, on
+# refuel, or when stopped -- so a single crossing fires exactly one push, not a stream.
+# In-memory only: a server restart resets running->False, which re-arms it naturally.
+_low_fuel_alerted = False
+# Lets the background fuel monitor thread be stopped cleanly on shutdown.
+_monitor_stop = threading.Event()
 
 
 def load_persisted_state():
@@ -1016,6 +1227,8 @@ def start_generator():
         # Durable record that the start sequence completed (paired with the
         # "start" initiate event above).
         record_event("start_complete", f"Start sequence completed ({max_retries} attempt(s))")
+        # Notify subscribed devices (off-thread; no-op if push unavailable).
+        send_push_async("Generator started", "Start sequence completed. Verify the unit is running.", tag="state")
         return {
             "success": True,
             "message": (
@@ -1052,6 +1265,7 @@ def stop_generator():
 
         # Durable record of the stop command.
         record_event("stop", "Stop command sent")
+        send_push_async("Generator stopped", "Stop command sent.", tag="state")
         log.info("Stop button pressed")
         return {"success": True, "message": "Stop button pressed. Generator should be stopping."}
     finally:
@@ -1074,6 +1288,69 @@ def fuel_snapshot_locked():
     """Return a plain copy of the fuel model for the state snapshot. Caller holds
     state_lock."""
     return dict(fuel_state)
+
+
+def projected_fuel_level_locked():
+    """Current projected tank level (%), server-side, using the same linear model the
+    client renders (level = fill_level - drain_rate * run-hours-since-fill). Caller
+    holds state_lock. Shared by the low-fuel monitor so client + server agree."""
+    run = max(0.0, _live_total_run_hours_locked() - fuel_state["fill_run_hours"])
+    return max(0.0, min(100.0, fuel_state["fill_level"] - fuel_state["drain_rate"] * run))
+
+
+# Hysteresis (%) the level must climb back above the threshold before a new low-fuel
+# push can fire again -- prevents flapping around the threshold from re-alerting.
+FUEL_ALERT_REARM_MARGIN = 5
+
+
+def evaluate_low_fuel():
+    """Edge-triggered low-fuel check. Fires at most ONE push per below-threshold
+    crossing (re-arms after climbing back above threshold + margin, on refuel, or when
+    stopped). Safe to call repeatedly (the monitor thread + tests do). Returns the
+    action taken: 'push' | 'rearm' | 'skip' (for logging/tests). Never raises."""
+    global _low_fuel_alerted
+    do_push = False
+    msg_level = 0
+    with state_lock:
+        # Feature or alerting off -> do nothing (but don't touch the arm flag).
+        if not alerts_state.get("fuel_enabled", True) or not alerts_state.get("alerts_on", True):
+            return "skip"
+        # Not running -> nothing is draining; re-arm for the next real crossing.
+        if not generator_state["running"]:
+            _low_fuel_alerted = False
+            return "skip"
+        level = projected_fuel_level_locked()
+        thr = alerts_state.get("alert_threshold", 20)
+        if level <= thr and not _low_fuel_alerted:
+            _low_fuel_alerted = True
+            do_push = True
+            msg_level = int(round(level))
+        elif level > thr + FUEL_ALERT_REARM_MARGIN and _low_fuel_alerted:
+            _low_fuel_alerted = False
+            return "rearm"
+        else:
+            return "skip"
+    # Send OUTSIDE the lock (send_push_async only spawns a thread, but keep the pattern).
+    if do_push:
+        record_event("fuel", f"Low fuel alert: projected level ~{msg_level}%")
+        send_push_async(
+            "Low fuel", f"Projected level ~{msg_level}% - refuel soon.", tag="lowfuel"
+        )
+        return "push"
+    return "skip"
+
+
+def fuel_monitor_loop():
+    """Background daemon: periodically evaluate the fuel projection so a low-fuel push
+    fires even with NO browser open. Cadence from FUEL_MONITOR_SECONDS. Stops when
+    _monitor_stop is set (clean shutdown)."""
+    interval = max(5, int(CONFIG.get("FUEL_MONITOR_SECONDS", 60)))
+    log.info(f"Fuel monitor started (every {interval}s)")
+    while not _monitor_stop.wait(interval):
+        try:
+            evaluate_low_fuel()
+        except Exception as e:
+            log.warning(f"Fuel monitor iteration error: {e}")
 
 
 # Minimum run-hours since the last fill before a reading is trusted to fit a rate.
@@ -1134,23 +1411,29 @@ def reset_fuel_rate():
 def set_fuel_fill(level):
     """'Add gas': reset the baseline fill to `level` (%) at the current run-hour
     mark; the drain rate is retained. Persist + return the new fuel model."""
+    global _low_fuel_alerted
     level = max(0.0, min(100.0, float(level)))
     with state_lock:
         fuel_state["fill_level"] = level
         fuel_state["fill_run_hours"] = _live_total_run_hours_locked()
+        # Refuelling re-arms the low-fuel alert so the next real low crossing pushes.
+        _low_fuel_alerted = False
         snapshot = dict(fuel_state)
     kv_set("fuel_state", snapshot)
     return snapshot
 
 
-def set_alerts(enabled=None, threshold=None):
-    """Update the low-fuel alert config (either field optional) and persist. The
-    threshold is clamped to the design's 5..40 slider range. Returns the config."""
+def set_alerts(enabled=None, threshold=None, fuel_enabled=None):
+    """Update the fuel/alert config (all fields optional) and persist. threshold is
+    clamped to the design's 5..40 slider range. fuel_enabled gates the whole fuel
+    feature. Returns the config."""
     with state_lock:
         if enabled is not None:
             alerts_state["alerts_on"] = bool(enabled)
         if threshold is not None:
             alerts_state["alert_threshold"] = int(max(5, min(40, int(threshold))))
+        if fuel_enabled is not None:
+            alerts_state["fuel_enabled"] = bool(fuel_enabled)
         snapshot = dict(alerts_state)
     kv_set("alerts_state", snapshot)
     return snapshot
@@ -1306,6 +1589,10 @@ button{font-family:inherit}
   font:800 30px var(--mono);color:#141210}
 .wheel-int .reel{transition:transform .7s cubic-bezier(.33,0,.15,1)}
 .wheel-tenths .reel{transition:transform 1s linear}
+/* Tenths wheel is INVERTED like a real trip odometer: a dark cylinder drum with a
+   light digit, instead of the ivory drum + dark digit of the integer wheels. */
+.wheel-tenths{background:linear-gradient(180deg,#050506 0%,#26262b 24%,#3a3a42 50%,#26262b 76%,#050506 100%)}
+.wheel-tenths .cell{color:#fffef9}
 .odo-dot{font:800 34px var(--mono);color:#ff7a3a;align-self:flex-end;margin:0 -2px 2px}
 
 /* ---- system registers ---- */
@@ -1417,7 +1704,7 @@ input[type=range].thresh::-moz-range-thumb{width:20px;height:20px;border:0;borde
 .btn3d{--b:#0b0b0d;min-height:48px;padding:0 16px;border-radius:9px;border:1px solid #000;cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
   background:linear-gradient(180deg,#4c4c54 0%,#34343b 46%,#282830 100%);color:#e4e0d8;
-  font:700 12px sans-serif;letter-spacing:.1em;
+  font:700 12px sans-serif;letter-spacing:.1em;white-space:nowrap;
   box-shadow:0 4px 0 var(--b),0 0 0 2px rgba(0,0,0,.75),0 8px 15px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.24);
   transition:transform .09s,box-shadow .09s,filter .15s}
 .btn3d:hover{filter:brightness(1.16);transform:translateY(-1px);box-shadow:0 5px 0 var(--b),0 0 0 2px rgba(0,0,0,.75),0 10px 16px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.24)}
@@ -1442,7 +1729,10 @@ footer .frow{font:500 11.5px var(--mono);color:#6f6a62}
 footer a{color:#9b9689;text-decoration:underline}
 
 /* ---- start confirm dialog ---- */
-.confirm-overlay{position:absolute;inset:0;z-index:20;display:none;align-items:center;justify-content:center;padding:20px;
+/* position:fixed (not absolute) so the overlay + card center in the VIEWPORT, not
+   within the tall panel -- otherwise on a long page the modal lands mid-document
+   instead of mid-screen. */
+.confirm-overlay{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;padding:20px;
   background:rgba(6,6,7,.82);backdrop-filter:blur(2px)}
 .confirm-overlay.show{display:flex}
 .confirm-card{max-width:340px;width:100%;padding:22px;border-radius:12px;text-align:center;
@@ -1451,6 +1741,13 @@ footer a{color:#9b9689;text-decoration:underline}
 .confirm-card h2{font:800 18px sans-serif;letter-spacing:.08em;color:#ffcf8a;margin-bottom:10px}
 .confirm-card p{font:600 13px var(--mono);color:#e0b090;line-height:1.6;margin-bottom:18px}
 .confirm-btns{display:flex;gap:12px}.confirm-btns .btn3d{flex:1 1 0}
+/* In the confirm dialog, drop the raised "0 4px 0 var(--b)" ledge so CANCEL and START
+   sit LEVEL with each other -- otherwise the red button's lighter base color reads as
+   raised while the steel button's near-black base is invisible on the dark card. Both
+   keep a soft shadow + press feedback, just no mismatched ledge. */
+.confirm-btns .btn3d{box-shadow:0 3px 8px rgba(0,0,0,.55),0 0 0 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.2)}
+.confirm-btns .btn3d:hover{transform:translateY(-1px);box-shadow:0 5px 10px rgba(0,0,0,.55),0 0 0 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.2)}
+.confirm-btns .btn3d:active{transform:translateY(1px);box-shadow:0 1px 3px rgba(0,0,0,.6),0 0 0 2px rgba(0,0,0,.6),inset 0 2px 4px rgba(0,0,0,.4)}
 
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 </style>{% endraw %}
@@ -1521,8 +1818,15 @@ function applyState(s){
   if(s.fuel){$('rateInput').placeholder=s.fuel.drain_rate+' %/hr';}
   var a=s.alerts||{}; setToggle(a.alerts_on!==false);
   if(document.activeElement!==$('threshSlider')){$('threshSlider').value=a.alert_threshold||20;$('threshVal').textContent=(a.alert_threshold||20)+'%';}
+  // Fuel feature enable/disable: hide the whole Fuel drawer + reflect the toggle.
+  var fEnabled=s.fuel_enabled!==false;
+  $('fuelDrawer').style.display=fEnabled?'':'none';
+  setTog('fuelToggle',fEnabled);
+  // Web push server state (vapid key + whether the server can send).
+  pushApplyState(s.push||{});
   tick();
 }
+function setTog(id,on){$(id).setAttribute('aria-checked',on?'true':'false');}
 function tick(){if(!state)return;$('uptime').textContent=fmtClock(uptimeSecs());updateOdometer(liveTotalHours());renderFuel();}
 function renderFuel(){
   var f=fuel();if(!f)return;var lvl=projectedLevel();var thr=alertCfg().alert_threshold;var running=state.running;
@@ -1587,8 +1891,77 @@ function initDrawer(id,cls){var d=$(id);var face=d.querySelector('.drawer-face')
 /* ---------- event-log infinite scroll ---------- */
 $('log').addEventListener('scroll',function(){if(this.scrollTop+this.clientHeight>=this.scrollHeight-24){loadOlderEvents();}});
 
+/* ---------- fuel feature toggle ---------- */
+function toggleFuel(){var on=$('fuelToggle').getAttribute('aria-checked')==='true';post('/api/alerts',{fuel_enabled:!on}).then(refresh);}
+$('fuelToggle').addEventListener('click',toggleFuel);
+$('fuelToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleFuel();}});
+
+/* ---------- web push ---------- */
+/* Requires a service worker + PushManager + a SECURE CONTEXT. On a self-signed cert the
+   origin may not be secure until the client trusts it, so this degrades gracefully:
+   the toggle shows an "unavailable" helper and the in-page banner still covers alerts. */
+var swReg=null;
+var pushSupported=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window)&&(window.isSecureContext===true);
+var serverPush={supported:false,vapidKey:''};
+function setPushHelp(t){$('pushHelp').textContent=t;}
+function urlB64ToUint8(base64){
+  var pad='='.repeat((4-base64.length%4)%4);
+  var b64=(base64+pad).replace(/-/g,'+').replace(/_/g,'/');
+  var raw=atob(b64),out=new Uint8Array(raw.length);
+  for(var i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
+  return out;
+}
+function pushApplyState(p){serverPush.supported=!!p.supported;serverPush.vapidKey=p.vapid_public_key||'';refreshPushUI();}
+function refreshPushUI(){
+  var testBtn=$('testPushBtn');
+  if(!pushSupported){setTog('pushToggle',false);setPushHelp('Push unavailable on this browser/origin \\u2014 using in-page alerts.');testBtn.disabled=true;return;}
+  if(!serverPush.supported){setTog('pushToggle',false);setPushHelp('Push not configured on the server \\u2014 using in-page alerts.');testBtn.disabled=true;return;}
+  if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in browser settings. Allow them to enable push.');testBtn.disabled=true;return;}
+  if(swReg){
+    swReg.pushManager.getSubscription().then(function(sub){
+      var on=!!sub;setTog('pushToggle',on);
+      setPushHelp(on?'Push enabled on this device.':'Push available \\u2014 flip to enable on this device.');
+      testBtn.disabled=!on;
+    });
+  }else{setTog('pushToggle',false);setPushHelp('Push available \\u2014 flip to enable on this device.');testBtn.disabled=true;}
+}
+function registerSW(){
+  if(!pushSupported){refreshPushUI();return;}
+  navigator.serviceWorker.register('/sw.js').then(function(reg){
+    swReg=reg;
+    /* If this browser already has a subscription from a prior visit, make sure the
+       SERVER has it too -- the browser's local subscription and the server's stored
+       record can drift (server db reset, subscription pruned, different instance).
+       This idempotent upsert re-syncs it so the test button + pushes actually work. */
+    reg.pushManager.getSubscription().then(function(sub){if(sub){post('/api/push/subscribe',sub.toJSON());}});
+    refreshPushUI();
+  }).catch(function(){pushSupported=false;refreshPushUI();});
+}
+function enablePush(){
+  if(!pushSupported||!serverPush.supported||!serverPush.vapidKey||!swReg)return;
+  Notification.requestPermission().then(function(perm){
+    if(perm!=='granted'){refreshPushUI();return;}
+    swReg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8(serverPush.vapidKey)})
+      .then(function(sub){post('/api/push/subscribe',sub.toJSON()).then(function(){refreshPushUI();refresh();});})
+      .catch(function(){setPushHelp('Could not subscribe (is the cert trusted?). In-page alerts still work.');});
+  });
+}
+function disablePush(){
+  if(!swReg){refreshPushUI();return;}
+  swReg.pushManager.getSubscription().then(function(sub){
+    if(!sub){refreshPushUI();return;}
+    var ep=sub.endpoint;
+    sub.unsubscribe().then(function(){post('/api/push/unsubscribe',{endpoint:ep}).then(function(){refreshPushUI();refresh();});});
+  });
+}
+function togglePush(){var on=$('pushToggle').getAttribute('aria-checked')==='true';if(on)disablePush();else enablePush();}
+$('pushToggle').addEventListener('click',togglePush);
+$('pushToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();togglePush();}});
+$('testPushBtn').addEventListener('click',function(){post('/api/push/test').then(function(d){setPushHelp((d&&d.success)?'Test sent \\u2014 check your notifications.':((d&&d.message)||'Test failed.'));});});
+
 /* ---------- boot ---------- */
 buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');
+registerSW();
 refresh();
 setInterval(function(){if(!busy)refresh();},4000);
 setInterval(function(){tick();},1000);
@@ -1755,6 +2128,24 @@ HTML_TEMPLATE_BODY = """
         </button>
         <div class="drawer-clip" id="advClip">
           <div class="drawer-cavity">
+            <div class="section-label" style="margin:0">SYSTEM</div>
+            <div class="alert-cfg">
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>PUSH NOTIFICATIONS</span>
+                <div class="iotoggle" id="pushToggle" role="switch" aria-checked="false" tabindex="0" aria-label="Push notifications on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper" id="pushHelp">Checking push support…</div>
+              <button type="button" class="btn3d cyan" id="testPushBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>SEND TEST NOTIFICATION</button>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>FUEL PROJECTION</span>
+                <div class="iotoggle" id="fuelToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Fuel projection feature on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper">Turn the fuel-projection panel and low-fuel alerts on or off for everyone.</div>
+            </div>
             <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
             <div class="adv-btns">
               <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
@@ -1783,12 +2174,12 @@ HTML_TEMPLATE_BODY = """
   <!-- Start confirmation dialog -->
   <div class="confirm-overlay" id="confirmOverlay" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
     <div class="confirm-card">
-      <div class="confirm-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="34" height="34"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+      <div class="confirm-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="34" height="34"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9.5" x2="12" y2="13.5"/><circle cx="12" cy="16.9" r="0.9" fill="currentColor" stroke="none"/></svg></div>
       <h2 id="confirmTitle">START GENERATOR?</h2>
       <p>This <strong>cranks the real engine</strong>. Confirm the area around the unit is clear and it is safe to start.</p>
       <div class="confirm-btns">
         <button type="button" class="btn3d steel" id="confirmCancel">CANCEL</button>
-        <button type="button" class="btn3d red" id="confirmStart">CONFIRM START</button>
+        <button type="button" class="btn3d red" id="confirmStart">START</button>
       </div>
     </div>
   </div>
@@ -1818,6 +2209,7 @@ def set_security_headers(response):
         "default-src 'none'; "
         "style-src 'self' 'unsafe-inline'; "
         "script-src 'self' 'unsafe-inline'; "
+        "worker-src 'self'; "
         "connect-src 'self'; "
         "img-src 'self' data:; "
         "base-uri 'none'; "
@@ -1895,6 +2287,13 @@ def api_set_running():
 
     # Durable record of the manual state override.
     record_event("set_running", f"State manually set to {'RUNNING' if running else 'STOPPED'}")
+    # Notify subscribed devices of the manual state change (distinct copy from a real
+    # start/stop so it's clear no engine action occurred).
+    send_push_async(
+        "Marked as running" if running else "Marked as stopped",
+        "Tracked state was set manually (no relay action).",
+        tag="state",
+    )
     log.info(f"State manually set to {'RUNNING' if running else 'STOPPED'} by {caller_identity()}")
     return jsonify({"success": True, "running": running})
 
@@ -1953,8 +2352,16 @@ def api_state():
             "total_run_hours": generator_state["total_run_hours"],
             "fuel": fuel_snapshot_locked(),
             "alerts": dict(alerts_state),
+            "fuel_enabled": alerts_state.get("fuel_enabled", True),
         }
     snap["server_now"] = time.time()
+    # Web Push info for the client: whether the server can send (library + VAPID key),
+    # the public key the browser needs to subscribe, and how many devices are subscribed.
+    snap["push"] = {
+        "supported": push_available(),
+        "vapid_public_key": CONFIG.get("VAPID_PUBLIC_KEY", ""),
+        "subscriptions": subscription_count(),
+    }
     return jsonify(snap)
 
 
@@ -2018,14 +2425,18 @@ def api_alerts():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         data = {}
-    # enabled: accept a real bool or the common string/int forms; None if absent.
-    enabled = None
-    if "enabled" in data:
-        raw = data["enabled"]
+
+    def _bool_field(name):
+        # Accept a real bool or the common string/int forms; None if absent.
+        if name not in data:
+            return None
+        raw = data[name]
         if isinstance(raw, str):
-            enabled = raw.strip().lower() in ("true", "1", "yes", "on")
-        else:
-            enabled = bool(raw)
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
+    enabled = _bool_field("enabled")
+    fuel_enabled = _bool_field("fuel_enabled")
     # threshold: optional numeric; reject a present-but-garbage value.
     threshold = None
     if "threshold" in data:
@@ -2033,12 +2444,92 @@ def api_alerts():
         if terr:
             return jsonify({"success": False, "message": terr}), 400
         threshold = tval
-    snap = set_alerts(enabled=enabled, threshold=threshold)
+    snap = set_alerts(enabled=enabled, threshold=threshold, fuel_enabled=fuel_enabled)
     log.info(
         f"Alerts set on={snap['alerts_on']} threshold={snap['alert_threshold']}% "
-        f"by {caller_identity()}"
+        f"fuel_enabled={snap['fuel_enabled']} by {caller_identity()}"
     )
     return jsonify({"success": True, "alerts": snap})
+
+
+# The service worker: a plain same-origin script (served as its own resource, NOT via
+# the Jinja template) that shows a notification on 'push' and focuses/opens the app on
+# click. It holds no secrets, so it is intentionally NOT behind @auth_required -- the
+# browser's SW runtime fetches it directly. Scope '/' comes from serving it at /sw.js.
+SERVICE_WORKER_JS = """
+self.addEventListener('push', function(event){
+  var data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) {}
+  var title = data.title || 'Generator';
+  var opts = { body: data.body || '', tag: data.tag || 'generatorpi', renotify: true };
+  event.waitUntil(self.registration.showNotification(title, opts));
+});
+self.addEventListener('notificationclick', function(event){
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(list){
+      for (var i = 0; i < list.length; i++){ if ('focus' in list[i]) return list[i].focus(); }
+      if (clients.openWindow) return clients.openWindow('/');
+    })
+  );
+});
+"""
+
+
+@app.route('/sw.js')
+def service_worker():
+    """Serve the push service worker (no auth; no secrets)."""
+    return Response(
+        SERVICE_WORKER_JS,
+        mimetype="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.route('/api/push/subscribe', methods=['POST'])
+@auth_required
+def api_push_subscribe():
+    """Store a browser's Web Push subscription (endpoint + p256dh + auth keys)."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "message": "invalid subscription"}), 400
+    endpoint = data.get("endpoint")
+    keys = data.get("keys") or {}
+    p256dh = keys.get("p256dh")
+    auth = keys.get("auth")
+    if not endpoint or not p256dh or not auth:
+        return jsonify({"success": False, "message": "missing endpoint or keys"}), 400
+    add_subscription(endpoint, p256dh, auth)
+    log.info(f"Push subscription added by {caller_identity()}")
+    return jsonify({"success": True, "subscriptions": subscription_count()})
+
+
+@app.route('/api/push/unsubscribe', methods=['POST'])
+@auth_required
+def api_push_unsubscribe():
+    """Remove a push subscription by its endpoint."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    endpoint = data.get("endpoint")
+    if not endpoint:
+        return jsonify({"success": False, "message": "missing endpoint"}), 400
+    remove_subscription(endpoint)
+    return jsonify({"success": True, "subscriptions": subscription_count()})
+
+
+@app.route('/api/push/test', methods=['POST'])
+@auth_required
+def api_push_test():
+    """Send a test push to all subscribed devices (the Advanced-drawer button)."""
+    if not push_available():
+        return jsonify({"success": False, "message": "push not available on server"}), 503
+    if subscription_count() == 0:
+        return jsonify({"success": False, "message": "no subscriptions"}), 409
+    send_push_async("Test notification", "Push notifications are working.", tag="test")
+    record_event("push", "Test notification sent")
+    log.info(f"Test push sent by {caller_identity()}")
+    return jsonify({"success": True})
 
 # ============================================================================
 # MAIN
@@ -2070,7 +2561,12 @@ def main():
         protocol = "http"
 
     log.info(f"Web server: {protocol}://{CONFIG['HOST']}:{CONFIG['PORT']}")
+    log.info(f"Web Push: {'available' if push_available() else 'unavailable'}")
     log.info("=" * 60)
+
+    # Background fuel monitor: fires a low-fuel push even with no browser open. Daemon
+    # so it dies with the process; _monitor_stop lets a clean shutdown end it promptly.
+    threading.Thread(target=fuel_monitor_loop, daemon=True).start()
 
     try:
         app.run(
@@ -2082,6 +2578,7 @@ def main():
     except KeyboardInterrupt:
         log.info("Shutting down...")
     finally:
+        _monitor_stop.set()
         relay_start_stop.close()
         log.info("Shutdown complete")
 

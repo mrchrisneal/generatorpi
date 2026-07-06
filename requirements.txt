@@ -1,2 +1,7 @@
 flask
 gpiozero
+# Web Push notifications (optional at runtime -- the app degrades gracefully if it's
+# missing, but push is unavailable without it). Pulls in py-vapid + http-ece +
+# cryptography. On Raspberry Pi OS install cryptography via apt (python3-cryptography)
+# to avoid a source build; see the README "Web Push notifications" section.
+pywebpush

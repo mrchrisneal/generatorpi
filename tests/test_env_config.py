@@ -83,11 +83,19 @@ class TestParseEnvFileApiKey:
         assert _mode(env_paths) == 0o600
 
     def test_does_not_regenerate_when_key_present(self, module, env_paths):
-        env_paths.write_text("API_KEY=already-set-key\n")
+        # With BOTH the API key and a VAPID keypair already present, parse rewrites
+        # nothing -- neither secret is regenerated (VAPID auto-gen only fires when the
+        # private key is empty, so pre-setting it keeps the file byte-identical).
+        content = (
+            "API_KEY=already-set-key\n"
+            "VAPID_PUBLIC_KEY=preset-pub\n"
+            "VAPID_PRIVATE_KEY=preset-priv\n"
+        )
+        env_paths.write_text(content)
         module.parse_env_file()
         assert module.CONFIG["API_KEY"] == "already-set-key"
-        # File unchanged (no rewrite needed) -> still exactly the preset key.
-        assert env_paths.read_text() == "API_KEY=already-set-key\n"
+        # File unchanged (no rewrite needed) -> still exactly the preset secrets.
+        assert env_paths.read_text() == content
 
     def test_does_not_generate_when_disabled(self, module, env_paths):
         env_paths.write_text("API_KEY_ENABLED=0\nAPI_KEY=\n")

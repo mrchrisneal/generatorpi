@@ -52,6 +52,13 @@ gc.fuel_state["drain_rate"] = gc.FUEL_DEFAULT_RATE
 gc.fuel_state["default_rate"] = gc.FUEL_DEFAULT_RATE
 gc.alerts_state["alerts_on"] = True
 gc.alerts_state["alert_threshold"] = 20
+gc.alerts_state["fuel_enabled"] = True
+# Web Push globals: default the suite to "push not configured" (no VAPID key) so
+# push_available() is False unless a test opts in; keep it hermetic vs a real env file
+# that may already carry generated VAPID keys. Also reset the low-fuel edge flag.
+gc.CONFIG["VAPID_PRIVATE_KEY"] = ""
+gc.CONFIG["VAPID_PUBLIC_KEY"] = ""
+gc._low_fuel_alerted = False
 
 
 # A pristine copy of CONFIG exactly as defined at import time. Used to fully restore
@@ -93,6 +100,7 @@ def reset_globals():
     gc.fuel_state.update(copy.deepcopy(_PRISTINE_FUEL))
     gc.alerts_state.clear()
     gc.alerts_state.update(copy.deepcopy(_PRISTINE_ALERTS))
+    gc._low_fuel_alerted = False
 
     gc.AUTH_USERS.clear()
 
@@ -118,6 +126,7 @@ def reset_globals():
     gc.fuel_state.update(copy.deepcopy(_PRISTINE_FUEL))
     gc.alerts_state.clear()
     gc.alerts_state.update(copy.deepcopy(_PRISTINE_ALERTS))
+    gc._low_fuel_alerted = False
     gc.AUTH_USERS.clear()
     with gc._fail_tracker_lock:
         gc._fail_tracker.clear()

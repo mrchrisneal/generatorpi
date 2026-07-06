@@ -25,8 +25,13 @@ The generator cannot report its own state back, so status tracking is manual. Af
 SSH into the Pi and install prerequisites:
 
 ```bash
-sudo apt update && sudo apt install -y git openssl python3 python3-flask python3-gpiozero python3-lgpio
+sudo apt update && sudo apt install -y git openssl python3 python3-flask python3-gpiozero python3-lgpio python3-cryptography
 ```
+
+`python3-cryptography` is only needed for **Web Push notifications** (optional). The
+installer also best-effort-installs the `pywebpush` library; if you don't want push you
+can skip both — the controller runs fine without them. See
+[Web Push notifications](#web-push-notifications).
 
 Then clone and install:
 
@@ -90,6 +95,9 @@ All settings have sensible defaults. Uncomment and change as needed:
 | `LOG_MAX_BYTES` | `10485760` | Max log file size before rotation (10 MB) |
 | `LOG_BACKUP_COUNT` | `3` | Number of rotated log files to keep |
 | `LOG_LEVEL` | `INFO` | Logging verbosity (DEBUG, INFO, WARNING, ERROR) |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | *(auto)* | Web Push keypair; **auto-generated** on first startup when push is available (see [Web Push](#web-push-notifications)). Private key is secret. |
+| `VAPID_SUBJECT` | `mailto:admin@localhost` | VAPID `sub` claim sent to push services |
+| `FUEL_MONITOR_SECONDS` | `60` | How often the background monitor re-checks the fuel projection for a low-fuel push |
 
 ## API
 
@@ -111,7 +119,11 @@ and feeds the same IP lockout as a bad password.
 | `POST` | `/api/fuel/rate` | Set the drain rate directly (`{"rate": %/hr}`) |
 | `POST` | `/api/fuel/rate/reset` | Restore the drain rate to its default |
 | `POST` | `/api/fuel/fill` | "Add gas": reset the baseline fill level (`{"level": %}`) |
-| `POST` | `/api/alerts` | Update low-fuel alert config (`{"enabled": bool, "threshold": 5–40}`) |
+| `POST` | `/api/alerts` | Update fuel/alert config (`{"enabled": bool, "threshold": 5–40, "fuel_enabled": bool}`) |
+| `GET`  | `/sw.js` | Push service worker (no auth; no secrets) |
+| `POST` | `/api/push/subscribe` | Register a browser's Web Push subscription |
+| `POST` | `/api/push/unsubscribe` | Remove a push subscription (`{"endpoint": …}`) |
+| `POST` | `/api/push/test` | Send a test push to all subscribed devices |
 
 Basic Auth example (browser login credentials):
 
@@ -175,7 +187,7 @@ Each event has:
   old rows are evicted. Use it as a stable cursor for paging.
 - `ts` — a **unix timestamp** (float seconds) of when the event was recorded.
 - `type` — one of `startup`, `start`, `start_complete`, `start_rejected`, `stop`,
-  `set_running`, `fuel`.
+  `set_running`, `fuel`, `push`.
 - `message` — a short human-readable description.
 
 **`GET /api/events`** returns events **newest-first**. Query parameters:
@@ -225,7 +237,9 @@ curl -k -H "X-API-Key: <key>" "https://generatorpi:9400/api/events?before=42"
   "current_run_started_at": null,
   "total_run_hours": 12.4,
   "fuel": {"fill_level": 100.0, "fill_run_hours": 8.0, "drain_rate": 6.4, "default_rate": 6.4},
-  "alerts": {"alerts_on": true, "alert_threshold": 20},
+  "alerts": {"alerts_on": true, "alert_threshold": 20, "fuel_enabled": true},
+  "fuel_enabled": true,
+  "push": {"supported": true, "vapid_public_key": "BJ…", "subscriptions": 2},
   "server_now": 1751745840.5
 }
 ```
@@ -276,9 +290,100 @@ for **Fuel Projection** and **Advanced** manual state overrides (which correct t
 *tracked* state only and never touch the relay). It is keyboard-accessible and works on
 phone, tablet, and desktop.
 
+### Web Push notifications
+
+The controller can send **Web Push notifications** to your phone/desktop so you're
+alerted about the generator **even when no browser tab is open**. Notifications fire on:
+
+- **Start** and **Stop** (relay commands *and* the manual "mark running/stopped").
+- **Low fuel** — when the fuel projection crosses the alert threshold (edge-triggered:
+  one push per crossing; it re-arms after you refuel or the level recovers). A background
+  monitor evaluates this on the server, so the low-fuel push works with **no tab open**.
+- A manual **test notification** (a button in the Advanced drawer).
+
+Push is **entirely optional** — if it's unavailable the in-page low-fuel **banner** still
+works whenever a tab is open, and the app degrades gracefully.
+
+#### Requirements (read this — push has real prerequisites)
+
+1. **The `pywebpush` library** on the Pi. The installer best-effort-installs it; to do it
+   manually:
+   ```bash
+   sudo apt install -y python3-cryptography
+   sudo pip3 install --break-system-packages pywebpush
+   sudo systemctl restart generator_control
+   ```
+   Without it, push is simply unavailable server-side (the app still runs). The startup
+   log prints `Web Push: available` or `unavailable`.
+
+2. **A TRUSTED secure context in the browser — this is the common gotcha.** Browsers only
+   register the service worker that receives pushes on a *secure context*:
+   - **`https://` with a certificate the browser trusts**, **or**
+   - **`http://localhost` / `http://127.0.0.1`** (treated as secure) — only useful when
+     browsing *on the Pi itself*.
+
+   This controller ships a **self-signed** certificate. On the phone/laptop you actually
+   use, that cert is **not trusted by default**, so the service worker may **refuse to
+   register** and push can't be enabled. To use push you must either:
+   - **Trust the self-signed cert on each device** (import/accept it so the origin is no
+     longer flagged "not secure"). Behavior varies by browser — after accepting the cert,
+     Chrome/Firefox will generally register the worker; some versions still block it. Or
+   - **Use a proper certificate** for the Pi's hostname (e.g. a cert from your own LAN CA,
+     or a real domain + Let's Encrypt if the Pi is reachable). This is the reliable path.
+
+   If the origin isn't a trusted secure context, the **PUSH NOTIFICATIONS** toggle shows
+   *"Push unavailable … using in-page alerts"* and you simply rely on the banner. Nothing
+   breaks.
+
+3. **Outbound HTTPS from the Pi.** The Pi sends each push through the browser vendor's push
+   service (Google FCM / Mozilla / Apple). The Pi needs outbound internet; a firewall that
+   blocks it will prevent delivery.
+
+4. **Notification permission** granted in the browser (you'll be prompted when enabling).
+
+5. **Browser support.** Chrome, Edge, and Firefox (desktop + Android) support Web Push.
+   **iOS/iPadOS** support it only in **Safari 16.4+ and only when the site is added to the
+   Home Screen as a web app** (Share → *Add to Home Screen*, then open it from the icon);
+   a normal Safari tab cannot subscribe.
+
+#### Enabling push (per device)
+
+Open the **Advanced** drawer → flip **PUSH NOTIFICATIONS** on → allow the permission
+prompt. Each browser/device subscribes itself (the toggle reflects *this* device). Use
+**SEND TEST NOTIFICATION** to confirm delivery. Flip it off to unsubscribe that device.
+The helper text under the toggle tells you the current state: *enabled*, *available —
+flip to enable*, *blocked* (permission denied), or *unavailable* (no secure context /
+library).
+
+#### Fuel-projection toggle
+
+The Advanced drawer also has a **FUEL PROJECTION** switch (default **on**). Turning it off
+hides the entire Fuel Projection panel and suppresses the low-fuel monitor, banner, and
+pushes — useful if you don't want fuel tracking. It's a shared setting (affects everyone).
+
+#### VAPID keys (push identity)
+
+On first startup — when push is available — a **VAPID keypair** is generated and written
+into `generator_control.env` (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`).
+The **private key is secret** and, like the API key, the settings file is forced to `0600`
+and never served. **To rotate:** clear both key values (or delete both lines) and restart;
+a fresh pair is generated. Rotation invalidates existing browser subscriptions — clients
+re-subscribe automatically on their next visit.
+
+#### Troubleshooting
+
+| Symptom | Cause / fix |
+|---------|-------------|
+| Toggle says *"Push not configured on the server"* | `pywebpush` isn't installed, or no VAPID key. Install it (above) and restart. |
+| Toggle says *"Push unavailable … using in-page alerts"* | Not a trusted secure context. Trust the cert or use a real one (see requirement #2). |
+| Toggle says *"Notifications are blocked"* | You denied the browser permission. Re-allow it in the browser's site settings. |
+| Enabled, but no test notification arrives | Check the Pi has outbound internet; check the browser allows notifications; on iOS, add the site to the Home Screen first. |
+| Pushes stop after a while | Subscriptions can expire; the server prunes dead ones automatically. Just re-enable the toggle to re-subscribe. |
+
 ### Security
 
-- The settings file (`generator_control.env`) holds secret material, so it is forced
+- The settings file (`generator_control.env`) holds secret material (the API key, the
+  VAPID push private key, and password hashes), so it is forced
   to **`0600` (owner read/write only)** and is **never served over HTTP** — Flask's
   static file serving is disabled, so no file on disk is reachable through the web
   server.
