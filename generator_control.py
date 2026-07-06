@@ -1685,7 +1685,8 @@ button{font-family:inherit}
 .odo-dot{font:800 34px var(--mono);color:#ff7a3a;align-self:flex-end;margin:0 -2px 2px}
 
 /* ---- system registers ---- */
-.registers{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+/* Always a 2x2 grid (4 registers) at every width -- not auto-fit, which flowed 3+1. */
+.registers{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .reg{position:relative;overflow:hidden;padding:12px 14px;border-radius:8px;
   background:radial-gradient(120% 130% at 50% -10%,#0d1210,#050806 75%);box-shadow:inset 0 2px 8px rgba(0,0,0,.75)}
 .reg::after{content:"";position:absolute;inset:0;pointer-events:none;
