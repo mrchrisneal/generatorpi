@@ -2276,6 +2276,9 @@ input[type=range].thresh::-moz-range-thumb{width:20px;height:20px;border:0;borde
 .btn3d:focus-visible{outline:3px solid #ffca7a;outline-offset:3px}
 .btn3d.amber{color:#ffd89a}.btn3d.steel{color:#c7c3bc}.btn3d.cyan{color:#9fdcec}.btn3d.green{color:#b6e89a}
 .btn3d.red{background:linear-gradient(180deg,#ff8a54,#d23a10);--b:#7a1e06;color:#fff}
+/* True RED for destructive Settings actions (restart / factory reset) -- distinct from
+   the warning orange-red of the START button. */
+.btn3d.danger{background:linear-gradient(180deg,#ff5a4a,#b81c0c);--b:#5e0f04;color:#fff}
 /* Async button in flight: hide the label (width preserved) + show a spinner in its place. */
 .btn3d.loading{color:transparent!important;pointer-events:none;position:relative}
 .btn3d.loading>*{visibility:hidden}
@@ -2754,19 +2757,40 @@ function setBackgroundInert(on){
   if(body){if(on){body.setAttribute('inert','');}else{body.removeAttribute('inert');}}
   if(foot){if(on){foot.setAttribute('inert','');}else{foot.removeAttribute('inert');}}
 }
-function openConfirm(){
+/* GENERIC confirmation dialog. The START flow (power switch) and the destructive
+   Settings actions (restart / factory reset) all drive this one modal. opts:
+   {title, body, confirmLabel, confirmClass('red'=warning start | 'danger'=destructive),
+    onConfirm:()=>Promise|void, onCancel:()=>void}. onConfirm's promise keeps the modal
+   open with a spinner until it settles; onCancel runs on cancel/Escape/backdrop. */
+var _cfConfirm=null,_cfCancel=null;
+function showConfirm(o){
   confirmOpen=true;
-  confirmPrevFocus=document.activeElement;           /* remember where focus was */
-  confirmOverlayEl.className='confirm-overlay show';  /* keep existing show class */
+  $('confirmTitle').textContent=o.title||'CONFIRM';
+  $('confirmBody').textContent=o.body||'';
+  var cb=$('confirmStart');
+  cb.textContent=o.confirmLabel||'CONFIRM';
+  cb.className='btn3d '+(o.confirmClass||'red');      /* red=start warning, danger=destructive */
+  cb.classList.remove('loading');
+  $('confirmCancel').disabled=false;
+  _cfConfirm=o.onConfirm||null;_cfCancel=o.onCancel||null;
+  confirmPrevFocus=document.activeElement;            /* remember where focus was */
+  confirmOverlayEl.className='confirm-overlay show';
   setBackgroundInert(true);                           /* trap: bg non-interactive */
-  $('confirmStart').focus();                          /* move focus into the dialog */
+  cb.focus();                                         /* move focus into the dialog */
 }
-sw.addEventListener('change',function(){if(sw.checked){openConfirm();}else{doStop();}});
-function closeConfirm(revert){
+/* Power switch -> START confirm (warning orange button; cancel reverts the switch). */
+sw.addEventListener('change',function(){
+  if(sw.checked){showConfirm({title:'START GENERATOR?',
+    body:'This cranks the real engine. Confirm the area around the unit is clear and it is safe to start.',
+    confirmLabel:'START',confirmClass:'red',onConfirm:doStart,onCancel:function(){sw.checked=false;}});}
+  else{doStop();}
+});
+function closeConfirm(runCancel){
   confirmOpen=false;
   confirmOverlayEl.className='confirm-overlay';
   setBackgroundInert(false);                          /* restore bg BEFORE focusing */
-  if(revert){sw.checked=false;}
+  var onCancel=_cfCancel;_cfConfirm=null;_cfCancel=null;
+  if(runCancel&&onCancel){onCancel();}               /* e.g. revert the power switch */
   /* Restore focus to the pre-open element, falling back to the power switch. */
   var restore=confirmPrevFocus||$('powerSwitch');
   confirmPrevFocus=null;
@@ -2776,14 +2800,25 @@ $('confirmCancel').addEventListener('click',function(){closeConfirm(true);});
 $('confirmStart').addEventListener('click',function(){
   var cb=$('confirmStart');
   if(cb.classList.contains('loading'))return;                      // anti-double-click
-  cb.classList.add('loading');$('confirmCancel').disabled=true;    // spinner on START; hold the modal open
-  doStart().then(function(){cb.classList.remove('loading');$('confirmCancel').disabled=false;closeConfirm(false);});
+  var act=_cfConfirm;
+  cb.classList.add('loading');$('confirmCancel').disabled=true;    // spinner; hold the modal open
+  Promise.resolve(act?act():null).catch(function(){}).then(function(){
+    cb.classList.remove('loading');$('confirmCancel').disabled=false;closeConfirm(false);});
 });
-/* Escape cancels the dialog (reverting the switch) while it is open. */
+/* Escape cancels the dialog (running the cancel callback) while it is open. */
 document.addEventListener('keydown',function(e){if(confirmOpen&&(e.key==='Escape'||e.key==='Esc')){e.preventDefault();closeConfirm(true);}});
 /* Backdrop click cancels — only when the click lands on the overlay itself,
    not on anything inside the confirm card. */
 confirmOverlayEl.addEventListener('click',function(e){if(e.target===confirmOverlayEl){closeConfirm(true);}});
+/* RESET section server actions -> reuse the generic confirm (true-red destructive button). */
+$('restartBtn').addEventListener('click',function(){showConfirm({title:'RESTART APP?',
+  body:'Restarts the GeneratorPi service on the server. The page will reconnect in a few seconds. The generator and relay are not affected.',
+  confirmLabel:'RESTART',confirmClass:'danger',
+  onConfirm:function(){return post('/api/restart').catch(function(){});}});});   // server re-execs; poller auto-reconnects
+$('factoryBtn').addEventListener('click',function(){showConfirm({title:'FACTORY RESET?',
+  body:'Wipes the event log, application logs, lifetime run-hours, and fuel/alert settings back to defaults. Your login and server config are NOT touched. This cannot be undone.',
+  confirmLabel:'FACTORY RESET',confirmClass:'danger',
+  onConfirm:function(){return post('/api/factory-reset').then(function(){_logOffset=null;refresh();}).catch(function(){});}});});
 /* Disable the switch for the whole in-flight start/stop so a mid-settle flip
    can't kick off a second concurrent settle() loop. Re-enabled wherever busy is
    cleared (settle completion + every failure/reject path). */
@@ -2838,18 +2873,32 @@ $('threshSlider').addEventListener('change',function(){post('/api/alerts',{thres
 function initDrawer(id,cls,onToggle){
   var d=$(id),face=d.querySelector('.drawer-face'),clip=d.querySelector('.drawer-clip');
   var LSK='gp.drawer.'+id;
+  // Slide open/closed by animating max-height. We animate to the content's ACTUAL
+  // scrollHeight (never a fixed cap -- a fixed cap clips a tall drawer like Settings),
+  // then drop the cap to 'none' once open so later content growth can't clip either.
   function setOpen(open,save){
     d.className='drawer '+cls+(open?' open':'');
     face.setAttribute('aria-expanded',open?'true':'false');
-    clip.style.maxHeight=open?'1600px':'0';
+    if(open){
+      clip.style.maxHeight=clip.scrollHeight+'px';   // animate 0 -> content height
+    }else{
+      // Collapsing: pin the current height first (in case it's 'none'), reflow, then 0
+      // so the transition has two concrete endpoints to animate between.
+      clip.style.maxHeight=clip.scrollHeight+'px';void clip.offsetHeight;clip.style.maxHeight='0';
+    }
     if(save){try{localStorage.setItem(LSK,open?'1':'0');}catch(e){}}
     if(onToggle)onToggle(open);
   }
+  // After an EXPAND transition settles, remove the cap so a later height change (e.g. the
+  // push-help line wrapping) is never clipped. Only when still open.
+  clip.addEventListener('transitionend',function(e){
+    if(e.propertyName==='max-height'&&d.className.indexOf('open')>=0){clip.style.maxHeight='none';}
+  });
   face.addEventListener('click',function(){setOpen(d.className.indexOf('open')<0,true);});
   // Restore persisted open state on load. Suppress the slide transition for the restore so
   // the drawer doesn't animate open on every page load -- it should just already be open.
   var saved=null;try{saved=localStorage.getItem(LSK);}catch(e){}
-  if(saved==='1'){var prev=clip.style.transition;clip.style.transition='none';setOpen(true,false);void clip.offsetHeight;clip.style.transition=prev;}
+  if(saved==='1'){var prev=clip.style.transition;clip.style.transition='none';setOpen(true,false);clip.style.maxHeight='none';void clip.offsetHeight;clip.style.transition=prev;}
 }
 
 /* ---------- event-log infinite scroll ---------- */
@@ -3398,6 +3447,14 @@ HTML_TEMPLATE_BODY = """
         </button>
         <div class="drawer-clip" id="advClip">
           <div class="drawer-cavity">
+            <div class="section-label" style="margin:0">MANUAL OVERRIDE</div>
+            <div class="alert-cfg">
+              <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
+              <div class="adv-btns">
+                <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
+                <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
+              </div>
+            </div>
             <div class="section-label" style="margin:0">SYSTEM</div>
             <div class="alert-cfg">
               <div class="alert-cfg-row">
@@ -3429,14 +3486,6 @@ HTML_TEMPLATE_BODY = """
               </div>
               <div class="helper">Turn the fuel-projection panel and low-fuel alerts on or off for everyone.</div>
             </div>
-            <div class="section-label" style="margin:0">MANUAL OVERRIDE</div>
-            <div class="alert-cfg">
-              <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
-              <div class="adv-btns">
-                <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
-                <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
-              </div>
-            </div>
             <!-- LOG VIEWER: controls for the EVENT LOG panel in the right column. The
                  EVENTS<->APP LOG source switch lives here (moved out of the panel header,
                  which was too crowded), plus the routine-HTTP display filter. Both are
@@ -3460,12 +3509,22 @@ HTML_TEMPLATE_BODY = """
               </div>
               <div class="helper">Show routine successful (2xx/3xx) request lines in the APP LOG. Errors (4xx/5xx) are always shown.</div>
             </div>
-            <!-- RESET: escape hatch to clear THIS browser's saved preferences if the UI
-                 ever gets into a bad state. Local-only; never touches the generator/server. -->
+            <!-- RESET: local + server escape hatches. RESET PREFS is browser-local and
+                 harmless; RESTART/FACTORY RESET hit the server (red, confirmation-gated);
+                 UPDATE is greyed until a newer version is published. -->
             <div class="section-label" style="margin:0">RESET</div>
             <div class="alert-cfg">
               <div class="helper">Clears every saved preference on <strong>this browser</strong> — open/closed panels, chart layout, log source &amp; filters. Does <strong>not</strong> affect the generator, the server, or other devices.</div>
               <button type="button" class="btn3d steel" id="resetPrefsBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESET PREFS</button>
+              <div class="drawer-divider"></div>
+              <div class="helper">Restarts the GeneratorPi service on the server. The page reconnects after a few seconds; the generator and relay are unaffected.</div>
+              <button type="button" class="btn3d danger" id="restartBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESTART APP</button>
+              <div class="drawer-divider"></div>
+              <div class="helper">Install the latest GeneratorPi release. Enabled only when a newer version is available.</div>
+              <button type="button" class="btn3d steel" id="updateBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><polyline points="21 3 21 9 15 9"/></svg></span><span id="updateBtnLabel">UP TO DATE</span></button>
+              <div class="drawer-divider"></div>
+              <div class="helper">Wipes the app's memory — event log, application logs, lifetime run-hours, and fuel/alert settings — back to factory defaults. Your login &amp; server config are <strong>not</strong> touched. This <strong>cannot be undone</strong>.</div>
+              <button type="button" class="btn3d danger" id="factoryBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>FACTORY RESET</button>
             </div>
           </div>
         </div>
@@ -3678,7 +3737,10 @@ HTML_TEMPLATE_BODY = """
     <div class="confirm-card">
       <div class="confirm-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="34" height="34"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9.5" x2="12" y2="13.5"/><circle cx="12" cy="16.9" r="0.9" fill="currentColor" stroke="none"/></svg></div>
       <h2 id="confirmTitle">START GENERATOR?</h2>
-      <p>This <strong>cranks the real engine</strong>. Confirm the area around the unit is clear and it is safe to start.</p>
+      <!-- Body + button label are set per-action by showConfirm(); the START defaults are
+           applied when the power switch opens the dialog. This one modal is reused for the
+           destructive Settings actions (restart / factory reset) too. -->
+      <p id="confirmBody">This cranks the real engine. Confirm the area around the unit is clear and it is safe to start.</p>
       <div class="confirm-btns">
         <button type="button" class="btn3d steel" id="confirmCancel">CANCEL</button>
         <button type="button" class="btn3d red" id="confirmStart">START</button>
