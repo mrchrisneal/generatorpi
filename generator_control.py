@@ -1947,6 +1947,26 @@ button{font-family:inherit}
   box-shadow:inset 0 1px 0 rgba(255,255,255,.06),inset 0 -2px 4px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.6)}
 .placard h1{font:700 19px sans-serif;letter-spacing:.16em;color:#e8e4dc;text-shadow:0 1px 0 #000}
 
+/* ---- compact sticky header (slides in past the placard) ---- brushed-metal to match .panel */
+.stickyhdr{position:fixed;top:0;left:0;right:0;z-index:60;display:flex;align-items:center;
+  justify-content:space-between;gap:12px;padding:9px 16px;overflow:hidden;
+  transform:translateY(-102%);transition:transform .22s ease;
+  background:linear-gradient(180deg,#2b2c31 0%,#1a1b1e 55%,#111214 100%);
+  border-bottom:1px solid #000;
+  box-shadow:0 3px 12px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.10)}
+.stickyhdr.show{transform:translateY(0)}
+.sh-title{font:800 15px/1 sans-serif;letter-spacing:.14em;color:#e8e4dc;text-shadow:0 1px 0 #000,0 0 8px rgba(255,255,255,.05)}
+.sh-net{display:flex;align-items:center;gap:8px;color:#8aa;font:600 13px/1 var(--mono,monospace);letter-spacing:.5px}
+.sh-net .nb-dot{width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+.sh-net.ok{color:#7ce0b0}.sh-net.slow{color:#ffb347}.sh-net.bad{color:#ff8a6a}
+.sh-net .nb-ms{color:#b8b4ac;font-weight:600}
+.sh-net.bad .nb-dot{animation:nbpulse 1s infinite}
+@keyframes nbpulse{0%,100%{opacity:1}50%{opacity:.22}}
+.stickyhdr .sh-prog{position:absolute;bottom:0;left:-30%;height:2px;width:30%;pointer-events:none;
+  background:linear-gradient(90deg,transparent,#7ce0b0,transparent);opacity:0}
+.stickyhdr.syncing .sh-prog{opacity:.9;animation:shslide 1.15s linear infinite}
+@keyframes shslide{0%{left:-30%}100%{left:100%}}
+
 /* ---- body columns ---- */
 .body{display:flex;flex-wrap:wrap;gap:20px}
 .col{display:flex;flex-direction:column;gap:20px;min-width:0}
@@ -2298,7 +2318,19 @@ var newestSeq=0, oldestSeq=null, loadingOlder=false, totalEvents=0;
    bookmark (http://user:pass@host/), a relative fetch would resolve against that
    document URL and the Fetch API rejects constructing a Request from a URL that
    embeds credentials. location.origin strips them, so fetch works either way. */
-function api(path,opts){return fetch(location.origin+path,opts||{}).then(function(r){return r.json().catch(function(){return {};});});}
+/* Central TIMED fetch: every request flows through here so the bottom status bar can show
+   live connection health, rough latency (time-to-complete), and pending activity -- the
+   signal that matters most on the flaky Pi link. */
+var NET={pending:0,lastMs:null,lastOk:0,lastErr:0};
+function _nowMs(){return (window.performance&&performance.now)?performance.now():Date.now();}
+function netFetch(path,opts){
+  NET.pending++;netRender();
+  var t0=_nowMs();
+  return fetch(location.origin+path,opts||{}).then(function(r){
+    NET.lastMs=_nowMs()-t0;NET.lastOk=Date.now();NET.pending--;netRender();return r;
+  },function(e){NET.lastErr=Date.now();NET.pending--;netRender();throw e;});
+}
+function api(path,opts){return netFetch(path,opts).then(function(r){return r.json().catch(function(){return {};});});}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});}
 /* Fault-tolerant poll for the flaky Pi link: never fire a new request for `key` while a
    prior one is still pending (prevents the request pile-up a laggy link causes), and abort
@@ -2310,7 +2342,7 @@ function pollFetch(key,path,ms){
   _pollBusy[key]=true;
   var ctrl=('AbortController' in window)?new AbortController():null;
   var to=setTimeout(function(){if(ctrl)ctrl.abort();},ms||20000);
-  return fetch(location.origin+path,ctrl?{signal:ctrl.signal}:{})
+  return netFetch(path,ctrl?{signal:ctrl.signal}:{})
     .then(function(r){return r.json().catch(function(){return {};});})
     .catch(function(){return null;})
     .then(function(d){clearTimeout(to);_pollBusy[key]=false;return d;});
@@ -2711,6 +2743,34 @@ var SYS=(function(){
           get view(){return view;}};
 })();
 
+/* ---------- connection / latency indicator (sticky header) ---------- */
+/* Paint the header's net indicator from NET (fed by netFetch on every request). Colour +
+   state by rough latency; RECONNECTING when the last request failed or nothing has
+   succeeded for a while; a shimmer runs while requests are pending. */
+function netRender(){
+  var ind=$('netInd');if(!ind)return;
+  var now=Date.now();
+  var stale=NET.lastOk&&(now-NET.lastOk>15000);
+  var reconnecting=(NET.pending===0&&NET.lastErr>NET.lastOk)||stale;
+  var ms=NET.lastMs,cls='ok',state='ONLINE';
+  if(reconnecting){cls='bad';state='RECONNECTING';}
+  else if(ms==null){state='CONNECTING';}
+  else if(ms>1000){cls='bad';state='LAGGY';}
+  else if(ms>250){cls='slow';state='SLOW';}
+  ind.className='sh-net '+cls;
+  var hdr=$('stickyHdr');if(hdr)hdr.classList.toggle('syncing',NET.pending>0);
+  $('nbState').textContent=state;
+  $('nbMs').textContent=(ms!=null&&!reconnecting)?(Math.round(ms)+' ms'):'';
+}
+// Reveal the sticky header once scrolled past the placard.
+(function(){var hdr=$('stickyHdr');if(!hdr)return;
+  function onScroll(){var y=window.pageYOffset||document.documentElement.scrollTop||0;
+    hdr.classList.toggle('show',y>110);}
+  window.addEventListener('scroll',onScroll,{passive:true});onScroll();})();
+// Refresh the indicator on a timer too, so RECONNECTING/staleness shows even when no
+// request has completed to trigger a repaint.
+setInterval(netRender,2000);netRender();
+
 /* ---------- boot ---------- */
 buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');initDrawer('sysDrawer','sys');
 // Poll system history only while the SYSTEM drawer is open (zero cost when closed).
@@ -2855,6 +2915,13 @@ setInterval(function(){tick();},1000);
 # raw script) so the page is correct before JS runs / with JS off. All icons are
 # inline SVG (currentColor) so the strict CSP holds with zero external requests.
 HTML_TEMPLATE_BODY = """
+<!-- Compact sticky header: slides in after scrolling past the placard; shows the brand +
+     live connection / latency / pending indicator. Metal finish to match the panel. -->
+<div class="stickyhdr" id="stickyHdr">
+  <span class="sh-prog"></span>
+  <span class="sh-title">GeneratorPi</span>
+  <span class="sh-net ok" id="netInd"><span class="nb-dot"></span><span id="nbState">&mdash;</span><span class="nb-ms" id="nbMs"></span></span>
+</div>
 <main class="panel" id="panel" data-running="{{ 'true' if status.running else 'false' }}">
   <span class="rivet tl"></span><span class="rivet tr"></span>
   <span class="rivet bl"></span><span class="rivet br"></span>
