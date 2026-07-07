@@ -288,27 +288,27 @@ class TestAppLogEndpoint:
         finally:
             module.log_path = orig
 
-    def test_default_lines_is_200(self, client, module, tmp_path):
+    def test_default_lines_is_1000(self, client, module, tmp_path):
         orig = module.log_path
         try:
-            # 250 lines present; default (no ?lines) returns the last 200.
+            # 1200 lines present; default (no ?lines) returns the last 1000.
             self._point_log(module, tmp_path,
-                            "".join(f"L{i}\n" for i in range(250)))
+                            "".join(f"L{i}\n" for i in range(1200)))
             lines = client.get(_q("/api/logs")).get_json()["lines"]
-            assert len(lines) == 200
-            assert lines[0] == "L50" and lines[-1] == "L249"
+            assert len(lines) == 1000
+            assert lines[0] == "L200" and lines[-1] == "L1199"
         finally:
             module.log_path = orig
 
-    def test_lines_clamped_to_max_500(self, client, module, tmp_path):
+    def test_lines_clamped_to_max_1000(self, client, module, tmp_path):
         orig = module.log_path
         try:
-            # 800 lines; ask for far more than the cap -> exactly 500 returned.
+            # 1500 lines; ask for far more than the cap -> exactly 1000 returned.
             self._point_log(module, tmp_path,
-                            "".join(f"L{i}\n" for i in range(800)))
+                            "".join(f"L{i}\n" for i in range(1500)))
             lines = client.get(_q("/api/logs?lines=99999")).get_json()["lines"]
-            assert len(lines) == 500
-            assert lines[-1] == "L799"
+            assert len(lines) == 1000
+            assert lines[-1] == "L1499"
         finally:
             module.log_path = orig
 

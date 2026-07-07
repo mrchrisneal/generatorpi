@@ -2634,10 +2634,15 @@ function logLnEl(s){var d=document.createElement('div');d.className='logln';
 // EVENTS. Oldest-first (file/tail order); keeps the view pinned to the newest line
 // only when the user is already scrolled to the bottom (so reading history isn't
 // yanked away on the 4s refresh).
+var _appLogSig=null;   // signature of the last-rendered tail; skip rebuilds when unchanged
 function loadAppLog(){var lg=$('log');if(!lg.children.length)lg.classList.add('loading');
-  pollFetch('logs','/api/logs?lines=200',30000).then(function(d){if(!d||logView!=='log')return;
+  pollFetch('logs','/api/logs?lines=1000',30000).then(function(d){if(!d||logView!=='log')return;
     var log=$('log');log.classList.remove('loading');
     var lines=d.lines||[];
+    // Rebuilding ~1000 DOM rows every 4s is wasteful (and janky on a Pi) when the tail
+    // hasn't changed. Cheaply signature the payload and re-render ONLY on a change.
+    var sig=lines.length+'\\u0001'+(lines.length?lines[lines.length-1]:'');
+    if(sig===_appLogSig)return;_appLogSig=sig;
     var atBottom=(log.scrollTop+log.clientHeight>=log.scrollHeight-4);
     log.innerHTML='';for(var i=0;i<lines.length;i++){log.appendChild(logLnEl(lines[i]));}
     $('logCount').textContent=lines.length+' LINE'+(lines.length===1?'':'S');
@@ -2653,6 +2658,9 @@ function setLogView(v){logView=(v==='log')?'log':'events';
   var seg=$('logViewToggle');
   if(seg){var bs=seg.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].getAttribute('data-view')===logView);}}
   var log=$('log');log.innerHTML='';log.scrollTop=0;
+  // Drop the cached signature: we just cleared the panel, so the next loadAppLog MUST
+  // repaint even if the tail is byte-identical to what was shown before.
+  _appLogSig=null;
   if(logView==='log'){log.classList.add('applog');loadAppLog();}
   else{log.classList.remove('applog');newestSeq=0;oldestSeq=null;loadInitialEvents();}}
 
@@ -3873,14 +3881,14 @@ def api_logs():
     file order) so the client renders it exactly like `tail`. Missing file -> [].
 
     Query params:
-      lines -- trailing line count (default 200, clamped 1..500).
+      lines -- trailing line count (default 1000, clamped 1..1000).
 
     Response JSON: {"lines": [<str>, ...], "path": "<log file name>"}
     """
     # type=int returns the default for a missing OR unparseable value, so `lines` is
     # always an int; the clamp then bounds both the read cost and the response size.
-    lines = request.args.get("lines", default=200, type=int)
-    lines = max(1, min(lines, 500))
+    lines = request.args.get("lines", default=1000, type=int)
+    lines = max(1, min(lines, 1000))
     return jsonify({
         "lines": _tail_lines(log_path, lines),
         # Just the basename -- the UI shows it as a label; the absolute path is internal.
