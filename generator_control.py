@@ -30,6 +30,7 @@ import socket
 import sqlite3
 from functools import wraps
 from urllib.parse import urlparse
+import urllib.request  # server-side fetch of the repo's raw VERSION for update checks
 from flask import Flask, render_template_string, jsonify, request, Response, g
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,21 @@ except Exception:  # ImportError, or a partially-installed crypto stack
 # See generator_control.env.example for format and defaults.
 SCRIPT_DIR = Path(__file__).parent
 ENV_FILE = SCRIPT_DIR / "generator_control.env"
+
+# Application version -- the SINGLE SOURCE OF TRUTH is the VERSION file next to this
+# script (one line, e.g. "1.0.0"). The UI footer, the startup event, the /api/state
+# payload, and (later) the update-manifest check all read this one value, so bumping a
+# release is a single-file edit. Falls back to a sentinel if the file is missing/unreadable
+# so the app still boots and reports *something* rather than crashing on a packaging slip.
+def _read_app_version():
+    try:
+        v = (SCRIPT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+        return v or "0.0.0"
+    except OSError:
+        return "0.0.0"
+
+
+APP_VERSION = _read_app_version()
 
 # Defaults -- overridden by values in the env file
 CONFIG = {
@@ -517,7 +533,7 @@ def init_event_store(db_path=None):
     log.info(f"Event store ready: {_event_db_path}")
     # Record process start in the durable log. Done outside the lock above --
     # record_event acquires _event_lock itself.
-    record_event("startup", "Controller started")
+    record_event("startup", f"GeneratorPi v{APP_VERSION} started")
 
 
 def record_event(event_type, message):
@@ -2137,7 +2153,7 @@ button{font-family:inherit}
   .logln{display:block}.logln .lt,.logln .lg,.logln .lm{flex:none;display:inline}
   .logln .lt::after,.logln .lg::after{content:" "}
 }
-.log{container-type:inline-size;position:relative;height:190px;overflow-y:auto;padding:8px 10px;border-radius:8px;
+.log{container-type:inline-size;position:relative;height:250px;overflow-y:auto;padding:8px 10px;border-radius:8px;
   background:radial-gradient(120% 100% at 50% 0%,#04120a,#010704 75%);box-shadow:inset 0 2px 10px rgba(0,0,0,.85)}
 .log::-webkit-scrollbar{width:8px}.log::-webkit-scrollbar-track{background:#020604}
 .log::-webkit-scrollbar-thumb{background:#1c4a30;border-radius:4px}
@@ -2279,6 +2295,11 @@ input[type=range].thresh::-moz-range-thumb{width:20px;height:20px;border:0;borde
 /* True RED for destructive Settings actions (restart / factory reset) -- distinct from
    the warning orange-red of the START button. */
 .btn3d.danger{background:linear-gradient(180deg,#ff5a4a,#b81c0c);--b:#5e0f04;color:#fff}
+/* Disabled buttons (e.g. UPDATE when already up to date) read as clearly inert: dimmed,
+   desaturated, flat (no raised ledge), non-interactive -- overrides colour variants. */
+.btn3d:disabled{opacity:.4;filter:grayscale(.7);cursor:not-allowed;pointer-events:none;
+  color:#8a8681;background:linear-gradient(180deg,#33333a,#26262c);
+  box-shadow:0 0 0 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.06)}
 /* Async button in flight: hide the label (width preserved) + show a spinner in its place. */
 .btn3d.loading{color:transparent!important;pointer-events:none;position:relative}
 .btn3d.loading>*{visibility:hidden}
@@ -2305,6 +2326,13 @@ footer{border-top:1px solid rgba(255,255,255,.06);padding-top:16px;
 footer .frow{font:500 12px var(--mono);color:#a6a094}
 footer a{color:rgba(255,255,255,.9);text-decoration:none}
 footer a:hover{text-decoration:underline}
+/* Update status line + out-of-date version. When a newer release is published, #verLink
+   turns yellow and pulses to draw the eye and the action link ("Update") highlights. */
+footer .frow.upd{font-size:11px;color:#7d786f}
+footer .frow.upd a{color:#9fdcec}
+footer #verLink.out-of-date{color:#ffcf5a;font-weight:700;animation:verpulse 1.4s ease-in-out infinite}
+footer #updAction.avail{color:#ffcf5a;font-weight:700}
+@keyframes verpulse{0%,100%{opacity:1}50%{opacity:.5}}
 
 /* ---- start confirm dialog ---- */
 /* position:fixed (not absolute) so the overlay + card center in the VIEWPORT, not
@@ -3363,6 +3391,36 @@ initDrawer('sysDrawer','sys',function(open){
 registerSW();
 refresh();
 setInterval(function(){if(!busy)refresh();},4000);
+/* ---------- footer update check ---------- */
+/* Ask the server (which can reach GitHub; the page's CSP can't) for the latest published
+   version and reflect it: out-of-date -> #verLink pulses yellow + the action becomes a
+   real "Update" link to releases; up-to-date -> "Check again". Runs once on load; the
+   server ALSO checks hourly and pushes a notification when no browser is open. */
+function checkUpdate(){
+  var t=$('updText'),a=$('updAction'),v=$('verLink');if(!t||!a)return;
+  t.textContent='Checking for updates\\u2026';a.textContent='';a.className='';a.removeAttribute('target');
+  api('/api/check-update').then(function(d){
+    var inst=(d&&d.installed)||(v?v.textContent.replace(/^v/,''):'?');
+    if(!d||d.latest==null){                                   // couldn't reach the repo
+      t.textContent='Installed v'+inst+' \\u00b7 latest unknown';a.textContent='Retry';
+      if(v)v.classList.remove('out-of-date');return;
+    }
+    if(d.update_available){
+      t.textContent='Installed v'+inst+' \\u00b7 latest v'+d.latest;
+      a.textContent='Update';a.className='avail';
+      a.href='https://github.com/mrchrisneal/generatorpi/releases';a.target='_blank';a.rel='noopener';
+      if(v)v.classList.add('out-of-date');
+    }else{
+      t.textContent='Installed v'+inst+' \\u00b7 up to date';a.textContent='Check again';
+      if(v)v.classList.remove('out-of-date');
+    }
+  }).catch(function(){t.textContent='Update check unavailable';a.textContent='Retry';if(v)v.classList.remove('out-of-date');});
+}
+$('updAction').addEventListener('click',function(e){
+  if(this.className==='avail')return;          // "Update" -> let the href navigate to releases
+  e.preventDefault();checkUpdate();            // "Check again"/"Retry" -> re-check
+});
+checkUpdate();
 setInterval(function(){tick();},1000);
 })();
 </script>{% endraw %}"""
@@ -3519,9 +3577,6 @@ HTML_TEMPLATE_BODY = """
               <div class="drawer-divider"></div>
               <div class="helper">Restarts the GeneratorPi service on the server. The page reconnects after a few seconds; the generator and relay are unaffected.</div>
               <button type="button" class="btn3d danger" id="restartBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESTART APP</button>
-              <div class="drawer-divider"></div>
-              <div class="helper">Install the latest GeneratorPi release. Enabled only when a newer version is available.</div>
-              <button type="button" class="btn3d steel" id="updateBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><polyline points="21 3 21 9 15 9"/></svg></span><span id="updateBtnLabel">UP TO DATE</span></button>
               <div class="drawer-divider"></div>
               <div class="helper">Wipes the app's memory — event log, application logs, lifetime run-hours, and fuel/alert settings — back to factory defaults. Your login &amp; server config are <strong>not</strong> touched. This <strong>cannot be undone</strong>.</div>
               <button type="button" class="btn3d danger" id="factoryBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>FACTORY RESET</button>
@@ -3729,7 +3784,11 @@ HTML_TEMPLATE_BODY = """
   <!-- Footer -->
   <footer>
     <div class="frow">&copy; 2026 <a href="https://neal.media" target="_blank" rel="noopener">Chris Neal</a> &amp; <a href="https://neal.tools" target="_blank" rel="noopener">Alex Neal</a></div>
-    <div class="frow"><a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">v1.0.0</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
+    <div class="frow"><a id="verLink" href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">v{{ version }}</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
+    <!-- Update status: installed vs latest (checked server-side against the repo's raw
+         VERSION file). When a newer release exists, #verLink above pulses yellow and the
+         action becomes "Update". Populated by checkUpdate() in JS. -->
+    <div class="frow upd"><span id="updText">Installed v{{ version }}</span> · <a href="#" id="updAction">Check for updates</a></div>
   </footer>
 
   <!-- Start confirmation dialog -->
@@ -3887,7 +3946,7 @@ def index():
     """Web UI homepage"""
     with state_lock:
         status = generator_state.copy()
-    return render_template_string(HTML_TEMPLATE, status=status)
+    return render_template_string(HTML_TEMPLATE, status=status, version=APP_VERSION)
 
 @app.route('/api/start', methods=['POST'])
 @auth_required
@@ -4267,6 +4326,83 @@ def api_factory_reset():
     return jsonify({"success": True, "message": "Factory reset complete."})
 
 
+# Raw plaintext VERSION on the release repo's default branch -- the update check compares
+# this against APP_VERSION. FIXED URL (never request-derived), so there is no SSRF surface.
+_LATEST_VERSION_URL = "https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/VERSION"
+
+
+def _version_tuple(v):
+    """Parse a dotted version like '1.2.3' into a comparable int tuple (1,2,3). Non-numeric
+    parts degrade to 0 so a malformed value can't raise into the caller."""
+    out = []
+    for part in str(v).split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
+def _fetch_latest_version():
+    """Fetch the latest published version string from the repo's raw VERSION file.
+    Returns the trimmed string, or None on ANY failure (offline Pi, private/renamed repo,
+    timeout) -- the caller treats None as 'could not check', never as an error."""
+    try:
+        req = urllib.request.Request(_LATEST_VERSION_URL,
+                                     headers={"User-Agent": "GeneratorPi-update-check"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            # Read a small, bounded amount -- a VERSION file is a few bytes; cap defensively.
+            return resp.read(64).decode("utf-8", "replace").strip() or None
+    except Exception as e:                       # noqa: BLE001 -- network/parse errors are non-fatal
+        log.info(f"Update check failed: {e}")
+        return None
+
+
+@app.route('/api/check-update', methods=['GET'])
+@auth_required
+def api_check_update():
+    """Report the installed version and whether a newer one is published upstream. The
+    frontend footer uses this to pulse the version yellow + offer an Update link. `latest`
+    is null when the check couldn't reach the repo (offline / not yet public)."""
+    latest = _fetch_latest_version()
+    installed = APP_VERSION
+    available = latest is not None and _version_tuple(latest) > _version_tuple(installed)
+    return jsonify({
+        "installed": installed,
+        "latest": latest,
+        "update_available": bool(available),
+    })
+
+
+def update_check_loop():
+    """Hourly background update check (production). On finding a NEWER published version --
+    higher than installed and not one already announced this run -- record an event and,
+    if push is configured, send a push so operators learn of it with no browser open.
+    Daemon thread; _monitor_stop ends it promptly on shutdown. The FRONTEND does its own
+    on-load check via /api/check-update; this loop is the no-browser-open path.
+
+    ONE-SHOT per run: we push (and log an event) AT MOST ONCE per application start, even
+    if further releases appear later -- the operator hears about it once, not hourly. The
+    flag resets naturally when the app restarts."""
+    pushed = False
+    if _monitor_stop.wait(60):                        # settle after startup before 1st call
+        return
+    while True:
+        if not pushed:
+            latest = _fetch_latest_version()
+            if latest and _version_tuple(latest) > _version_tuple(APP_VERSION):
+                pushed = True                         # exactly one update push per restart
+                log.info(f"Update available: v{latest} (installed v{APP_VERSION})")
+                record_event("update", f"Update available: v{latest} (installed v{APP_VERSION})")
+                send_push_async(
+                    "Update available",
+                    f"GeneratorPi v{latest} is available (you have v{APP_VERSION}).",
+                    tag="update",
+                )
+        if _monitor_stop.wait(3600):                  # ~hourly; True == stop requested
+            return
+
+
 @app.route('/api/fuel/reading', methods=['POST'])
 @auth_required
 def api_fuel_reading():
@@ -4513,6 +4649,10 @@ def main():
     # Background system monitor: samples host perf metrics into the in-memory ring
     # buffer for the SYSTEM drawer. Daemon so it dies with the process; RAM only.
     threading.Thread(target=system_monitor_loop, daemon=True).start()
+
+    # Background update check (hourly): pushes a notification when a newer release appears
+    # upstream, even with no browser open. Daemon; _monitor_stop ends it on shutdown.
+    threading.Thread(target=update_check_loop, daemon=True).start()
 
     try:
         app.run(

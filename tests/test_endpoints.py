@@ -546,3 +546,39 @@ class TestFactoryResetEndpoint:
         # Log truncated; env file byte-for-byte UNTOUCHED.
         assert logf.read_text(encoding="utf-8") == ""
         assert env.read_text(encoding="utf-8") == "API_KEY=keepme\n"
+
+
+class TestCheckUpdateEndpoint:
+    """GET /api/check-update compares APP_VERSION to the upstream version (network mocked)."""
+
+    def test_requires_auth(self, client):
+        assert client.get("/api/check-update").status_code == 401
+
+    def test_update_available(self, client, module, monkeypatch):
+        monkeypatch.setattr(module, "APP_VERSION", "1.0.0")
+        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "1.2.0")
+        d = client.get(_q("/api/check-update")).get_json()
+        assert d == {"installed": "1.0.0", "latest": "1.2.0", "update_available": True}
+
+    def test_up_to_date(self, client, module, monkeypatch):
+        monkeypatch.setattr(module, "APP_VERSION", "1.2.0")
+        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "1.2.0")
+        d = client.get(_q("/api/check-update")).get_json()
+        assert d["update_available"] is False and d["latest"] == "1.2.0"
+
+    def test_local_ahead_is_not_an_update(self, client, module, monkeypatch):
+        # Dev build ahead of the published release -> not "available".
+        monkeypatch.setattr(module, "APP_VERSION", "1.3.0")
+        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "1.2.0")
+        assert client.get(_q("/api/check-update")).get_json()["update_available"] is False
+
+    def test_unreachable_latest_is_null(self, client, module, monkeypatch):
+        # Offline / private repo -> latest null, never an error, never "available".
+        monkeypatch.setattr(module, "_fetch_latest_version", lambda: None)
+        d = client.get(_q("/api/check-update")).get_json()
+        assert d["latest"] is None and d["update_available"] is False
+
+    def test_version_tuple_orders_numerically(self, module):
+        # "1.10.0" > "1.9.0" numerically (string compare would get this wrong).
+        assert module._version_tuple("1.10.0") > module._version_tuple("1.9.0")
+        assert module._version_tuple("2.0.0") > module._version_tuple("1.99.99")

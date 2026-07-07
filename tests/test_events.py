@@ -67,7 +67,8 @@ class TestInit:
         events = module.get_events()
         assert len(events) == 1
         assert events[0]["type"] == "startup"
-        assert events[0]["message"] == "Controller started"
+        # Versioned startup line (single-source-of-truth APP_VERSION).
+        assert events[0]["message"] == f"GeneratorPi v{module.APP_VERSION} started"
         assert events[0]["seq"] == 1
 
     def test_init_creates_db_file(self, module, tmp_path, _restore_store):
