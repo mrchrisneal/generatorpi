@@ -143,3 +143,29 @@ class TestSampleAssembly:
         for _ in range(5):
             module._sample_system()
         assert len(module._sys_history) == 3  # capped, oldest dropped
+
+
+class TestHistoryEndpoint:
+    API_KEY = "sys-test-key"
+
+    @pytest.fixture(autouse=True)
+    def _key(self, module):
+        module.CONFIG["API_KEY"] = self.API_KEY
+
+    def test_requires_auth(self, client):
+        assert client.get("/api/system/history").status_code == 401
+
+    def test_returns_shape_and_points(self, client, module):
+        module._sys_history.clear()
+        with module._sys_hist_lock:
+            module._sys_history.append({"t": 1, "cpu": 42.0, "mem": 61.0,
+                                        "load1": 0.5, "load5": 0.4, "temp": 58.2,
+                                        "volt": 1.35, "thr": 0, "rssi": -62,
+                                        "qual": 48})
+        resp = client.get(f"/api/system/history?key={self.API_KEY}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["sample_seconds"] == 15
+        assert data["capacity"] == module._sys_history.maxlen
+        assert "server_now" in data
+        assert len(data["points"]) == 1 and data["points"][0]["cpu"] == 42.0

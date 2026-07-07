@@ -2932,6 +2932,22 @@ def api_state():
     return jsonify(snap)
 
 
+@app.route('/api/system/history', methods=['GET'])
+@auth_required
+def api_system_history():
+    """Return the in-memory SYSTEM perf-history ring buffer as JSON for the UI.
+    Snapshot under the lock so we never serialize a deque mid-append. Small (<=240
+    tiny dicts); computed only when the UI polls (and only while the drawer is open)."""
+    with _sys_hist_lock:
+        points = list(_sys_history)
+    return jsonify({
+        "points": points,
+        "sample_seconds": max(5, int(CONFIG.get("SYSTEM_HISTORY_SECONDS", 15))),
+        "capacity": _sys_history.maxlen,
+        "server_now": time.time(),
+    })
+
+
 @app.route('/api/fuel/reading', methods=['POST'])
 @auth_required
 def api_fuel_reading():
