@@ -2249,7 +2249,10 @@ footer a:hover{text-decoration:underline}
 .sys-ax{position:absolute;font:600 13px/1 var(--mono,monospace);color:#7f9;opacity:.85;pointer-events:none;text-shadow:0 0 4px rgba(0,0,0,.9)}
 .sys-ax.tl{top:4px;left:5px}.sys-ax.bl{bottom:4px;left:5px}
 .sys-ax.tr{top:4px;right:5px;color:#6fd3e0}.sys-ax.br{bottom:4px;right:5px;color:#6fd3e0}
-.sys-strip{margin-top:7px;padding:6px 9px;border-radius:5px;background:#060d0b;border:1px solid #10201b;color:#8fe6bf;font:600 13px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px;text-shadow:0 0 6px rgba(120,230,180,.4)}
+.sys-strip{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:7px;padding:6px 9px;border-radius:5px;background:#060d0b;border:1px solid #10201b;font:600 13px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px}
+.sys-strip .t{color:#6f8f7e;white-space:nowrap;flex:0 0 auto}
+.sys-strip .v{display:flex;gap:14px;flex:1 1 auto;justify-content:flex-end;flex-wrap:wrap}
+.sys-strip .v span{text-shadow:0 0 6px currentColor}
 </style>{% endraw %}
 </head>"""
 
@@ -2612,16 +2615,22 @@ var SYS=(function(){
         var pl=el("polyline",{points:seg.join(" ")});
         pl.style.stroke=s.c;pl.style.color=s.c;svg.appendChild(pl);});});
     // y-axis corner labels for EVERY chart (crisp HTML overlay; SVG text would distort
-    // under the non-uniform viewBox scale). Left axis = series[0]; right = series[1] (dual).
-    var l=scaleFor(def,def.series[0].k),tr="",br="";
-    if(def.dual){var r=scaleFor(def,def.series[1].k);tr=axfmt(r[0]+r[1]);br=axfmt(r[0]);}
-    setAx(chart,axfmt(l[0]+l[1]),axfmt(l[0]),tr,br);
+    // under the non-uniform viewBox scale). A series with NO data (all null -- e.g.
+    // voltage off-Pi) gets a BLANK axis rather than a phantom 0..1 scale.
+    var lk=def.series[0].k,tl="",bl="",tr="",br="";
+    if(rangeOf([lk])){var l=scaleFor(def,lk);tl=axfmt(l[0]+l[1]);bl=axfmt(l[0]);}
+    if(def.dual){var rk=def.series[1].k;
+      if(rangeOf([rk])){var r=scaleFor(def,rk);tr=axfmt(r[0]+r[1]);br=axfmt(r[0]);}}
+    // Colour each axis to match its line: left = series[0], right = series[1] (dual).
+    setAx(chart,tl,bl,tr,br,def.series[0].c,def.dual?def.series[1].c:null);
   }
   function axfmt(v){return v===0?"0":(Math.abs(v)<10?v.toFixed(2):v.toFixed(0));}
-  function setAx(chart,tl,bl,tr,br){
+  function setAx(chart,tl,bl,tr,br,lc,rc){
     var s=document.querySelectorAll('#sysChart-'+chart+' .sys-ax');
     if(s.length<4)return;
-    s[0].textContent=tl;s[1].textContent=bl;s[2].textContent=tr;s[3].textContent=br;}
+    s[0].textContent=tl;s[1].textContent=bl;s[2].textContent=tr;s[3].textContent=br;
+    if(lc){s[0].style.color=lc;s[1].style.color=lc;}
+    if(rc){s[2].style.color=rc;s[3].style.color=rc;}}
 
   function render(){for(var c in CHARTS){
     if(!document.getElementById('sysChart-'+c).classList.contains('collapsed'))draw(c);}
@@ -2654,18 +2663,25 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     return "-"+(s/3600).toFixed(1)+"h";}
   function num(v,suf,dp){return v==null?"--":((dp!=null?v.toFixed(dp):v)+(suf||""));}
 
-  // Format one chart's status strip for a given point (or latest when p is null-less).
-  function stripText(chart,p){
-    if(!p)return "\\u2014";
-    var pre=relTime(p.t)+" \\u25b8 ";
-    if(chart==="compute")return pre+"CPU "+num(p.cpu,"%")+"  MEM "+num(p.mem,"%");
-    if(chart==="load")return pre+"1m "+num(p.load1,"",2)+"  5m "+num(p.load5,"",2);
-    if(chart==="vitals")return pre+num(p.temp,"\\u00b0C",1)+"  "+num(p.volt,"V",2)+"  "+thrWord(p.thr);
-    if(chart==="link")return pre+num(p.rssi,"dBm")+"  q"+num(p.qual,"");
-    return "\\u2014";}
+  function esc(s){return String(s).replace(/[<>&]/g,function(c){
+    return c==="<"?"&lt;":c===">"?"&gt;":"&amp;";});}
+  function seg(text,color){return '<span style="color:'+color+'">'+esc(text)+'</span>';}
   function thrWord(thr){if(thr==null)return "";
     if(thr&0x1)return "\\u26d4undervolt";if(thr&0x4)return "\\u26a0throttle";
     if((thr&0x10000)||(thr&0x40000))return "\\u26a0since-boot";return "\\u2713nominal";}
+  function thrColor(thr){if(thr&0x1)return "#ff8a6a";
+    if((thr&0x4)||(thr&0x10000)||(thr&0x40000))return "#ffb347";return "#7ce0b0";}
+  // Build the hover strip: time LEFT, colour-matched values RIGHT. Each value's colour
+  // matches its chart line.
+  function stripHTML(chart,p){
+    if(!p)return '<span class="t">\\u2014</span>';
+    var v="";
+    if(chart==="compute")v=seg("CPU "+num(p.cpu,"%"),"#ffb347")+seg("MEM "+num(p.mem,"%"),"#6fd3e0");
+    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#7ce0b0")+seg("5m "+num(p.load5,"",2),"#4a8f74");
+    else if(chart==="vitals"){v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
+      var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));}
+    else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
+    return '<span class="t">'+esc(relTime(p.t))+'</span><span class="v">'+v+'</span>';}
 
   var hoverIdx=-1;                 // -1 => show latest
   function updateStatus(){
@@ -2673,7 +2689,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     if(pts.length)p=hoverIdx>=0&&hoverIdx<pts.length?pts[hoverIdx]:pts[pts.length-1];
     for(var c in SYS.CHARTS){
       var strip=document.querySelector('#sysChart-'+c+' .sys-strip');
-      if(strip)strip.textContent=stripText(c,p);}
+      if(strip)strip.innerHTML=stripHTML(c,p);}
     // header + face live status always reflect the LATEST sample
     var last=pts.length?pts[pts.length-1]:null;
     var big=$('sysHdrTemp'),face=$('sysFaceTemp'),chip=$('sysThrChip');
@@ -2992,10 +3008,10 @@ HTML_TEMPLATE_BODY = """
               </div>
             </div>
 
-            <!-- VITALS: temp (left °C) + voltage (right V), throttle bands -->
+            <!-- SILICON: temp (left °C) + voltage (right V), throttle bands -->
             <div class="sys-panel" data-chart="vitals" id="sysChart-vitals">
               <div class="sys-panel-face">
-                <span class="sys-panel-title">VITALS</span>
+                <span class="sys-panel-title">SILICON</span>
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="temp"><span class="sw" style="background:#ff8a6a;color:#ff8a6a"></span>°C</span>
                   <span class="sys-leg" data-series="volt"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>V</span>

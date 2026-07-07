@@ -255,4 +255,4 @@ class TestSystemDrawerMarkup:
         for cid in ("sysChart-compute", "sysChart-load",
                     "sysChart-vitals", "sysChart-link"):
             assert f'id="{cid}"' in body
-        assert "SYSTEM" in body and "VITALS" in body
+        assert "SYSTEM" in body and "SILICON" in body
