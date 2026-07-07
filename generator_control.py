@@ -2549,7 +2549,7 @@ var SYS=(function(){
   // Per-chart definitions: which series, colors, axis behavior.
   var CHARTS={
     compute:{series:[{k:"cpu",c:"#ffb347"},{k:"mem",c:"#6fd3e0"}],min:0,max:100},
-    load:{series:[{k:"load1",c:"#7ce0b0"},{k:"load5",c:"#4a8f74"}],min:0,max:"auto",ref:1.0},
+    load:{series:[{k:"load1",c:"#7ce0b0"},{k:"load5",c:"#c3a6ff"}],min:0,max:"auto",ref:1.0},
     vitals:{series:[{k:"temp",c:"#ff8a6a",axis:"l"},{k:"volt",c:"#6fd3e0",axis:"r"}],
             dual:true,bands:true},
     link:{series:[{k:"rssi",c:"#7ce0b0",axis:"l"},{k:"qual",c:"#ffb347",axis:"r"}],dual:true}
@@ -2677,7 +2677,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     if(!p)return '<span class="t">\\u2014</span>';
     var v="";
     if(chart==="compute")v=seg("CPU "+num(p.cpu,"%"),"#ffb347")+seg("MEM "+num(p.mem,"%"),"#6fd3e0");
-    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#7ce0b0")+seg("5m "+num(p.load5,"",2),"#4a8f74");
+    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#7ce0b0")+seg("5m "+num(p.load5,"",2),"#c3a6ff");
     else if(chart==="vitals"){v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
       var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));}
     else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
@@ -2998,7 +2998,7 @@ HTML_TEMPLATE_BODY = """
                 <span class="sys-panel-title">LOAD</span>
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="load1"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>1m</span>
-                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#4a8f74;color:#4a8f74"></span>5m</span>
+                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#c3a6ff;color:#c3a6ff"></span>5m</span>
                   <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
                 </span>
               </div>
@@ -3008,10 +3008,10 @@ HTML_TEMPLATE_BODY = """
               </div>
             </div>
 
-            <!-- SILICON: temp (left °C) + voltage (right V), throttle bands -->
+            <!-- SENSORS: temp (left °C) + voltage (right V), throttle bands -->
             <div class="sys-panel" data-chart="vitals" id="sysChart-vitals">
               <div class="sys-panel-face">
-                <span class="sys-panel-title">SILICON</span>
+                <span class="sys-panel-title">SENSORS</span>
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="temp"><span class="sw" style="background:#ff8a6a;color:#ff8a6a"></span>°C</span>
                   <span class="sys-leg" data-series="volt"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>V</span>
@@ -3024,10 +3024,10 @@ HTML_TEMPLATE_BODY = """
               </div>
             </div>
 
-            <!-- LINK: RSSI (dBm) + link quality -->
+            <!-- WLINK: wireless-link RSSI (dBm) + link quality -->
             <div class="sys-panel" data-chart="link" id="sysChart-link">
               <div class="sys-panel-face">
-                <span class="sys-panel-title">LINK</span>
+                <span class="sys-panel-title">WLINK</span>
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="rssi"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>dBm</span>
                   <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Q</span>
