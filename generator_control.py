@@ -2300,7 +2300,22 @@ var newestSeq=0, oldestSeq=null, loadingOlder=false, totalEvents=0;
    embeds credentials. location.origin strips them, so fetch works either way. */
 function api(path,opts){return fetch(location.origin+path,opts||{}).then(function(r){return r.json().catch(function(){return {};});});}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});}
-function fetchState(cb){api('/api/state').then(cb).catch(function(){cb(null);});}
+/* Fault-tolerant poll for the flaky Pi link: never fire a new request for `key` while a
+   prior one is still pending (prevents the request pile-up a laggy link causes), and abort
+   a request that hangs past `ms` (a dead-link window) so the in-flight guard can't wedge
+   permanently. Resolves to parsed JSON, or null when skipped/failed/aborted. */
+var _pollBusy={};
+function pollFetch(key,path,ms){
+  if(_pollBusy[key])return Promise.resolve(null);
+  _pollBusy[key]=true;
+  var ctrl=('AbortController' in window)?new AbortController():null;
+  var to=setTimeout(function(){if(ctrl)ctrl.abort();},ms||20000);
+  return fetch(location.origin+path,ctrl?{signal:ctrl.signal}:{})
+    .then(function(r){return r.json().catch(function(){return {};});})
+    .catch(function(){return null;})
+    .then(function(d){clearTimeout(to);_pollBusy[key]=false;return d;});
+}
+function fetchState(cb){pollFetch('state','/api/state').then(cb);}
 
 /* ---------- clocks / formatting ---------- */
 function nowSec(){return (Date.now()+clockOffset)/1000;}
@@ -2416,8 +2431,9 @@ function evtEl(e){var row=document.createElement('div');row.className='evt';
   var m=document.createElement('span');m.className='m';m.textContent=e.message;
   row.appendChild(t);row.appendChild(g);row.appendChild(m);return row;}
 function setCount(n){totalEvents=n;$('logCount').textContent=n+' EVENT'+(n===1?'':'S');}
-function loadInitialEvents(){api('/api/events?limit=100').then(function(d){var log=$('log');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
-function loadNewEvents(){if(!newestSeq){loadInitialEvents();return;}api('/api/events?after='+newestSeq+'&limit=100').then(function(d){var evs=d.events||[];var log=$('log');for(var i=evs.length-1;i>=0;i--){log.insertBefore(evtEl(evs[i]),log.firstChild);}if(evs.length){newestSeq=evs[0].seq;}if(d.latest_seq)setCount(d.latest_seq);});}
+function loadInitialEvents(){pollFetch('events','/api/events?limit=100').then(function(d){if(!d)return;var log=$('log');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
+// Delta poll: only pull events AFTER the newest sequence we already hold.
+function loadNewEvents(){if(!newestSeq){loadInitialEvents();return;}pollFetch('events','/api/events?after='+newestSeq+'&limit=100').then(function(d){if(!d)return;var evs=d.events||[];var log=$('log');for(var i=evs.length-1;i>=0;i--){log.insertBefore(evtEl(evs[i]),log.firstChild);}if(evs.length){newestSeq=evs[0].seq;}if(d.latest_seq)setCount(d.latest_seq);});}
 function loadOlderEvents(){if(loadingOlder||oldestSeq==null)return;loadingOlder=true;api('/api/events?before='+oldestSeq+'&limit=100').then(function(d){var evs=d.events||[];var log=$('log');evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){oldestSeq=evs[evs.length-1].seq;}loadingOlder=false;}).catch(function(){loadingOlder=false;});}
 
 /* ---------- actions ---------- */
@@ -2573,6 +2589,7 @@ var SYS=(function(){
   var points=[];                   // full fetched buffer (up to ~1h)
   var view=[];                     // slice of points within the selected time window
   var windowSec=3600;              // duration selector: 300 / 900 / 3600 (default 60m)
+  var capacity=240;                // server ring-buffer size (from endpoint); caps our buffer
   // Per-chart definitions: which series, colors, axis behavior.
   var CHARTS={
     compute:{series:[{k:"cpu",c:"#ffb347"},{k:"mem",c:"#6fd3e0"}],min:0,max:100},
@@ -2667,8 +2684,25 @@ var SYS=(function(){
       if(!document.getElementById('sysChart-'+c).classList.contains('collapsed'))draw(c);}
     if(window.SYS_afterRender)window.SYS_afterRender();}
 
-  function load(){return api('/api/system/history').then(function(d){
-    points=(d&&d.points)||[];render();});}
+  function load(){
+    // Delta poll: after the first fetch, request only points NEWER than our newest one,
+    // so a laggy link ships a tiny payload instead of the whole hour every time. The
+    // in-flight guard (pollFetch key 'sys') stops requests stacking up.
+    var q='/api/system/history';
+    if(points.length)q+='?since='+points[points.length-1].t;
+    return pollFetch('sys',q).then(function(d){
+      if(!d)return;
+      if(d.capacity)capacity=d.capacity;
+      var fresh=d.points||[];
+      if(!points.length){points=fresh;}
+      else if(fresh.length){
+        var lastT=points[points.length-1].t;
+        for(var i=0;i<fresh.length;i++){if(fresh[i].t>lastT)points.push(fresh[i]);}
+        if(points.length>capacity)points=points.slice(points.length-capacity);
+      }
+      render();
+    });
+  }
 
   return {load:load,render:render,draw:draw,CHARTS:CHARTS,hidden:hidden,
           setWindow:function(s){windowSec=s;render();},
@@ -3373,10 +3407,18 @@ def api_state():
 @auth_required
 def api_system_history():
     """Return the in-memory SYSTEM perf-history ring buffer as JSON for the UI.
-    Snapshot under the lock so we never serialize a deque mid-append. Small (<=240
-    tiny dicts); computed only when the UI polls (and only while the drawer is open)."""
+    With ?since=<unix_ts>, returns ONLY points newer than that (a delta poll -- tiny
+    payload for the flaky link); without it, the full buffer (initial load). Snapshot
+    under the lock so we never serialize a deque mid-append."""
     with _sys_hist_lock:
         points = list(_sys_history)
+    since = request.args.get("since")
+    if since is not None:
+        try:
+            since_t = float(since)
+            points = [p for p in points if p["t"] > since_t]
+        except (ValueError, TypeError):
+            pass  # malformed 'since' -> fall back to the full buffer
     return jsonify({
         "points": points,
         "sample_seconds": max(5, int(CONFIG.get("SYSTEM_HISTORY_SECONDS", 15))),
