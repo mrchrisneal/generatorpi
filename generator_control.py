@@ -2348,20 +2348,33 @@ function netFetch(path,opts){
 }
 function api(path,opts){return netFetch(path,opts).then(function(r){return r.json().catch(function(){return {};});});}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});}
-/* Fault-tolerant poll for the flaky Pi link: never fire a new request for `key` while a
-   prior one is still pending (prevents the request pile-up a laggy link causes), and abort
-   a request that hangs past `ms` (a dead-link window) so the in-flight guard can't wedge
-   permanently. Resolves to parsed JSON, or null when skipped/failed/aborted. */
-var _pollBusy={};
+/* GLOBAL SERIAL poll queue for the flaky Pi link: at most ONE poll request is ever in
+   flight at a time across ALL pollers (state / events / history) -- a laggy link is never
+   asked to juggle concurrent requests competing for the same starved bandwidth. Coalesced
+   per key: re-requesting a poll whose previous is still QUEUED just refreshes that queued
+   entry (with the freshest path, e.g. history's ?since=), so nothing piles up -- the queue
+   holds at most one job per key. A job that hangs past `ms` is aborted so the queue can't
+   wedge. Resolves to parsed JSON, or null when coalesced/failed/aborted. */
+var _pollQ=[], _pollActive=false;
 function pollFetch(key,path,ms){
-  if(_pollBusy[key])return Promise.resolve(null);
-  _pollBusy[key]=true;
+  return new Promise(function(resolve){
+    for(var i=0;i<_pollQ.length;i++){          // coalesce a still-queued same-key job
+      if(_pollQ[i].key===key){_pollQ[i].resolve(null);_pollQ[i].path=path;_pollQ[i].ms=ms;_pollQ[i].resolve=resolve;return;}
+    }
+    _pollQ.push({key:key,path:path,ms:ms,resolve:resolve});
+    _drainPollQ();
+  });
+}
+function _drainPollQ(){
+  if(_pollActive||!_pollQ.length)return;
+  _pollActive=true;
+  var job=_pollQ.shift();
   var ctrl=('AbortController' in window)?new AbortController():null;
-  var to=setTimeout(function(){if(ctrl)ctrl.abort();},ms||30000);
-  return netFetch(path,ctrl?{signal:ctrl.signal}:{})
+  var to=setTimeout(function(){if(ctrl)ctrl.abort();},job.ms||30000);
+  netFetch(job.path,ctrl?{signal:ctrl.signal}:{})
     .then(function(r){return r.json().catch(function(){return {};});})
     .catch(function(){return null;})
-    .then(function(d){clearTimeout(to);_pollBusy[key]=false;return d;});
+    .then(function(d){clearTimeout(to);job.resolve(d);_pollActive=false;_drainPollQ();});
 }
 function fetchState(cb){pollFetch('state','/api/state').then(cb);}
 
@@ -2649,6 +2662,7 @@ var SYS=(function(){
   var view=[];                     // slice of points within the selected time window
   var windowSec=3600;              // duration selector: 300 / 900 / 3600 (default 60m)
   var capacity=240;                // server ring-buffer size (from endpoint); caps our buffer
+  var loading=false;               // history's OWN in-flight guard (own lane, see load())
   // Per-chart definitions: which series, colors, axis behavior.
   var CHARTS={
     compute:{series:[{k:"cpu",c:"#ffb347"},{k:"mem",c:"#6fd3e0"}],min:0,max:100},
@@ -2744,23 +2758,33 @@ var SYS=(function(){
     if(window.SYS_afterRender)window.SYS_afterRender();}
 
   function load(){
-    // Delta poll: after the first fetch, request only points NEWER than our newest one,
-    // so a laggy link ships a tiny payload instead of the whole hour every time. The
-    // in-flight guard (pollFetch key 'sys') stops requests stacking up.
+    // History runs on its OWN lane -- NOT the shared state/events serial queue. The
+    // initial full-buffer payload is large (the whole hour), so on a laggy link it can
+    // take many seconds; if it shared the single poll lane it would block state/events
+    // for that whole time (the app would appear to "stall"). Its own in-flight guard
+    // still prevents history requests stacking up. Delta poll after the first fetch so
+    // subsequent updates ship only the NEW points (tiny), not the whole hour again.
+    if(loading)return Promise.resolve();
+    loading=true;
     var q='/api/system/history';
     if(points.length)q+='?since='+points[points.length-1].t;
-    return pollFetch('sys',q).then(function(d){
-      if(!d)return;
-      if(d.capacity)capacity=d.capacity;
-      var fresh=d.points||[];
-      if(!points.length){points=fresh;}
-      else if(fresh.length){
-        var lastT=points[points.length-1].t;
-        for(var i=0;i<fresh.length;i++){if(fresh[i].t>lastT)points.push(fresh[i]);}
-        if(points.length>capacity)points=points.slice(points.length-capacity);
-      }
-      render();
-    });
+    var ctrl=('AbortController' in window)?new AbortController():null;
+    var to=setTimeout(function(){if(ctrl)ctrl.abort();},30000);
+    return netFetch(q,ctrl?{signal:ctrl.signal}:{})
+      .then(function(r){return r.json().catch(function(){return {};});})
+      .catch(function(){return null;})
+      .then(function(d){clearTimeout(to);loading=false;
+        if(!d)return;
+        if(d.capacity)capacity=d.capacity;
+        var fresh=d.points||[];
+        if(!points.length){points=fresh;}
+        else if(fresh.length){
+          var lastT=points[points.length-1].t;
+          for(var i=0;i<fresh.length;i++){if(fresh[i].t>lastT)points.push(fresh[i]);}
+          if(points.length>capacity)points=points.slice(points.length-capacity);
+        }
+        render();
+      });
   }
 
   return {load:load,render:render,draw:draw,CHARTS:CHARTS,hidden:hidden,
@@ -2789,7 +2813,6 @@ function netRender(){
   else{cls='ok';state='ONLINE';}                        // green: under 1s
   ind.className='sh-net '+cls;
   var hdr=$('stickyHdr');if(hdr)hdr.classList.toggle('syncing',NET.pending>0);
-  $('nbPendN').textContent=NET.pending>0?NET.pending:'';
   $('nbState').textContent=state;
   $('nbMs').textContent=(ms!=null&&!reconnecting)?(ms+' ms'):'';
 }
@@ -2836,7 +2859,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     if(!p)return '<span class="t">\\u2014</span>';
     var v="";
     if(chart==="compute")v=seg("CPU "+num(p.cpu,"%"),"#ffb347")+seg("MEM "+num(p.mem,"%"),"#6fd3e0");
-    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#7ce0b0")+seg("5m "+num(p.load5,"",2),"#eb9fd0");
+    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#9fb5ff")+seg("5m "+num(p.load5,"",2),"#eb9fd0");
     else if(chart==="vitals"){v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
       var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));}
     else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
@@ -2957,7 +2980,7 @@ HTML_TEMPLATE_BODY = """
   </span>
   <span class="sh-net ok" id="netInd">
     <span id="nbState">&mdash;</span>
-    <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg><span id="nbPendN"></span></span><span class="nb-sep">&middot;</span><span class="nb-ms" id="nbMs"></span></span>
+    <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></span><span class="nb-sep">&middot;</span><span class="nb-ms" id="nbMs"></span></span>
   </span>
 </div>
 <main class="panel" id="panel" data-running="{{ 'true' if status.running else 'false' }}">
@@ -3189,7 +3212,7 @@ HTML_TEMPLATE_BODY = """
               <div class="sys-panel-face">
                 <span class="sys-panel-title">LOAD</span>
                 <span class="sys-legend">
-                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>1m</span>
+                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#9fb5ff;color:#9fb5ff"></span>1m</span>
                   <span class="sys-leg" data-series="load5"><span class="sw" style="background:#eb9fd0;color:#eb9fd0"></span>5m</span>
                   <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
                 </span>
