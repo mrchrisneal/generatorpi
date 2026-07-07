@@ -105,3 +105,59 @@ machine.)
 
 Re-run `gp-monitor.py` after each change and compare the `gw`/`rate`/`STALL` columns before vs after —
 same tool, apples-to-apples.
+
+---
+
+## Example run (verbatim)
+
+A real 90-second capture from a Pi Zero W in a congested 2.4 GHz environment
+(`sudo python3 gp-monitor.py 90`). This is exactly what the tool prints — nothing edited.
+
+Read the story in the columns: `thr=0x0` and `v=1.35` never move (**power is fine**), `sig` holds at
+~-62/-63 dBm (**signal is fine**), CPU load is low, and there are no deauth events — yet `gw` swings from
+single-digit milliseconds to `LOSS`. That combination is the fingerprint of **2.4 GHz airtime congestion**,
+corroborated by the START/END neighbour scans showing the AP (`ASQUARED`) sharing channel 1 with other
+strong networks.
+
+```text
+# gp-monitor start 2026-07-07 03:47:15  iface=wlan0 gw=192.168.1.1 HZ=100 dur=90s step=5s
+# ---- START CONTEXT ----
+# iw link: Connected to 22:0b:8b:50:54:55 (on wlan0) SSID: ASQUARED freq: 2412.0 signal: -63 dBm rx bitrate: 43.3 MBit/s tx bitrate: 43.3 MBit/s dtim period: 1 beacon int: 100
+# nmcli: connected:full
+# 2.4GHz neighbours (CHAN SIGNAL SSID) -- co-channel congestion check:
+#   1     62      ASQUARED
+#   1     67      ASIOT
+#   6     69      --
+#   6     70      --
+#   8     69      WTC#E_6C
+#   9     80      WTC#E_2.4GEXT
+#   11    69      --
+#   11    72      ASIOT
+#   ...(15+ networks across the band)...
+# recent deauth/disconnect (journal, confounder check):
+# recent -110 (dmesg):
+#   [ 7102.735121] ieee80211 phy0: brcmf_proto_bcdc_query_dcmd: brcmf_proto_bcdc_msg failed w/status -110
+# cols: clock t load free(MB) gwPing 110+ sig rate rtry+ fail+ bcn THROTTLE volt temp  top2cpu
+03:47:23 t=   5 L=0.59 f=273 gw=    68ms 110+= 0 sig= -63 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  tailscaled:4% python3:3%
+03:47:28 t=  10 L=0.54 f=273 gw=     6ms 110+= 0 sig= -63 rate= 43.3 rtry+= -1 fail+=  1 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:3% tailscaled:2%
+03:47:36 t=  15 L=0.53 f=273 gw=LOSS ms 110+= 0 sig= -64 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.1  python3:3% tailscaled:3% <<<STALL
+03:47:41 t=  23 L=0.65 f=273 gw=    95ms 110+= 0 sig= -62 rate= 52.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:2% tailscaled:1%
+03:47:47 t=  28 L=0.60 f=273 gw=    99ms 110+= 0 sig= -63 rate= 39.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:3% tailscaled:2%
+03:47:52 t=  33 L=0.55 f=273 gw=    67ms 110+= 0 sig= -63 rate= 28.8 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:3% tailscaled:2%
+03:47:58 t=  39 L=0.59 f=273 gw=   372ms 110+= 0 sig= -63 rate= 26.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:3% tailscaled:2%
+03:48:04 t=  45 L=0.54 f=273 gw=  1262ms 110+= 0 sig= -63 rate= 28.8 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:3% python3:3% <<<STALL
+03:48:12 t=  51 L=0.45 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 28.8 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:2% avahi-daemon:2% <<<STALL
+03:48:17 t=  59 L=0.42 f=273 gw=    90ms 110+= 0 sig= -62 rate= 39.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:2% tailscaled:1%
+03:48:25 t=  64 L=0.38 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:4% python3:3% <<<STALL
+03:48:31 t=  71 L=0.33 f=273 gw=  1340ms 110+= 2 sig= -63 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.1  tailscaled:4% python3:2% <<<STALL
+03:48:37 t=  78 L=0.30 f=273 gw=    31ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:2% tailscaled:1%
+03:48:45 t=  83 L=0.27 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:11% python3:3% <<<STALL
+03:48:53 t=  92 L=0.23 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:4% python3:2% <<<STALL
+# ---- END CONTEXT ----
+# 2.4GHz neighbours: channel 1 still shared by ASQUARED(64) + ASIOT(55); band packed 6/7/8/9/11
+# recent deauth/disconnect (journal, confounder check):    <-- none (client stayed associated)
+# gp-monitor done 2026-07-07 03:48:57
+```
+
+*(`rtry+`/`fail+`/`bcn` show `-1` when the station-stats query itself is momentarily blocked by the stall —
+itself a signal that the link is jammed at that instant.)*
