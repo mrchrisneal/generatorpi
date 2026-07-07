@@ -2168,6 +2168,38 @@ footer a:hover{text-decoration:underline}
 .confirm-btns .btn3d:active{transform:translateY(1px);box-shadow:0 1px 3px rgba(0,0,0,.6),0 0 0 2px rgba(0,0,0,.6),inset 0 2px 4px rgba(0,0,0,.4)}
 
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+
+/* ---- SYSTEM drawer + CRT charts ---- */
+.drawer.sys{--tint:#0d1418}
+.sys-hdr{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
+.sys-temp-big{font:700 22px/1 var(--mono,monospace);letter-spacing:.5px}
+.sys-temp-big.ok{color:#7ce0b0}.sys-temp-big.warn{color:#ffb347}.sys-temp-big.hot{color:#ff8a6a}
+.sys-chip{font:600 11px/1 var(--mono,monospace);padding:5px 9px;border-radius:7px;border:1px solid #000;letter-spacing:.6px}
+.sys-chip.clean{color:#7ce0b0;background:#0e1a14}
+.sys-chip.thr{color:#ffb347;background:#1a1509}
+.sys-chip.uv{color:#ff8a6a;background:#1c0f0d}
+.sys-panel{border-radius:9px;overflow:hidden;background:linear-gradient(180deg,#0b1113,#070b0d);border:1px solid #000;margin-bottom:12px}
+.sys-panel-face{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;cursor:pointer;user-select:none}
+.sys-panel-title{font:700 12px/1 var(--mono,monospace);letter-spacing:1.2px;color:#9fb3ad}
+.sys-legend{display:flex;gap:12px;align-items:center}
+.sys-leg{display:flex;gap:5px;align-items:center;font:600 10px/1 var(--mono,monospace);letter-spacing:.5px;color:#8aa;cursor:pointer}
+.sys-leg .sw{width:11px;height:3px;border-radius:2px;box-shadow:0 0 5px currentColor}
+.sys-leg.off{opacity:.32;text-decoration:line-through}
+.sys-eye{background:none;border:0;color:#6a8;cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}
+.sys-panel.collapsed .sys-panel-body{display:none}
+.sys-panel-body{padding:0 10px 6px}
+.sys-screen{position:relative;height:200px;border-radius:6px;overflow:hidden;background:radial-gradient(120% 100% at 50% 0%,#0c1a16,#060b0a);border:1px solid #10201b;box-shadow:inset 0 0 22px rgba(0,0,0,.7)}
+.sys-screen::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.16) 2px 3px)}
+.sysgraph{position:absolute;inset:0;width:100%;height:100%}
+.sysgraph .grid{stroke:rgba(120,220,180,.10);stroke-width:.5}
+.sysgraph .refline{stroke:rgba(255,179,71,.35);stroke-width:.7;stroke-dasharray:3 3}
+.sysgraph .band{fill:rgba(255,80,60,.16)}
+.sysgraph polyline{fill:none;stroke-width:1.4;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px currentColor)}
+.sysgraph .axlab{fill:#6f8;font:9px var(--mono,monospace);opacity:.7}
+.sysgraph .axlab.r{fill:#6fd3e0}
+.sysgraph .cross{stroke:rgba(255,255,255,.45);stroke-width:.6}
+.sysgraph .dot{r:2.4;filter:drop-shadow(0 0 4px currentColor)}
+.sys-strip{margin-top:7px;padding:6px 9px;border-radius:5px;background:#060d0b;border:1px solid #10201b;color:#8fe6bf;font:600 11px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px;text-shadow:0 0 6px rgba(120,230,180,.4)}
 </style>{% endraw %}
 </head>"""
 
@@ -2457,7 +2489,7 @@ $('pushToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='
 $('testPushBtn').addEventListener('click',function(){post('/api/push/test').then(function(d){setPushHelp((d&&d.success)?'Test sent \\u2014 check your notifications.':((d&&d.message)||'Test failed.'));});});
 
 /* ---------- boot ---------- */
-buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');
+buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');initDrawer('sysDrawer','sys');
 registerSW();
 refresh();
 setInterval(function(){if(!busy)refresh();},4000);
@@ -2653,6 +2685,87 @@ HTML_TEMPLATE_BODY = """
               <div class="adv-btns">
                 <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
                 <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-base"></div>
+      </div>
+
+      <!-- SYSTEM drawer: in-memory host perf history, client-rendered CRT charts -->
+      <div class="drawer sys" id="sysDrawer">
+        <button type="button" class="drawer-face" aria-expanded="false" aria-controls="sysClip">
+          <span class="face-left"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="6 12 9 9 12 12 15 8 18 11"/></svg></span>SYSTEM</span>
+          <span class="face-right"><span id="sysFaceTemp" style="color:#7ce0b0">—</span><span class="caret">▾</span></span>
+        </button>
+        <div class="drawer-clip" id="sysClip">
+          <div class="drawer-cavity">
+            <div class="sys-hdr">
+              <div><span class="sys-temp-big ok" id="sysHdrTemp">—</span></div>
+              <span class="sys-chip clean" id="sysThrChip">—</span>
+            </div>
+
+            <!-- COMPUTE: CPU% + MEM% (fixed 0-100) -->
+            <div class="sys-panel" data-chart="compute" id="sysChart-compute">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">COMPUTE</span>
+                <span class="sys-legend">
+                  <span class="sys-leg" data-series="cpu"><span class="sw" style="background:#ffb347;color:#ffb347"></span>CPU</span>
+                  <span class="sys-leg" data-series="mem"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>MEM</span>
+                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                </span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-strip">—</div>
+              </div>
+            </div>
+
+            <!-- LOAD: 1m + 5m (auto max, ref line @1.0) -->
+            <div class="sys-panel" data-chart="load" id="sysChart-load">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">LOAD</span>
+                <span class="sys-legend">
+                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>1m</span>
+                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#4a8f74;color:#4a8f74"></span>5m</span>
+                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                </span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-strip">—</div>
+              </div>
+            </div>
+
+            <!-- VITALS: temp (left °C) + voltage (right V), throttle bands -->
+            <div class="sys-panel" data-chart="vitals" id="sysChart-vitals">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">VITALS</span>
+                <span class="sys-legend">
+                  <span class="sys-leg" data-series="temp"><span class="sw" style="background:#ff8a6a;color:#ff8a6a"></span>°C</span>
+                  <span class="sys-leg" data-series="volt"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>V</span>
+                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                </span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-strip">—</div>
+              </div>
+            </div>
+
+            <!-- LINK: RSSI (dBm) + link quality -->
+            <div class="sys-panel" data-chart="link" id="sysChart-link">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">LINK</span>
+                <span class="sys-legend">
+                  <span class="sys-leg" data-series="rssi"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>dBm</span>
+                  <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Q</span>
+                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                </span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-strip">—</div>
               </div>
             </div>
           </div>

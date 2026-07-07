@@ -246,3 +246,13 @@ class TestStaticRouteDisabled:
         # With static_folder=None there is no /static/<path> route registered.
         resp = client.get("/static/anything.txt")
         assert resp.status_code == 404
+
+
+class TestSystemDrawerMarkup:
+    def test_system_drawer_present(self, client):
+        body = client.get(_q("/")).get_data(as_text=True)
+        assert 'id="sysDrawer"' in body
+        for cid in ("sysChart-compute", "sysChart-load",
+                    "sysChart-vitals", "sysChart-link"):
+            assert f'id="{cid}"' in body
+        assert "SYSTEM" in body and "VITALS" in body
