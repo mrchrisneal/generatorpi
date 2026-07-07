@@ -1553,6 +1553,66 @@ def _cpu_pct():
     return _cpu_delta_pct(prev, cur)
 
 
+def _read_loadavg():
+    """(1-min, 5-min) load averages from /proc/loadavg, or (None, None)."""
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+        return (round(float(parts[0]), 2), round(float(parts[1]), 2))
+    except (OSError, ValueError, IndexError):
+        return (None, None)
+
+
+def _read_mem_pct():
+    """Used-memory percentage from /proc/meminfo: 100*(1 - MemAvailable/MemTotal),
+    or None. MemAvailable (not MemFree) is the kernel's honest 'free-ish' figure."""
+    try:
+        total = avail = None
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    total = float(line.split()[1])
+                elif line.startswith("MemAvailable:"):
+                    avail = float(line.split()[1])
+                if total is not None and avail is not None:
+                    break
+        if not total or avail is None:
+            return None
+        return round(100.0 * (1.0 - avail / total), 1)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _read_temp_c():
+    """SoC temperature in degrees C from the thermal zone (millidegrees / 1000),
+    or None."""
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            return round(int(f.read().strip()) / 1000.0, 1)
+    except (OSError, ValueError):
+        return None
+
+
+def _read_wifi():
+    """(rssi_dbm, link_quality) from /proc/net/wireless, or (None, None). The first
+    two lines are headers; the first interface data line has the form:
+        wlan0: 0000   48.  -62.  -256   ...
+    where col 2 = link quality and col 3 = signal level (dBm). Trailing dots are
+    stripped before int()."""
+    try:
+        with open("/proc/net/wireless") as f:
+            lines = f.readlines()
+        for line in lines[2:]:
+            if ":" in line:
+                fields = line.split()
+                qual = int(float(fields[2].rstrip(".")))
+                rssi = int(float(fields[3].rstrip(".")))
+                return (rssi, qual)
+        return (None, None)
+    except (OSError, ValueError, IndexError):
+        return (None, None)
+
+
 def fuel_monitor_loop():
     """Background daemon: periodically evaluate the fuel projection so a low-fuel push
     fires even with NO browser open. Cadence from FUEL_MONITOR_SECONDS. Stops when

@@ -34,3 +34,47 @@ class TestCpuPercent:
             raise FileNotFoundError
         monkeypatch.setattr(builtins, "open", boom)
         assert module._read_cpu_times() is None
+
+
+class TestProcReaders:
+    def test_read_loadavg(self, module, monkeypatch):
+        monkeypatch.setattr(builtins, "open",
+                            lambda *a, **k: io.StringIO("0.58 0.42 0.30 1/123 4567\n"))
+        assert module._read_loadavg() == (0.58, 0.42)
+
+    def test_read_loadavg_missing_is_none_pair(self, module, monkeypatch):
+        def boom(*a, **k):
+            raise FileNotFoundError
+        monkeypatch.setattr(builtins, "open", boom)
+        assert module._read_loadavg() == (None, None)
+
+    def test_read_mem_pct(self, module, monkeypatch):
+        fake = "MemTotal:     1000 kB\nMemFree: 100 kB\nMemAvailable:  250 kB\n"
+        monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO(fake))
+        # used% = 100*(1 - 250/1000) = 75.0
+        assert module._read_mem_pct() == 75.0
+
+    def test_read_temp_c(self, module, monkeypatch):
+        monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO("58200\n"))
+        assert module._read_temp_c() == 58.2
+
+    def test_read_temp_missing_is_none(self, module, monkeypatch):
+        def boom(*a, **k):
+            raise FileNotFoundError
+        monkeypatch.setattr(builtins, "open", boom)
+        assert module._read_temp_c() is None
+
+    def test_read_wifi(self, module, monkeypatch):
+        fake = (
+            "Inter-| sta-|   Quality        |   Discarded packets\n"
+            " face | tus | link level noise |  nwid  crypt   frag\n"
+            " wlan0: 0000   48.  -62.  -256        0      0      0\n"
+        )
+        monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO(fake))
+        assert module._read_wifi() == (-62, 48)
+
+    def test_read_wifi_missing_is_none_pair(self, module, monkeypatch):
+        def boom(*a, **k):
+            raise FileNotFoundError
+        monkeypatch.setattr(builtins, "open", boom)
+        assert module._read_wifi() == (None, None)
