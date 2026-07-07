@@ -1654,6 +1654,41 @@ def _read_throttled():
     return _parse_throttled(_vcgencmd("get_throttled"))
 
 
+def _sample_system():
+    """Read every metric once and append a single compact point to the in-memory
+    ring buffer. Each reader already fails soft to None, so a missing source just
+    yields a null field. Never raises for a normal missing-source condition."""
+    load1, load5 = _read_loadavg()
+    rssi, qual = _read_wifi()
+    point = {
+        "t": int(time.time()),
+        "cpu": _cpu_pct(),        # stateful delta; None on the very first sample
+        "mem": _read_mem_pct(),
+        "load1": load1,
+        "load5": load5,
+        "temp": _read_temp_c(),
+        "volt": _read_volt(),
+        "thr": _read_throttled(),
+        "rssi": rssi,
+        "qual": qual,
+    }
+    with _sys_hist_lock:
+        _sys_history.append(point)
+
+
+def system_monitor_loop():
+    """Background daemon: sample host metrics into the ring buffer every
+    SYSTEM_HISTORY_SECONDS. Stops cleanly when _monitor_stop is set. RAM only --
+    never writes to disk."""
+    interval = max(5, int(CONFIG.get("SYSTEM_HISTORY_SECONDS", 15)))
+    log.info(f"System monitor started (every {interval}s)")
+    while not _monitor_stop.wait(interval):
+        try:
+            _sample_system()
+        except Exception as e:
+            log.warning(f"System monitor iteration error: {e}")
+
+
 def fuel_monitor_loop():
     """Background daemon: periodically evaluate the fuel projection so a low-fuel push
     fires even with NO browser open. Cadence from FUEL_MONITOR_SECONDS. Stops when
@@ -3139,6 +3174,10 @@ def main():
     # Background fuel monitor: fires a low-fuel push even with no browser open. Daemon
     # so it dies with the process; _monitor_stop lets a clean shutdown end it promptly.
     threading.Thread(target=fuel_monitor_loop, daemon=True).start()
+
+    # Background system monitor: samples host perf metrics into the in-memory ring
+    # buffer for the SYSTEM drawer. Daemon so it dies with the process; RAM only.
+    threading.Thread(target=system_monitor_loop, daemon=True).start()
 
     try:
         app.run(

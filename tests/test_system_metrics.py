@@ -111,3 +111,35 @@ class TestVcgencmd:
     def test_read_throttled_none_when_vcgencmd_none(self, module, monkeypatch):
         monkeypatch.setattr(module, "_vcgencmd", lambda *a: None)
         assert module._read_throttled() is None
+
+
+class TestSampleAssembly:
+    def test_sample_appends_point_with_all_keys(self, module, monkeypatch):
+        # Stub every reader so the sample is deterministic and hardware-free.
+        monkeypatch.setattr(module, "_cpu_pct", lambda: 42.0)
+        monkeypatch.setattr(module, "_read_mem_pct", lambda: 61.0)
+        monkeypatch.setattr(module, "_read_loadavg", lambda: (0.58, 0.42))
+        monkeypatch.setattr(module, "_read_temp_c", lambda: 58.2)
+        monkeypatch.setattr(module, "_read_volt", lambda: 1.35)
+        monkeypatch.setattr(module, "_read_throttled", lambda: 0)
+        monkeypatch.setattr(module, "_read_wifi", lambda: (-62, 48))
+        module._sys_history.clear()
+        module._sample_system()
+        assert len(module._sys_history) == 1
+        p = module._sys_history[0]
+        assert set(p) == {"t", "cpu", "mem", "load1", "load5",
+                          "temp", "volt", "thr", "rssi", "qual"}
+        assert p["cpu"] == 42.0 and p["load5"] == 0.42 and p["rssi"] == -62
+
+    def test_ring_buffer_evicts_oldest(self, module, monkeypatch):
+        # Shrink capacity to prove maxlen eviction without 240 iterations.
+        monkeypatch.setattr(module, "_sys_history",
+                            module.collections.deque(maxlen=3))
+        for fn in ("_cpu_pct", "_read_mem_pct", "_read_temp_c",
+                   "_read_volt", "_read_throttled"):
+            monkeypatch.setattr(module, fn, lambda: 1)
+        monkeypatch.setattr(module, "_read_loadavg", lambda: (1, 1))
+        monkeypatch.setattr(module, "_read_wifi", lambda: (1, 1))
+        for _ in range(5):
+            module._sample_system()
+        assert len(module._sys_history) == 3  # capped, oldest dropped
