@@ -3415,6 +3415,8 @@ function _updSet(text,actionLabel,actionMode,href){
   if(actionLabel){
     a.textContent=actionLabel;a.dataset.mode=actionMode||'';
     if(href){a.href=href;a.target='_blank';a.rel='noopener';}else{a.href='#';a.removeAttribute('target');}
+    // Arrow separator points toward the "Update Now" action; a dot for other actions.
+    sep.textContent=(actionMode==='update')?' \\u2192 ':' \\u00b7 ';
     a.style.display='';sep.style.display='';
   }else{a.style.display='none';sep.style.display='none';}
   row.style.display='';
@@ -3429,7 +3431,7 @@ function checkUpdate(manual){
   api('/api/check-update').then(function(d){
     row.classList.remove('checking');
     if(d&&d.update_available&&d.latest){                      // update available
-      _updSet('v'+d.latest+' available','Update','update','https://github.com/mrchrisneal/generatorpi/releases');
+      _updSet('v'+d.latest+' available!','Update now','update','https://github.com/mrchrisneal/generatorpi/releases');
       if(v)v.classList.add('out-of-date');
     }else if(!d||d.latest==null){                             // couldn't reach the repo
       _updSet('Update check failed','Check again','recheck');
