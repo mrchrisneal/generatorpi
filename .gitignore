@@ -10,3 +10,5 @@ events.db*
 ssl_cert.pem
 ssl_key.pem
 generator_control.original.py
+CLAUDE.md
+scratchpads/
