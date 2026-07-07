@@ -1959,11 +1959,12 @@ button{font-family:inherit}
 .stickyhdr .rivet.l{left:13px;top:50%;transform:translateY(-50%)}
 .stickyhdr .rivet.r{right:13px;top:50%;transform:translateY(-50%)}
 .sh-brand{display:flex;flex-direction:column;gap:3px;line-height:1}
-.sh-title{font:800 15px/1 sans-serif;letter-spacing:.14em;color:#e8e4dc;text-shadow:0 1px 0 #000,0 0 8px rgba(255,255,255,.05)}
-.sh-sub{font:700 10px/1 var(--mono,monospace);letter-spacing:.14em}
+.sh-title{font:800 19px/1 sans-serif;letter-spacing:.14em;color:#e8e4dc;text-shadow:0 1px 0 #000,0 0 8px rgba(255,255,255,.05)}
+.sh-sub{font:700 14px/1 var(--mono,monospace);letter-spacing:.12em;text-transform:uppercase}
 .sh-sub.on{color:#7ce0b0}.sh-sub.off{color:#9a948a}
-.sh-net{display:flex;align-items:center;gap:8px;color:#8aa;font:600 13px/1 var(--mono,monospace);letter-spacing:.5px}
+.sh-net{display:flex;flex-direction:column;align-items:flex-end;gap:3px;color:#8aa;font:600 14px/1 var(--mono,monospace);letter-spacing:.5px}
 .sh-net.ok{color:#7ce0b0}.sh-net.slow{color:#ffdd55}.sh-net.bad{color:#ff8a6a}
+.sh-net-sub{display:flex;gap:7px}
 .sh-net .nb-pend{color:#b8b4ac;font-weight:700}
 .sh-net .nb-ms{color:#b8b4ac;font-weight:600}
 .sh-net.bad #nbState{animation:nbpulse 1s infinite}
@@ -2935,7 +2936,10 @@ HTML_TEMPLATE_BODY = """
     <span class="sh-title">GeneratorPi</span>
     <span class="sh-sub {{ 'on' if status.running else 'off' }}" id="shSub">{{ 'Generator ON' if status.running else 'Generator OFF' }}</span>
   </span>
-  <span class="sh-net ok" id="netInd"><span class="nb-pend" id="nbPend">(0)</span><span id="nbState">&mdash;</span><span class="nb-ms" id="nbMs"></span></span>
+  <span class="sh-net ok" id="netInd">
+    <span id="nbState">&mdash;</span>
+    <span class="sh-net-sub"><span class="nb-pend" id="nbPend">(0)</span><span class="nb-ms" id="nbMs"></span></span>
+  </span>
 </div>
 <main class="panel" id="panel" data-running="{{ 'true' if status.running else 'false' }}">
   <span class="rivet tl"></span><span class="rivet tr"></span>
