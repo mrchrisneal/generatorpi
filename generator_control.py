@@ -2594,6 +2594,106 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     else if(timer){clearInterval(timer);timer=null;}
   });
 })();
+
+/* ---------- SYSTEM interaction: hover, strips, collapse, legend, status ---------- */
+(function(){
+  var LS_C="gp.sys.collapsed",LS_H="gp.sys.hidden";
+  function relTime(t){var s=Math.max(0,Math.round(Date.now()/1000)-t);
+    if(s<60)return "-"+s+"s";if(s<3600)return "-"+Math.round(s/60)+"m";
+    return "-"+(s/3600).toFixed(1)+"h";}
+  function num(v,suf,dp){return v==null?"--":((dp!=null?v.toFixed(dp):v)+(suf||""));}
+
+  // Format one chart's status strip for a given point (or latest when p is null-less).
+  function stripText(chart,p){
+    if(!p)return "\\u2014";
+    var pre=relTime(p.t)+" \\u25b8 ";
+    if(chart==="compute")return pre+"CPU "+num(p.cpu,"%")+"  MEM "+num(p.mem,"%");
+    if(chart==="load")return pre+"1m "+num(p.load1,"",2)+"  5m "+num(p.load5,"",2);
+    if(chart==="vitals")return pre+num(p.temp,"\\u00b0C",1)+"  "+num(p.volt,"V",2)+"  "+thrWord(p.thr);
+    if(chart==="link")return pre+num(p.rssi,"dBm")+"  q"+num(p.qual,"");
+    return "\\u2014";}
+  function thrWord(thr){if(thr==null)return "";
+    if(thr&0x1)return "\\u26d4undervolt";if(thr&0x4)return "\\u26a0throttle";
+    if((thr&0x10000)||(thr&0x40000))return "\\u26a0since-boot";return "\\u2713clean";}
+
+  var hoverIdx=-1;                 // -1 => show latest
+  function updateStatus(){
+    var pts=SYS.points,p=null;
+    if(pts.length)p=hoverIdx>=0&&hoverIdx<pts.length?pts[hoverIdx]:pts[pts.length-1];
+    for(var c in SYS.CHARTS){
+      var strip=document.querySelector('#sysChart-'+c+' .sys-strip');
+      if(strip)strip.textContent=stripText(c,p);}
+    // header + face live status always reflect the LATEST sample
+    var last=pts.length?pts[pts.length-1]:null;
+    var big=$('sysHdrTemp'),face=$('sysFaceTemp'),chip=$('sysThrChip');
+    if(last&&last.temp!=null){
+      var cls=last.temp>=75?"hot":last.temp>=60?"warn":"ok";
+      big.className="sys-temp-big "+cls;big.textContent=last.temp.toFixed(1)+"\\u00b0C";
+      face.style.color=cls==="hot"?"#ff8a6a":cls==="warn"?"#ffb347":"#7ce0b0";
+      face.textContent=last.temp.toFixed(0)+"\\u00b0C";
+    }else{big.textContent="\\u2014";face.textContent="\\u2014";}
+    if(chip){var t=last?last.thr:null;
+      if(t!=null&&(t&0x1)){chip.className="sys-chip uv";chip.textContent="UNDERVOLTING";}
+      else if(t!=null&&((t&0x10000)||(t&0x40000))){chip.className="sys-chip thr";chip.textContent="THROTTLED";}
+      else if(t!=null){chip.className="sys-chip clean";chip.textContent="CLEAN";}
+      else{chip.className="sys-chip clean";chip.textContent="\\u2014";}}
+  }
+
+  // Synced crosshair: pointer x over any screen -> nearest index -> all strips.
+  function showAt(idx){hoverIdx=idx;
+    document.querySelectorAll('#sysDrawer .sysgraph .cross,#sysDrawer .sysgraph .dot')
+      .forEach(function(n){n.remove();});
+    var pts=SYS.points;
+    if(idx>=0&&pts.length>1){var x=(idx/(pts.length-1))*300;
+      for(var c in SYS.CHARTS){var svg=document.querySelector('#sysChart-'+c+' .sysgraph');
+        if(!svg||document.getElementById('sysChart-'+c).classList.contains('collapsed'))continue;
+        var ln=document.createElementNS("http://www.w3.org/2000/svg","line");
+        ln.setAttribute("x1",x);ln.setAttribute("y1",0);ln.setAttribute("x2",x);
+        ln.setAttribute("y2",100);ln.setAttribute("class","cross");svg.appendChild(ln);}}
+    updateStatus();}
+
+  function bindHover(){
+    document.querySelectorAll('#sysDrawer .sys-screen').forEach(function(scr){
+      scr.addEventListener('mousemove',function(e){move(e.clientX,scr);});
+      scr.addEventListener('touchmove',function(e){
+        if(e.touches[0])move(e.touches[0].clientX,scr);},{passive:true});
+      scr.addEventListener('mouseleave',function(){showAt(-1);});});}
+  function move(clientX,scr){var r=scr.getBoundingClientRect();
+    var pts=SYS.points;if(!pts.length)return;
+    var frac=Math.min(1,Math.max(0,(clientX-r.left)/r.width));
+    showAt(Math.round(frac*(pts.length-1)));}
+
+  // Per-chart collapse (eye) with localStorage persistence.
+  function loadSet(k){try{return JSON.parse(localStorage.getItem(k))||[];}catch(e){return [];}}
+  function saveSet(k,arr){try{localStorage.setItem(k,JSON.stringify(arr));}catch(e){}}
+  function applyCollapsed(){var cs=loadSet(LS_C);
+    for(var c in SYS.CHARTS){$('sysChart-'+c).classList.toggle('collapsed',cs.indexOf(c)>=0);}}
+  function bindEyes(){
+    document.querySelectorAll('#sysDrawer .sys-eye').forEach(function(btn){
+      btn.addEventListener('click',function(e){e.stopPropagation();
+        var panel=btn.closest('.sys-panel'),c=panel.getAttribute('data-chart');
+        panel.classList.toggle('collapsed');
+        var cs=loadSet(LS_C),i=cs.indexOf(c);
+        if(panel.classList.contains('collapsed')){if(i<0)cs.push(c);}else if(i>=0)cs.splice(i,1);
+        saveSet(LS_C,cs);SYS.render();});});}
+
+  // Legend series toggles (persisted).
+  function applyHidden(){var hs=loadSet(LS_H);hs.forEach(function(k){SYS.hidden[k]=true;});
+    document.querySelectorAll('#sysDrawer .sys-leg').forEach(function(l){
+      l.classList.toggle('off',!!SYS.hidden[l.getAttribute('data-series')]);});}
+  function bindLegend(){
+    document.querySelectorAll('#sysDrawer .sys-leg').forEach(function(l){
+      l.addEventListener('click',function(){var k=l.getAttribute('data-series');
+        SYS.hidden[k]=!SYS.hidden[k];l.classList.toggle('off',!!SYS.hidden[k]);
+        var hs=loadSet(LS_H),i=hs.indexOf(k);
+        if(SYS.hidden[k]){if(i<0)hs.push(k);}else if(i>=0)hs.splice(i,1);
+        saveSet(LS_H,hs);SYS.render();});});}
+
+  // Re-apply strips after every data render.
+  window.SYS_afterRender=function(){updateStatus();};
+
+  applyCollapsed();applyHidden();bindEyes();bindLegend();bindHover();updateStatus();
+})();
 registerSW();
 refresh();
 setInterval(function(){if(!busy)refresh();},4000);
