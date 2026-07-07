@@ -3056,6 +3056,61 @@ HTML_TEMPLATE_BODY = """
         <div class="section-label">TOTAL RUNTIME (HOURS)</div>
         <div class="odometer" id="odometer"></div>
       </div>
+
+      <!-- Settings drawer (app config + manual state override). Lives in the left
+           control column under Total Runtime -- app configuration, distinct from the
+           feature "Modules" drawers in the right column. (id/class stay `adv*` so the
+           existing handlers and CSS keep working; only the visible label is SETTINGS.) -->
+      <div class="drawer adv" id="advDrawer">
+        <button type="button" class="drawer-face" aria-expanded="false" aria-controls="advClip">
+          <span class="face-left"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>SETTINGS</span>
+          <span class="face-right"><span class="caret">▾</span></span>
+        </button>
+        <div class="drawer-clip" id="advClip">
+          <div class="drawer-cavity">
+            <div class="section-label" style="margin:0">SYSTEM</div>
+            <div class="alert-cfg">
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>PUSH NOTIFICATIONS</span>
+                <div class="iotoggle" id="pushToggle" role="switch" aria-checked="false" tabindex="0" aria-label="Push notifications on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper" id="pushHelp">Checking push support…</div>
+              <button type="button" class="btn3d cyan" id="testPushBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>SEND TEST NOTIFICATION</button>
+              <div class="drawer-divider"></div>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>LOW-FUEL ALERTS</span>
+                <div class="iotoggle" id="alertToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Low-fuel alerts on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="thresh-row">
+                <span class="section-label" style="margin:0">THRESHOLD</span>
+                <input type="range" class="thresh" id="threshSlider" min="5" max="40" step="1" value="20" aria-label="Low-fuel threshold percent">
+                <span class="tval" id="threshVal">20%</span>
+              </div>
+              <div class="drawer-divider"></div>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>FUEL PROJECTION</span>
+                <div class="iotoggle" id="fuelToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Fuel projection feature on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper">Turn the fuel-projection panel and low-fuel alerts on or off for everyone.</div>
+            </div>
+            <div class="section-label" style="margin:0">MANUAL OVERRIDE</div>
+            <div class="alert-cfg">
+              <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
+              <div class="adv-btns">
+                <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
+                <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-base"></div>
+      </div>
     </div>
 
     <!-- ===== RIGHT COLUMN ===== -->
@@ -3079,6 +3134,10 @@ HTML_TEMPLATE_BODY = """
         </div>
         <div class="log" id="log"></div>
       </div>
+
+      <!-- Modules: the feature drawers below (fuel projection + system perf history).
+           This heading labels the group; each drawer is its own container. -->
+      <div class="section-label">MODULES</div>
 
       <!-- Fuel Projection drawer -->
       <div class="drawer fuel" id="fuelDrawer">
@@ -3139,58 +3198,6 @@ HTML_TEMPLATE_BODY = """
                 <button type="button" class="btn3d green" id="fillBtn">SET</button>
               </div>
               <div class="helper">Resets the baseline level to the new fill; drain rate is retained.</div>
-            </div>
-          </div>
-        </div>
-        <div class="drawer-base"></div>
-      </div>
-
-      <!-- Advanced drawer (manual state override) -->
-      <div class="drawer adv" id="advDrawer">
-        <button type="button" class="drawer-face" aria-expanded="false" aria-controls="advClip">
-          <span class="face-left"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>ADVANCED</span>
-          <span class="face-right"><span class="caret">▾</span></span>
-        </button>
-        <div class="drawer-clip" id="advClip">
-          <div class="drawer-cavity">
-            <div class="section-label" style="margin:0">SYSTEM</div>
-            <div class="alert-cfg">
-              <div class="alert-cfg-row">
-                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>PUSH NOTIFICATIONS</span>
-                <div class="iotoggle" id="pushToggle" role="switch" aria-checked="false" tabindex="0" aria-label="Push notifications on or off">
-                  <span class="half i">I</span><span class="half o">O</span>
-                </div>
-              </div>
-              <div class="helper" id="pushHelp">Checking push support…</div>
-              <button type="button" class="btn3d cyan" id="testPushBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>SEND TEST NOTIFICATION</button>
-              <div class="drawer-divider"></div>
-              <div class="alert-cfg-row">
-                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>LOW-FUEL ALERTS</span>
-                <div class="iotoggle" id="alertToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Low-fuel alerts on or off">
-                  <span class="half i">I</span><span class="half o">O</span>
-                </div>
-              </div>
-              <div class="thresh-row">
-                <span class="section-label" style="margin:0">THRESHOLD</span>
-                <input type="range" class="thresh" id="threshSlider" min="5" max="40" step="1" value="20" aria-label="Low-fuel threshold percent">
-                <span class="tval" id="threshVal">20%</span>
-              </div>
-              <div class="drawer-divider"></div>
-              <div class="alert-cfg-row">
-                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>FUEL PROJECTION</span>
-                <div class="iotoggle" id="fuelToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Fuel projection feature on or off">
-                  <span class="half i">I</span><span class="half o">O</span>
-                </div>
-              </div>
-              <div class="helper">Turn the fuel-projection panel and low-fuel alerts on or off for everyone.</div>
-            </div>
-            <div class="section-label" style="margin:0">MANUAL OVERRIDE</div>
-            <div class="alert-cfg">
-              <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
-              <div class="adv-btns">
-                <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
-                <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
-              </div>
             </div>
           </div>
         </div>
