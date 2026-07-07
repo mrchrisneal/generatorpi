@@ -2101,13 +2101,25 @@ button{font-family:inherit}
 .logseg button.on{color:#031008;background:linear-gradient(180deg,#7ce0b0,#43b382);
   text-shadow:none;box-shadow:inset 0 -1px 3px rgba(0,0,0,.3)}
 .logseg button:focus-visible{outline:2px solid #7ce0b0;outline-offset:-2px}
-/* APP LOG rows: monospace file lines, denser than event rows, no per-row divider.
-   Wrap long lines rather than scroll horizontally (the panel already scrolls y). */
+/* APP LOG rows: parsed like the EVENT rows -- a 3-column flex line (timestamp, level
+   tag, message) with the same VFD glow. Severity retints the whole row (WARN amber,
+   ERROR/CRITICAL red). Unparseable/continuation lines (tracebacks) fall back to a
+   single full-width message column so nothing is dropped. */
 .log.applog{padding:6px 10px}
-.logln{font:500 12px/1.45 var(--mono);color:#6fbf90;white-space:pre-wrap;word-break:break-word;
-  padding:1px 0;text-shadow:0 0 4px rgba(87,224,138,.30)}
+.logln{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid rgba(87,224,138,.06);
+  font:600 12px var(--mono);color:#57e08a;text-shadow:0 0 5px rgba(87,224,138,.4)}
+.logln .lt{flex:0 0 138px;color:#3f8f5e}                 /* timestamp column */
+.logln .lg{flex:0 0 56px;color:#8fe0a8}                  /* [LEVEL] tag column */
+.logln .lm{flex:1 1 auto;word-break:break-word;white-space:pre-wrap}
 .logln.warn{color:#ffce6b;text-shadow:0 0 5px rgba(255,179,71,.4)}
-.logln.err{color:#ff7a68;text-shadow:0 0 5px rgba(255,90,74,.45)}
+.logln.warn .lt{color:#b58a3c}.logln.warn .lg{color:#ffdd8f}
+.logln.err{color:#ff7a68;text-shadow:0 0 6px rgba(255,90,74,.45)}
+.logln.err .lt{color:#c0564a}.logln.err .lg{color:#ff9a8a}
+/* Narrow panel: stack the columns inline (same treatment as .evt) so nothing clips. */
+@container (max-width:560px){
+  .logln{display:block}.logln .lt,.logln .lg,.logln .lm{flex:none;display:inline}
+  .logln .lt::after,.logln .lg::after{content:" "}
+}
 .log{container-type:inline-size;position:relative;height:190px;overflow-y:auto;padding:8px 10px;border-radius:8px;
   background:radial-gradient(120% 100% at 50% 0%,#04120a,#010704 75%);box-shadow:inset 0 2px 10px rgba(0,0,0,.85)}
 .log::-webkit-scrollbar{width:8px}.log::-webkit-scrollbar-track{background:#020604}
@@ -2624,32 +2636,60 @@ function loadOlderEvents(){if(logView!=='events'||loadingOlder||oldestSeq==null)
 var LS_LOGVIEW='gp.logview';
 var logView='events';
 try{if(localStorage.getItem(LS_LOGVIEW)==='log')logView='log';}catch(e){}
-// Build one app-log row. Colourise by the "[LEVEL]" token so WARN/ERROR stand out.
+// Parse one app-log line into the same 3-column shape the EVENT rows use. The stdlib
+// format is "YYYY-MM-DD HH:MM:SS [LEVEL] message". A match yields time/level/message
+// columns tinted by severity; a non-match (blank line, multi-line traceback) renders
+// as a single full-width message so nothing is lost.
+var _logRe=/^(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}) \\[(\\w+)\\] ([\\s\\S]*)$/;
+var _lvlTag={INFO:'INFO',WARNING:'WARN',ERROR:'ERR',CRITICAL:'CRIT',DEBUG:'DBG'};
+function _span(cls,txt){var e=document.createElement('span');e.className=cls;e.textContent=txt;return e;}
 function logLnEl(s){var d=document.createElement('div');d.className='logln';
-  if(/\\[(ERROR|CRITICAL)\\]/.test(s))d.classList.add('err');
-  else if(/\\[WARN(ING)?\\]/.test(s))d.classList.add('warn');
-  d.textContent=s;return d;}
+  var m=s.match(_logRe);
+  if(m){var lvl=m[2].toUpperCase();
+    if(lvl==='ERROR'||lvl==='CRITICAL')d.classList.add('err');
+    else if(lvl==='WARNING'||lvl==='WARN')d.classList.add('warn');
+    d.appendChild(_span('lt',m[1]));
+    d.appendChild(_span('lg','['+(_lvlTag[lvl]||lvl.slice(0,4))+']'));
+    d.appendChild(_span('lm',m[3]));
+  }else{d.classList.add('raw');d.appendChild(_span('lm',s));}   // continuation / non-standard line
+  return d;}
 // Fetch + render the log-file tail through the SINGLE serial poll queue (key 'logs',
 // events-tier priority). Guarded so a late response can't paint after switching to
 // EVENTS. Oldest-first (file/tail order); keeps the view pinned to the newest line
 // only when the user is already scrolled to the bottom (so reading history isn't
 // yanked away on the 4s refresh).
-var _appLogSig=null;   // signature of the last-rendered tail; skip rebuilds when unchanged
+var _logOffset=null;   // byte cursor into the log file; null forces a full (reset) fetch
+function _setLogCount(){var n=$('log').querySelectorAll('.logln').length;$('logCount').textContent=n+' LINE'+(n===1?'':'S');}
+// INCREMENTAL app-log fetch: pass our byte cursor so the server returns ONLY the newly
+// appended lines (an idle poll is a few bytes, not ~70KB). reset=true (initial load or a
+// server-side log rotation) replaces the view; otherwise the lines are strictly-new and
+// get PREPENDED newest-first. We only reach here while scrolled to the top (paused
+// otherwise), so prepending never yanks text the user is reading.
 function loadAppLog(){var lg=$('log');if(!lg.children.length)lg.classList.add('loading');
-  pollFetch('logs','/api/logs?lines=1000',30000).then(function(d){if(!d||logView!=='log')return;
+  var q='/api/logs?lines=1000';if(_logOffset!=null)q+='&since='+_logOffset;
+  pollFetch('logs',q,30000).then(function(d){if(!d||logView!=='log')return;
     var log=$('log');log.classList.remove('loading');
     var lines=d.lines||[];
-    // Rebuilding ~1000 DOM rows every 4s is wasteful (and janky on a Pi) when the tail
-    // hasn't changed. Cheaply signature the payload and re-render ONLY on a change.
-    var sig=lines.length+'\\u0001'+(lines.length?lines[lines.length-1]:'');
-    if(sig===_appLogSig)return;_appLogSig=sig;
-    var atBottom=(log.scrollTop+log.clientHeight>=log.scrollHeight-4);
-    log.innerHTML='';for(var i=0;i<lines.length;i++){log.appendChild(logLnEl(lines[i]));}
-    $('logCount').textContent=lines.length+' LINE'+(lines.length===1?'':'S');
-    if(atBottom)log.scrollTop=log.scrollHeight;});}
+    if(typeof d.offset==='number')_logOffset=d.offset;   // advance the delta cursor
+    var atTop=(log.scrollTop<=4);
+    if(d.reset){   // full tail -> rebuild newest-first (top = most recent)
+      log.innerHTML='';for(var i=lines.length-1;i>=0;i--)log.appendChild(logLnEl(lines[i]));
+      _setLogCount();if(atTop)log.scrollTop=0;return;
+    }
+    if(!lines.length)return;                              // nothing new -> leave view as-is
+    // Delta: insert oldest->newest before the current top so the newest ends up on top.
+    for(var j=0;j<lines.length;j++)log.insertBefore(logLnEl(lines[j]),log.firstChild);
+    while(log.children.length>1000)log.removeChild(log.lastChild);   // cap rendered rows
+    _setLogCount();if(atTop)log.scrollTop=0;});}
+// True only when the panel is scrolled to the very top (newest end, both panes).
+function logAtTop(){var l=$('log');return l.scrollTop<=4;}
 // One dispatch point for the ongoing 4s refresh + post-action settle: pull whichever
-// feed is currently shown so we never render the wrong one into #log.
-function loadLogFeed(){if(logView==='log')loadAppLog();else loadNewEvents();}
+// feed is currently shown so we never render the wrong one into #log. PAUSE the feed
+// whenever the user has scrolled DOWN to read older lines -- both panes insert/repaint
+// at the top, which would shove the text they're reading around. Scrolling back to the
+// top resumes automatically on the next tick. (Initial load + view-switch bypass this;
+// they go straight through setLogView, not here.)
+function loadLogFeed(){if(!logAtTop())return;if(logView==='log')loadAppLog();else loadNewEvents();}
 // Switch views: persist, light the active segment, clear + reload the panel NOW (don't
 // wait for the next 4s tick). Resetting the event cursors forces a fresh initial event
 // load when returning to EVENTS so the list rebuilds cleanly.
@@ -2658,9 +2698,9 @@ function setLogView(v){logView=(v==='log')?'log':'events';
   var seg=$('logViewToggle');
   if(seg){var bs=seg.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].getAttribute('data-view')===logView);}}
   var log=$('log');log.innerHTML='';log.scrollTop=0;
-  // Drop the cached signature: we just cleared the panel, so the next loadAppLog MUST
-  // repaint even if the tail is byte-identical to what was shown before.
-  _appLogSig=null;
+  // Reset the byte cursor: we just cleared the panel, so the next loadAppLog must do a
+  // full (reset) fetch and rebuild rather than trying to append a delta onto nothing.
+  _logOffset=null;
   if(logView==='log'){log.classList.add('applog');loadAppLog();}
   else{log.classList.remove('applog');newestSeq=0;oldestSeq=null;loadInitialEvents();}}
 
@@ -3838,62 +3878,129 @@ def api_system_history():
     })
 
 
-def _tail_lines(path, n):
-    """Return up to the last `n` lines of a text file, read efficiently from the END.
-
-    Reads fixed-size blocks BACKWARD from EOF, prepending each, and stops as soon as
-    we've collected more than `n` newlines (so the first line we keep is guaranteed
-    whole) OR we've consumed the whole file. Cost is therefore bounded by the bytes of
-    those last `n` lines, NOT the whole (10MB-capped) log -- so an APP-LOG poll stays
-    cheap even as the file grows. Missing/empty file -> []. Decoded UTF-8 with errors
-    REPLACED so a multibyte char torn across a block boundary can never raise.
-    """
+def _read_tail_block(path, n):
+    """Read fixed-size blocks BACKWARD from EOF until we have more than `n` newlines
+    (so the first kept line is whole) OR reach BOF. Returns (data, start_pos, size)
+    where data == file bytes [start_pos:size]. Cost is bounded by the bytes of those
+    last `n` lines, NOT the whole (10MB-capped) log. Missing/empty -> (b"", 0, 0).
+    Never raises on a torn read -- callers decode UTF-8 with errors replaced."""
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
-            pos = f.tell()
-            if pos == 0:
-                return []            # empty file -> nothing to tail
+            size = f.tell()
+            if size == 0:
+                return b"", 0, 0
             block = 4096
             data = b""
-            # Walk backward a block at a time until we have >n newlines or hit BOF.
+            pos = size
             while pos > 0 and data.count(b"\n") <= n:
                 step = min(block, pos)
                 pos -= step
                 f.seek(pos)
                 data = f.read(step) + data
-            # splitlines() drops the trailing newline and handles a final partial line;
-            # [-n:] keeps only the last n (older overshoot from the final block trimmed).
-            return data.decode("utf-8", "replace").splitlines()[-n:]
+            return data, pos, size
     except (FileNotFoundError, OSError):
-        # Log file not created yet (fresh install) or unreadable -> empty, never a 500.
+        return b"", 0, 0
+
+
+def _tail_lines(path, n):
+    """Up to the last `n` COMPLETE lines of a text file (a trailing partial line -- a
+    log write in flight -- is dropped). Missing/empty -> []. Errors replaced on decode."""
+    data, _, size = _read_tail_block(path, n)
+    if size == 0:
         return []
+    # splitlines() drops the trailing newline; [-n:] trims any overshoot from the block.
+    return data.decode("utf-8", "replace").splitlines()[-n:]
+
+
+def _tail_with_cursor(path, n):
+    """(last `n` complete lines, byte cursor just past the file's final newline).
+
+    The cursor is the delta anchor: a subsequent read from it yields only newly-appended
+    bytes. It stops at the last NEWLINE (not EOF), so an in-flight final line is re-read
+    and completed on the next poll rather than shown half-written. Missing/empty -> ([], 0)."""
+    data, pos, size = _read_tail_block(path, n)
+    if size == 0:
+        return [], 0
+    last_nl = data.rfind(b"\n")                 # data ends at EOF, so this is the file's last NL
+    cursor = (pos + last_nl + 1) if last_nl >= 0 else 0
+    text = data.decode("utf-8", "replace")
+    if not text.endswith("\n"):                 # drop a trailing partial (matches the cursor)
+        idx = text.rfind("\n")
+        text = text[:idx + 1] if idx >= 0 else ""
+    return text.splitlines()[-n:], cursor
+
+
+def _read_log_range(path, start, end, n):
+    """Read the NEW bytes [start, end) and return (complete_lines, new_cursor).
+
+    Only whole lines (up to the last newline in the range) are returned; the cursor
+    advances to just past that newline, leaving any in-flight final line for next poll.
+    No new complete line yet -> ([], start). The delta is capped to the last `n` lines
+    so a huge burst can't blow the payload. Errors on decode are replaced (never raises)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(start)
+            chunk = f.read(end - start)
+    except (FileNotFoundError, OSError):
+        return [], start
+    last_nl = chunk.rfind(b"\n")
+    if last_nl < 0:
+        return [], start                        # nothing complete appended yet
+    complete = chunk[:last_nl]                   # bytes strictly before the last newline
+    cursor = start + last_nl + 1
+    lines = complete.decode("utf-8", "replace").split("\n")
+    if len(lines) > n:
+        lines = lines[-n:]
+    return lines, cursor
 
 
 @app.route('/api/logs', methods=['GET'])
 @auth_required
 def api_logs():
-    """Tail of the application log file, for the EVENT LOG panel's 'APP LOG' view.
+    """Application-log feed for the EVENT LOG panel's 'APP LOG' view -- an INCREMENTAL
+    (delta) tail so we don't resend the whole file every poll.
 
     The path is FIXED server-side (log_path = SCRIPT_DIR / LOG_FILE) and never derived
-    from any request input, so there is zero path-traversal surface -- `lines` only
-    controls HOW MANY trailing lines, clamped to a sane window. Oldest-first (natural
-    file order) so the client renders it exactly like `tail`. Missing file -> [].
+    from request input, so there is zero path-traversal surface.
 
     Query params:
-      lines -- trailing line count (default 1000, clamped 1..1000).
+      lines -- max lines to return (default/cap 1000, clamped 1..1000).
+      since -- byte cursor from a prior response's `offset`. Omitted/invalid -> a full
+               tail (the last `lines` lines). A cursor PAST current EOF means the file
+               rotated/truncated -> we transparently fall back to a full tail + reset.
 
-    Response JSON: {"lines": [<str>, ...], "path": "<log file name>"}
+    Response JSON:
+      {"lines": [<oldest..newest>], "offset": <int byte cursor>, "reset": <bool>,
+       "path": "<log file name>"}
+    `reset` true tells the client to REPLACE its view (initial load or post-rotation);
+    false means `lines` are strictly-new rows to append. Each line still carries its own
+    "YYYY-MM-DD HH:MM:SS [LEVEL] ..." timestamp, which the client parses for display.
     """
-    # type=int returns the default for a missing OR unparseable value, so `lines` is
-    # always an int; the clamp then bounds both the read cost and the response size.
-    lines = request.args.get("lines", default=1000, type=int)
-    lines = max(1, min(lines, 1000))
-    return jsonify({
-        "lines": _tail_lines(log_path, lines),
-        # Just the basename -- the UI shows it as a label; the absolute path is internal.
-        "path": log_path.name,
-    })
+    # type=int -> the default for a missing OR unparseable value; clamp bounds the payload.
+    n = request.args.get("lines", default=1000, type=int)
+    n = max(1, min(n, 1000))
+    since = request.args.get("since", default=None, type=int)
+
+    # Current EOF up front so we can classify the request (stat is cheap, never raises here).
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
+        size = 0
+
+    # FULL TAIL (reset): no cursor (initial load) OR a cursor that's negative / past EOF
+    # (the file was rotated or truncated out from under the client -> its cursor is stale).
+    if since is None or since < 0 or since > size:
+        tail, cursor = _tail_with_cursor(log_path, n)
+        return jsonify({"lines": tail, "offset": cursor, "reset": True, "path": log_path.name})
+
+    # Up to date already -> empty delta, cursor unchanged (the common idle poll: ~tiny).
+    if since >= size:
+        return jsonify({"lines": [], "offset": since, "reset": False, "path": log_path.name})
+
+    # DELTA: return only the bytes appended since the client's cursor.
+    new_lines, cursor = _read_log_range(log_path, since, size, n)
+    return jsonify({"lines": new_lines, "offset": cursor, "reset": False, "path": log_path.name})
 
 
 @app.route('/api/fuel/reading', methods=['POST'])

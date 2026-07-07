@@ -368,3 +368,96 @@ class TestAppLogEndpoint:
         p = tmp_path / "partial.log"
         p.write_text("first\nsecond\nthird", encoding="utf-8")
         assert module._tail_lines(p, 2) == ["second", "third"]
+
+
+class TestAppLogDelta:
+    """GET /api/logs incremental (byte-cursor) behaviour: the client passes ?since=<offset>
+    and the server returns ONLY newly-appended complete lines, so idle polls are tiny."""
+
+    API_KEY = "endpoint-test-key"  # matches the module-level fixture's configured key
+
+    def _point(self, module, tmp_path, text):
+        p = tmp_path / "app.log"
+        p.write_text(text, encoding="utf-8")
+        module.log_path = p
+        return p
+
+    def test_full_tail_is_reset_with_cursor(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            p = self._point(module, tmp_path, "a\nb\nc\n")
+            d = client.get(_q("/api/logs")).get_json()
+            assert d["reset"] is True
+            assert d["lines"] == ["a", "b", "c"]
+            # File ends in a newline, so the cursor is the full file size (past last NL).
+            assert d["offset"] == p.stat().st_size
+        finally:
+            module.log_path = orig
+
+    def test_delta_returns_only_new_lines(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            p = self._point(module, tmp_path, "a\nb\n")
+            off = client.get(_q("/api/logs")).get_json()["offset"]
+            # Append two more lines and poll from the cursor.
+            with open(p, "a", encoding="utf-8") as f:
+                f.write("c\nd\n")
+            d = client.get(_q(f"/api/logs?since={off}")).get_json()
+            assert d["reset"] is False
+            assert d["lines"] == ["c", "d"]      # ONLY the new lines, not a/b
+            assert d["offset"] == p.stat().st_size
+        finally:
+            module.log_path = orig
+
+    def test_idle_poll_is_empty(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            self._point(module, tmp_path, "a\nb\n")
+            off = client.get(_q("/api/logs")).get_json()["offset"]
+            # No append -> since == size -> empty delta, cursor unchanged.
+            d = client.get(_q(f"/api/logs?since={off}")).get_json()
+            assert d["reset"] is False and d["lines"] == [] and d["offset"] == off
+        finally:
+            module.log_path = orig
+
+    def test_cursor_past_eof_triggers_reset(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            self._point(module, tmp_path, "a\nb\nc\n")
+            # A stale cursor past EOF (file rotated/truncated) -> full tail + reset.
+            d = client.get(_q("/api/logs?since=999999")).get_json()
+            assert d["reset"] is True and d["lines"] == ["a", "b", "c"]
+        finally:
+            module.log_path = orig
+
+    def test_partial_line_withheld_until_complete(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            p = self._point(module, tmp_path, "a\nb\n")
+            off = client.get(_q("/api/logs")).get_json()["offset"]
+            # Append an in-flight line with NO trailing newline: not a complete line yet.
+            with open(p, "a", encoding="utf-8") as f:
+                f.write("partial")
+            d1 = client.get(_q(f"/api/logs?since={off}")).get_json()
+            assert d1["lines"] == [] and d1["offset"] == off   # withheld, cursor frozen
+            # Complete the line -> now it (whole) is returned and the cursor advances.
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(" rest\n")
+            d2 = client.get(_q(f"/api/logs?since={off}")).get_json()
+            assert d2["lines"] == ["partial rest"]
+            assert d2["offset"] == p.stat().st_size
+        finally:
+            module.log_path = orig
+
+    def test_full_tail_offset_stops_at_last_newline(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            # File does NOT end in a newline: the trailing partial is dropped AND the
+            # cursor stops just past the last complete line's newline (not at EOF).
+            p = self._point(module, tmp_path, "a\nb\nhalf")
+            d = client.get(_q("/api/logs")).get_json()
+            assert d["lines"] == ["a", "b"]         # "half" withheld
+            assert d["offset"] == len("a\nb\n")     # past the 2nd newline, before "half"
+            assert d["offset"] < p.stat().st_size
+        finally:
+            module.log_path = orig
