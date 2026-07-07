@@ -1613,6 +1613,47 @@ def _read_wifi():
         return (None, None)
 
 
+def _vcgencmd(*args):
+    """Run `vcgencmd <args>` and return stripped stdout, or None if the binary is
+    absent (dev laptop) or the call errors/times out. Pi-only; cheap (~ms)."""
+    try:
+        res = subprocess.run(["vcgencmd", *args],
+                             capture_output=True, text=True, timeout=2)
+        if res.returncode != 0:
+            return None
+        return res.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _parse_volts(s):
+    """'volt=1.3500V' -> 1.35 (V), or None (incl. a None input from _vcgencmd)."""
+    try:
+        return round(float(s.strip().split("=")[1].rstrip("V")), 3)
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+
+def _read_volt():
+    """Core voltage in volts via vcgencmd, or None off-Pi."""
+    return _parse_volts(_vcgencmd("measure_volts", "core"))
+
+
+def _parse_throttled(s):
+    """'throttled=0x50005' -> 0x50005 (int bitmask), or None (incl. a None input).
+    Bits of interest: 0 = under-voltage NOW, 2 = throttled NOW,
+    16 = under-voltage since boot, 18 = throttled since boot."""
+    try:
+        return int(s.strip().split("=")[1], 16)
+    except (ValueError, IndexError, AttributeError):
+        return None
+
+
+def _read_throttled():
+    """get_throttled bitmask via vcgencmd, or None off-Pi."""
+    return _parse_throttled(_vcgencmd("get_throttled"))
+
+
 def fuel_monitor_loop():
     """Background daemon: periodically evaluate the fuel projection so a low-fuel push
     fires even with NO browser open. Cadence from FUEL_MONITOR_SECONDS. Stops when

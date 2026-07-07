@@ -78,3 +78,36 @@ class TestProcReaders:
             raise FileNotFoundError
         monkeypatch.setattr(builtins, "open", boom)
         assert module._read_wifi() == (None, None)
+
+
+class TestVcgencmd:
+    def test_parse_volts(self, module):
+        assert module._parse_volts("volt=1.3500V") == 1.35
+
+    def test_parse_volts_garbage_is_none(self, module):
+        assert module._parse_volts("nonsense") is None
+
+    def test_parse_volts_none_is_none(self, module):
+        # _vcgencmd returns None off-Pi; the parser must pass that through safely.
+        assert module._parse_volts(None) is None
+
+    def test_parse_throttled(self, module):
+        # 0x50005 = bits 0,2,16,18 set (undervolt now+since, throttle now+since).
+        assert module._parse_throttled("throttled=0x50005") == 0x50005
+
+    def test_parse_throttled_garbage_is_none(self, module):
+        assert module._parse_throttled("throttled=xyz") is None
+
+    def test_vcgencmd_missing_binary_is_none(self, module, monkeypatch):
+        def boom(*a, **k):
+            raise FileNotFoundError  # binary not present (dev laptop)
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert module._vcgencmd("measure_volts", "core") is None
+
+    def test_read_volt_uses_vcgencmd(self, module, monkeypatch):
+        monkeypatch.setattr(module, "_vcgencmd", lambda *a: "volt=1.2000V")
+        assert module._read_volt() == 1.2
+
+    def test_read_throttled_none_when_vcgencmd_none(self, module, monkeypatch):
+        monkeypatch.setattr(module, "_vcgencmd", lambda *a: None)
+        assert module._read_throttled() is None
