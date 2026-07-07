@@ -461,3 +461,88 @@ class TestAppLogDelta:
             assert d["offset"] < p.stat().st_size
         finally:
             module.log_path = orig
+
+
+class TestRestartEndpoint:
+    """POST /api/restart schedules a self re-exec (the actual exec is patched out)."""
+
+    def test_requires_auth(self, client):
+        assert client.post("/api/restart").status_code == 401
+
+    def test_restart_schedules_reexec_and_records_event(self, client, module, monkeypatch):
+        called = {}
+        # Patch the re-exec scheduler so the test process is NOT actually replaced.
+        monkeypatch.setattr(module, "_schedule_process_restart",
+                            lambda *a, **k: called.__setitem__("scheduled", True))
+        events = []
+        monkeypatch.setattr(module, "record_event", lambda t, m: events.append((t, m)))
+        resp = client.post(_q("/api/restart"))
+        assert resp.status_code == 200 and resp.get_json()["success"] is True
+        assert called.get("scheduled") is True
+        assert any(t == "restart" for t, _ in events)
+
+
+class TestFactoryResetEndpoint:
+    """POST /api/factory-reset wipes the store + logs + durable state, NEVER the env file."""
+
+    @pytest.fixture
+    def temp_store(self, module, tmp_path):
+        # Point the event store at a throwaway DB; restore the real default afterwards.
+        module.init_event_store(tmp_path / "events.db")
+        yield
+        with module._event_lock:
+            c = module._event_conn
+            module._event_conn = None
+            if c is not None:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+        module.init_event_store()
+
+    def test_requires_auth(self, client):
+        assert client.post("/api/factory-reset").status_code == 401
+
+    def test_wipes_store_and_state_but_leaves_env_alone(
+        self, client, module, tmp_path, temp_store, monkeypatch
+    ):
+        # Seed non-default rows + globals so we can prove they get cleared/reset.
+        module.record_event("start", "seed event")
+        module.kv_set("total_run_hours", 12.5)
+        with module._event_lock:
+            module._event_conn.execute(
+                "INSERT OR REPLACE INTO subscriptions(endpoint,p256dh,auth,created_ts) "
+                "VALUES('ep','p','a',1)")
+            module._event_conn.commit()
+        module.generator_state["total_run_hours"] = 12.5
+        module.fuel_state["fill_level"] = 42.0
+        module.alerts_state["alert_threshold"] = 33
+
+        # A log file with content -> must end up truncated.
+        logf = tmp_path / "app.log"
+        logf.write_text("noise\n" * 10, encoding="utf-8")
+        monkeypatch.setattr(module, "log_path", logf)
+        # An env file that must be left UNTOUCHED by the reset.
+        env = tmp_path / "generator_control.env"
+        env.write_text("API_KEY=keepme\n", encoding="utf-8")
+        monkeypatch.setattr(module, "ENV_FILE", env)
+
+        resp = client.post(_q("/api/factory-reset"))
+        assert resp.status_code == 200 and resp.get_json()["success"] is True
+
+        # Store emptied, then the endpoint records exactly one 'factory_reset' event.
+        with module._event_lock:
+            ev = [r[0] for r in module._event_conn.execute(
+                "SELECT type FROM events").fetchall()]
+            kv = module._event_conn.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
+            subs = module._event_conn.execute(
+                "SELECT COUNT(*) FROM subscriptions").fetchone()[0]
+        assert ev == ["factory_reset"]
+        assert kv == 0 and subs == 0
+        # Durable globals reset to code defaults.
+        assert module.generator_state["total_run_hours"] == 0.0
+        assert module.fuel_state["fill_level"] == 100.0
+        assert module.alerts_state["alert_threshold"] == 20
+        # Log truncated; env file byte-for-byte UNTOUCHED.
+        assert logf.read_text(encoding="utf-8") == ""
+        assert env.read_text(encoding="utf-8") == "API_KEY=keepme\n"

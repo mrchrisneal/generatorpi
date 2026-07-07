@@ -2681,8 +2681,8 @@ var _logOffset=null;   // byte cursor into the log file; null forces a full (res
 // drowned out; errors (4xx/5xx) and non-access lines are ALWAYS shown. The server still logs
 // everything -- this is display-only. Access lines read "<who>@<ip> -> <METHOD> <path> <status>".
 var LS_HIDEHTTP='gp.hidehttp';
-var _hideHttp=false;
-try{_hideHttp=localStorage.getItem(LS_HIDEHTTP)==='1';}catch(e){}
+var _hideHttp=true;   // DEFAULT: hide routine 2xx/3xx traffic so real events aren't buried
+try{var _hh=localStorage.getItem(LS_HIDEHTTP);if(_hh!=null)_hideHttp=(_hh==='1');}catch(e){}
 var _accessRe=/ -> (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) \\S+ ([0-9]{3})(?:\\s|$)/;
 function _isRoutineHttp(line){var m=line.match(_accessRe);return !!m&&(+m[1])<400;}   // 2xx/3xx only
 function _logHidden(line){return _hideHttp&&_isRoutineHttp(line);}                    // filter predicate
@@ -3454,7 +3454,7 @@ HTML_TEMPLATE_BODY = """
               <div class="drawer-divider"></div>
               <div class="alert-cfg-row">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>ROUTINE HTTP</span>
-                <div class="iotoggle" id="httpToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Show routine HTTP traffic in the app log">
+                <div class="iotoggle" id="httpToggle" role="switch" aria-checked="false" tabindex="0" aria-label="Show routine HTTP traffic in the app log">
                   <span class="half i">I</span><span class="half o">O</span>
                 </div>
               </div>
@@ -3553,7 +3553,7 @@ HTML_TEMPLATE_BODY = """
                 <input class="crt-input" id="readingInput" type="number" step="1" min="0" max="100" inputmode="numeric" placeholder="e.g. 48" aria-label="Record observed level percent">
                 <button type="button" class="btn3d cyan" id="recordBtn">RECORD</button>
               </div>
-              <div class="helper"><strong>TANK LEVEL OBSERVATION:</strong> Each reading refines the linear drain estimate (level = start − rate × run-hours). More readings on one tank → better projection. (% full, 0-100)</div>
+              <div class="helper"><strong>TANK LEVEL OBSERVATION:</strong> Input observed tank level while the generator is running. Each reading refines the linear drain estimate (level = start − rate × run-hours). More readings on one tank → better projection. (% full, 0-100)</div>
             </div>
 
             <div class="drawer-divider"></div>
@@ -4128,6 +4128,81 @@ def api_logs():
     # DELTA: return only the bytes appended since the client's cursor.
     new_lines, cursor = _read_log_range(log_path, since, size, n)
     return jsonify({"lines": new_lines, "offset": cursor, "reset": False, "path": log_path.name})
+
+
+def _schedule_process_restart(delay=1.0):
+    """Re-exec THIS process after `delay`s, from a daemon thread so the HTTP response is
+    delivered BEFORE we go down. os.execv replaces the process image in place, preserving
+    argv -- it self-respawns with OR without a supervisor (systemd), which is why we don't
+    depend on Restart=always. Isolated into a helper so tests can patch it out."""
+    def _do():
+        time.sleep(delay)
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:                       # execv shouldn't return; if it does...
+            log.error(f"Restart re-exec failed ({e}); exiting for a supervisor to respawn.")
+            os._exit(1)
+    threading.Thread(target=_do, daemon=True, name="restart").start()
+
+
+@app.route('/api/restart', methods=['POST'])
+@auth_required
+def api_restart():
+    """Restart the server process (self re-exec). Returns 200 FIRST, then re-execs after a
+    short delay so the response reaches the client. Authed + CSRF-guarded like every POST."""
+    log.warning(f"Application restart requested by {caller_identity()}@{request.remote_addr}")
+    record_event("restart", "Application restart requested")
+    _schedule_process_restart()
+    return jsonify({"success": True, "message": "Restarting - reconnecting shortly..."})
+
+
+def factory_reset():
+    """Wipe the application's runtime MEMORY back to factory defaults: empty the event
+    store (events/kv/subscriptions rows), truncate the app log file, and reset the durable
+    in-memory globals (lifetime run-hours, fuel model, alert config) to code defaults.
+
+    Deliberately does NOT touch generator_control.env or ANY credential/config file -- the
+    reset contract is 'logs + DB/state only, leave the env alone'. Schema is preserved
+    (rows cleared, tables kept) so the app keeps working live without a restart."""
+    # 1. Empty the DB tables (one shared connection, serialized by _event_lock).
+    with _event_lock:
+        if _event_conn is not None:
+            _event_conn.execute("DELETE FROM events")
+            _event_conn.execute("DELETE FROM kv")
+            _event_conn.execute("DELETE FROM subscriptions")
+            _event_conn.commit()
+    # 2. Reset the durable in-memory globals to their code defaults.
+    with state_lock:
+        generator_state["running"] = False
+        generator_state["current_run_started_at"] = None
+        generator_state["total_run_hours"] = 0.0
+        fuel_state["fill_level"] = 100.0
+        fuel_state["fill_run_hours"] = 0.0
+        fuel_state["drain_rate"] = FUEL_DEFAULT_RATE
+        fuel_state["default_rate"] = FUEL_DEFAULT_RATE
+        alerts_state["alerts_on"] = True
+        alerts_state["alert_threshold"] = 20
+        alerts_state["fuel_enabled"] = True
+    # 3. Truncate the application log file (open 'w' empties it). Best-effort, never fatal.
+    try:
+        with open(log_path, "w"):
+            pass
+    except OSError:
+        pass
+
+
+@app.route('/api/factory-reset', methods=['POST'])
+@auth_required
+def api_factory_reset():
+    """Factory reset: wipe the event store + logs + durable state (NEVER the env file) back
+    to defaults. No process restart -- factory_reset() resets the live in-memory globals, so
+    the running app continues with a clean slate. Authed + CSRF-guarded. The client refreshes
+    to reflect the reset state."""
+    log.warning(f"FACTORY RESET requested by {caller_identity()}@{request.remote_addr}")
+    factory_reset()
+    # First event written into the freshly-emptied store, so there's an audit trail of it.
+    record_event("factory_reset", "Factory reset performed (event store + logs cleared)")
+    return jsonify({"success": True, "message": "Factory reset complete."})
 
 
 @app.route('/api/fuel/reading', methods=['POST'])
