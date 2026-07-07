@@ -3600,7 +3600,7 @@ HTML_TEMPLATE_BODY = """
               <div class="helper">Restarts the GeneratorPi service on the server. The page reconnects after a few seconds; the generator and relay are unaffected.</div>
               <button type="button" class="btn3d danger" id="restartBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESTART APP</button>
               <div class="drawer-divider"></div>
-              <div class="helper">Wipes the app's memory — event log, application logs, lifetime run-hours, and fuel/alert settings — back to factory defaults. Your login &amp; server config are <strong>not</strong> touched. This <strong>cannot be undone</strong>.</div>
+              <div class="helper">Wipes the app's memory — event log, application logs, lifetime run-hours, and fuel/alert settings — back to factory defaults. Your login &amp; server config are <strong>not</strong> touched. Your .env file should remain mostly unchanged. This <strong>cannot be undone</strong>.</div>
               <button type="button" class="btn3d danger" id="factoryBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>FACTORY RESET</button>
             </div>
           </div>
@@ -4409,7 +4409,7 @@ def update_check_loop():
     if further releases appear later -- the operator hears about it once, not hourly. The
     flag resets naturally when the app restarts."""
     pushed = False
-    if _monitor_stop.wait(60):                        # settle after startup before 1st call
+    if _monitor_stop.wait(30):                        # first check 30s after startup
         return
     while True:
         if not pushed:
