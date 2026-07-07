@@ -1963,7 +1963,7 @@ button{font-family:inherit}
 .sh-sub{font:700 14px/1 var(--mono,monospace);letter-spacing:.12em;text-transform:uppercase}
 .sh-sub.on{color:#7ce0b0}.sh-sub.off{color:#9a948a}
 .sh-net{display:flex;flex-direction:column;align-items:flex-end;gap:3px;color:#8aa;font:600 14px/1 var(--mono,monospace);letter-spacing:.5px}
-.sh-net.ok{color:#7ce0b0}.sh-net.slow{color:#ffdd55}.sh-net.bad{color:#ff8a6a}
+.sh-net.ok{color:#7ce0b0}.sh-net.slow{color:#ffdd55}.sh-net.vslow{color:#ffa347}.sh-net.bad{color:#ff8a6a}
 .sh-net-sub{display:flex;align-items:center;gap:7px}
 /* Spinner+count group: reserves its space (so the dot separator never shifts) but fades
    in only while requests are pending, and fades back out when they finish. */
@@ -2357,7 +2357,7 @@ function pollFetch(key,path,ms){
   if(_pollBusy[key])return Promise.resolve(null);
   _pollBusy[key]=true;
   var ctrl=('AbortController' in window)?new AbortController():null;
-  var to=setTimeout(function(){if(ctrl)ctrl.abort();},ms||20000);
+  var to=setTimeout(function(){if(ctrl)ctrl.abort();},ms||30000);
   return netFetch(path,ctrl?{signal:ctrl.signal}:{})
     .then(function(r){return r.json().catch(function(){return {};});})
     .catch(function(){return null;})
@@ -2427,7 +2427,17 @@ function setReel(r,target){
     r.pos=t;r.wrapping=false;r.pending=null;
   },r.dur+40);
 }
-function updateOdometer(hours){var intPart=Math.min(9999,Math.floor(hours));var ds=('0000'+intPart).slice(-4);for(var i=0;i<4;i++){setReel(odoReels[i],parseInt(ds.charAt(i),10)*ODO_CELL);}var frac=hours-Math.floor(hours);setReel(odoReels[4],frac*10*ODO_CELL);}
+var _lastOdoHours=null;
+function updateOdometer(hours){
+  // The lifetime odometer only ever INCREMENTS. Ignore any lower value (e.g. the live
+  // uptime tick overshooting, then a delayed/slow state response pulling it back) so the
+  // wheels never spin backward or roll all the way around -- they only climb forward.
+  if(_lastOdoHours!=null && hours < _lastOdoHours) return;
+  _lastOdoHours=hours;
+  var intPart=Math.min(9999,Math.floor(hours));var ds=('0000'+intPart).slice(-4);
+  for(var i=0;i<4;i++){setReel(odoReels[i],parseInt(ds.charAt(i),10)*ODO_CELL);}
+  var frac=hours-Math.floor(hours);setReel(odoReels[4],frac*10*ODO_CELL);
+}
 
 /* ---------- state render ---------- */
 function cmdLabel(c){return {start:'START',stop:'STOP',mark_run:'MARK RUN',mark_stop:'MARK STOP'}[c]||DASH;}
@@ -2767,13 +2777,14 @@ var SYS=(function(){
 function netRender(){
   var ind=$('netInd');if(!ind)return;
   var now=Date.now();
-  var stale=NET.lastOk&&(now-NET.lastOk>15000);
+  var stale=NET.lastOk&&(now-NET.lastOk>32000);
   var reconnecting=(NET.pending===0&&NET.lastErr>NET.lastOk)||stale;
   var n=NET.samples.length;
   var ms=n?Math.round(NET.samples.reduce(function(a,b){return a+b;},0)/n):null; // avg of last 8
   var cls='ok',state='ONLINE';
   if(reconnecting){cls='bad';state='RECONNECTING';}   // red reserved for no-connection
   else if(ms==null){state='CONNECTING';}
+  else if(ms>=5000){cls='vslow';state='VERY SLOW';}    // orange: very slow
   else if(ms>=1000){cls='slow';state='SLOW';}          // yellow: connected but slow
   else{cls='ok';state='ONLINE';}                        // green: under 1s
   ind.className='sh-net '+cls;
