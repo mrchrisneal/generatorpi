@@ -1924,6 +1924,8 @@ html,body{background:#0a0a0b;color:#d7d3cc;-webkit-text-size-adjust:100%}
 body{font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
   min-height:100vh;display:flex;justify-content:center;
   padding:16px;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+/* Tight body padding on narrow phones so the panel gets the width. */
+@media (max-width:499px){body{padding:6px;padding:max(6px,env(safe-area-inset-top)) max(6px,env(safe-area-inset-right)) max(6px,env(safe-area-inset-bottom)) max(6px,env(safe-area-inset-left))}}
 :root{--mono:ui-monospace,'SF Mono',Menlo,monospace}
 button{font-family:inherit}
 
@@ -2261,6 +2263,15 @@ footer a:hover{text-decoration:underline}
 .sys-strip .t{color:#6f8f7e;white-space:nowrap;flex:0 0 auto}
 .sys-strip .v{display:flex;gap:14px;flex:1 1 auto;justify-content:flex-end;flex-wrap:wrap}
 .sys-strip .v span{text-shadow:0 0 6px currentColor}
+/* Narrow phones: tighten legend gaps + panel padding so the chart faces (title +
+   legend + eye, incl. the spelled-out "Quality") don't overflow at ~320px. */
+@media (max-width:499px){
+  .sys-panel-face{padding:8px 8px}
+  .sys-panel-body{padding:0 8px 6px}
+  .sys-legend{gap:6px}
+  .sys-leg{gap:4px}
+  .sys-leg .sw{width:10px}
+}
 </style>{% endraw %}
 </head>"""
 
