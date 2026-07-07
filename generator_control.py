@@ -2091,18 +2091,33 @@ button{font-family:inherit}
 /* Right-side cluster: the EVENTS|APP LOG segmented toggle + the count. align-items
    centered (not baseline) so the pill and the count line up vertically. */
 .log-tools{display:flex;align-items:center;gap:12px}
-/* Segmented two-way toggle -- same VFD language as the rest of the panel: a dark
-   inset pill, the active segment lit green. Buttons are keyboard-focusable. */
-.logseg{display:inline-flex;border:1px solid #16321f;border-radius:6px;overflow:hidden;
-  background:#04120a;box-shadow:inset 0 1px 4px rgba(0,0,0,.7)}
-.logseg button{appearance:none;border:0;margin:0;cursor:pointer;
-  font:600 10px var(--mono);letter-spacing:.1em;color:#4f7a60;background:transparent;
-  padding:4px 9px;line-height:1;transition:color .15s,background .15s}
-.logseg button+button{border-left:1px solid #16321f}
-.logseg button:hover{color:#8fe0a8}
-.logseg button.on{color:#031008;background:linear-gradient(180deg,#7ce0b0,#43b382);
-  text-shadow:none;box-shadow:inset 0 -1px 3px rgba(0,0,0,.3)}
-.logseg button:focus-visible{outline:2px solid #7ce0b0;outline-offset:-2px}
+/* Segmented two-way toggle -- styled to MATCH the I/O switch: identical 34px height,
+   dark inset well, and the ACTIVE segment lit the SAME green as the iotoggle's active
+   half; the inactive segment sits dim. Auto width (its labels are wider than I/O). */
+.logseg{display:inline-flex;height:34px;padding:2px;border-radius:6px;
+  background:#08080a;border:1px solid #000;box-shadow:inset 0 2px 5px rgba(0,0,0,.8);cursor:pointer}
+.logseg button{appearance:none;margin:0;border:0;cursor:pointer;white-space:nowrap;position:relative;
+  display:flex;align-items:center;justify-content:center;padding:0 14px;
+  font:700 11px var(--mono);letter-spacing:.08em;background:#1a1a1e;color:#5a5650;
+  transition:color .15s,background .15s}
+.logseg button:first-child{border-radius:4px 0 0 4px}
+.logseg button:last-child{border-radius:0 4px 4px 0}
+.logseg button+button{border-left:1px solid #000}
+/* INSET glow (not an outer 0 0 spread) so the active segment's green never bleeds across
+   the seam into the inactive option -- the outer glow would paint over the neighbour. */
+.logseg button.on{background:linear-gradient(180deg,#1a6040,#123f2a);color:#7effb0;
+  box-shadow:inset 0 0 7px rgba(87,224,138,.22);text-shadow:0 0 4px rgba(87,224,138,.5)}
+.logseg button:focus-visible{outline:3px solid #ffca7a;outline-offset:3px}
+/* Selected segment while its feed loads: hide the label + show a centered spinner
+   (light, to read on the green active bg). Mirrors the button/iotoggle spinners. */
+.logseg button.loading{color:transparent!important}
+.logseg button.loading::after{content:"";position:absolute;top:50%;left:50%;width:12px;height:12px;
+  margin:-6px 0 0 -6px;border:2px solid rgba(220,240,230,.35);border-top-color:#eafff5;
+  border-radius:50%;animation:btnspin .7s linear infinite}
+/* LOG VIEWER settings rows: stack label / control / description on their OWN lines
+   (icon+label, then the toggle, then the helper) -- a wide control like the EVENTS|APP
+   LOG segment never gets cramped as it would in the side-by-side SYSTEM iotoggle rows. */
+.log-setting{display:flex;flex-direction:column;align-items:flex-start;gap:12px}
 /* APP LOG rows: parsed like the EVENT rows -- a 3-column flex line (timestamp, level
    tag, message) with the same VFD glow. Severity retints the whole row (WARN amber,
    ERROR/CRITICAL red). Unparseable/continuation lines (tracebacks) fall back to a
@@ -2219,7 +2234,7 @@ button{font-family:inherit}
 .alert-dot{width:9px;height:9px;border-radius:50%;background:#ff3a22;box-shadow:0 0 8px 2px rgba(255,60,30,.7);animation:pulse 1s ease-in-out infinite}
 .alert-cfg{padding:12px 14px;border-radius:8px;background:linear-gradient(160deg,#0b1214,#04080a);border:1px solid #08161a;display:flex;flex-direction:column;gap:12px;container-type:inline-size}
 .alert-cfg-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.alert-cfg-row .lbl{display:flex;align-items:center;gap:9px;font:700 12px sans-serif;letter-spacing:.1em;color:#9fdcec}
+.alert-cfg-row .lbl,.log-setting .lbl{display:flex;align-items:center;gap:9px;font:700 12px sans-serif;letter-spacing:.1em;color:#9fdcec}
 .thresh-row{display:flex;align-items:center;gap:12px}
 .thresh-row .tval{font:700 15px var(--mono);color:#ffb347;min-width:44px;text-align:right}
 /* When the alert card gets narrow (~440px viewport and below) the label+slider+value
@@ -2270,7 +2285,7 @@ input[type=range].thresh::-moz-range-thumb{width:20px;height:20px;border:0;borde
    font-size:0 collapses the glyph so the half's flex centering centers the spinner; 15px
    matches the glyph size. */
 .iotoggle .half.loading{font-size:0}
-.iotoggle .half.loading::after{content:"";display:inline-block;width:12px;height:12px;border:2px solid rgba(210,225,215,.35);border-top-color:#dff2e8;border-radius:50%;animation:btnspin .7s linear infinite}
+.iotoggle .half.loading::after{content:"";display:inline-block;width:9px;height:9px;border:1.5px solid rgba(210,225,215,.35);border-top-color:#dff2e8;border-radius:50%;animation:btnspin .7s linear infinite}
 .btn3dsm{min-height:40px;padding:0 12px}
 .led{width:9px;height:9px;border-radius:50%}
 .led.amber{background:#ffb347;box-shadow:0 0 7px rgba(255,180,71,.7)}
@@ -2626,7 +2641,7 @@ function setCount(n){totalEvents=n;$('logCount').textContent=n+' EVENT'+(n===1?'
 // Every events render guards on logView==='events': a late /api/events response must
 // NOT paint after the user has switched to APP LOG (it would wipe the app-log lines).
 function loadInitialEvents(){var lg=$('log');if(lg&&!lg.children.length)lg.classList.add('loading');   // spinner while the empty log loads
-  pollFetch('events','/api/events?limit=100').then(function(d){if(!d||logView!=='events')return;var log=$('log');log.classList.remove('loading');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
+  return pollFetch('events','/api/events?limit=100').then(function(d){if(!d||logView!=='events')return;var log=$('log');log.classList.remove('loading');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
 // Delta poll: only pull events AFTER the newest sequence we already hold.
 function loadNewEvents(){if(!newestSeq){loadInitialEvents();return;}pollFetch('events','/api/events?after='+newestSeq+'&limit=100').then(function(d){if(!d||logView!=='events')return;var evs=d.events||[];var log=$('log');for(var i=evs.length-1;i>=0;i--){log.insertBefore(evtEl(evs[i]),log.firstChild);}if(evs.length){newestSeq=evs[0].seq;}if(d.latest_seq)setCount(d.latest_seq);});}
 function loadOlderEvents(){if(logView!=='events'||loadingOlder||oldestSeq==null)return;loadingOlder=true;api('/api/events?before='+oldestSeq+'&limit=100').then(function(d){var evs=d.events||[];var log=$('log');evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){oldestSeq=evs[evs.length-1].seq;}loadingOlder=false;}).catch(function(){loadingOlder=false;});}
@@ -2679,7 +2694,7 @@ function _setLogCount(){var n=$('log').querySelectorAll('.logln').length;$('logC
 // otherwise), so prepending never yanks text the user is reading.
 function loadAppLog(){var lg=$('log');if(!lg.children.length)lg.classList.add('loading');
   var q='/api/logs?lines=1000';if(_logOffset!=null)q+='&since='+_logOffset;
-  pollFetch('logs',q,30000).then(function(d){if(!d||logView!=='log')return;
+  return pollFetch('logs',q,30000).then(function(d){if(!d||logView!=='log')return;
     var log=$('log');log.classList.remove('loading');
     var lines=d.lines||[];
     if(typeof d.offset==='number')_logOffset=d.offset;   // advance the delta cursor
@@ -2713,8 +2728,14 @@ function setLogView(v){logView=(v==='log')?'log':'events';
   // Reset the byte cursor: we just cleared the panel, so the next loadAppLog must do a
   // full (reset) fetch and rebuild rather than trying to append a delta onto nothing.
   _logOffset=null;
-  if(logView==='log'){log.classList.add('applog');loadAppLog();}
-  else{log.classList.remove('applog');newestSeq=0;oldestSeq=null;loadInitialEvents();}}
+  // Spinner on the SELECTED segment until its feed finishes loading (matches the button/
+  // iotoggle spinners). The loaders return their pollFetch promise so we can clear it.
+  var actBtn=seg?seg.querySelector('button[data-view="'+logView+'"]'):null;
+  if(actBtn)actBtn.classList.add('loading');
+  var p;
+  if(logView==='log'){log.classList.add('applog');p=loadAppLog();}
+  else{log.classList.remove('applog');newestSeq=0;oldestSeq=null;p=loadInitialEvents();}
+  if(actBtn){if(p&&p.then){p.then(function(){actBtn.classList.remove('loading');});}else{actBtn.classList.remove('loading');}}}
 
 /* ---------- actions ---------- */
 function refresh(){fetchState(function(s){if(s)applyState(s);});loadLogFeed();}
@@ -3420,14 +3441,14 @@ HTML_TEMPLATE_BODY = """
                  per-browser view preferences persisted in localStorage. -->
             <div class="section-label" style="margin:0">LOG VIEWER</div>
             <div class="alert-cfg">
-              <div class="alert-cfg-row">
+              <div class="log-setting">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>LOG SOURCE</span>
                 <div class="logseg" id="logViewToggle" role="group" aria-label="Log source">
                   <button type="button" data-view="events" class="on">EVENTS</button>
                   <button type="button" data-view="log">APP LOG</button>
                 </div>
+                <div class="helper" style="margin:0">Switch the EVENT LOG panel between the curated event store and a live tail of the raw application log.</div>
               </div>
-              <div class="helper">Switch the EVENT LOG panel between the curated event store and a live tail of the raw application log.</div>
               <div class="drawer-divider"></div>
               <div class="alert-cfg-row">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>ROUTINE HTTP</span>
@@ -3442,7 +3463,7 @@ HTML_TEMPLATE_BODY = """
             <div class="section-label" style="margin:0">RESET</div>
             <div class="alert-cfg">
               <div class="helper">Clears every saved preference on <strong>this browser</strong> — open/closed panels, chart layout, log source &amp; filters. Does <strong>not</strong> affect the generator, the server, or other devices.</div>
-              <button type="button" class="btn3d steel" id="resetPrefsBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESET LOCAL PREFERENCES</button>
+              <button type="button" class="btn3d steel" id="resetPrefsBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESET PREFS</button>
             </div>
           </div>
         </div>
