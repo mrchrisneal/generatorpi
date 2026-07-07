@@ -2084,8 +2084,30 @@ button{font-family:inherit}
 .reg-value{font:700 17px var(--mono);color:#6fe6a0;text-shadow:0 0 7px rgba(80,224,140,.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* ---- event log (VFD) ---- */
-.log-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.log-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}
 .log-count{font:600 12px var(--mono);letter-spacing:.1em;color:#6c675f}
+/* Right-side cluster: the EVENTS|APP LOG segmented toggle + the count. align-items
+   centered (not baseline) so the pill and the count line up vertically. */
+.log-tools{display:flex;align-items:center;gap:12px}
+/* Segmented two-way toggle -- same VFD language as the rest of the panel: a dark
+   inset pill, the active segment lit green. Buttons are keyboard-focusable. */
+.logseg{display:inline-flex;border:1px solid #16321f;border-radius:6px;overflow:hidden;
+  background:#04120a;box-shadow:inset 0 1px 4px rgba(0,0,0,.7)}
+.logseg button{appearance:none;border:0;margin:0;cursor:pointer;
+  font:600 10px var(--mono);letter-spacing:.1em;color:#4f7a60;background:transparent;
+  padding:4px 9px;line-height:1;transition:color .15s,background .15s}
+.logseg button+button{border-left:1px solid #16321f}
+.logseg button:hover{color:#8fe0a8}
+.logseg button.on{color:#031008;background:linear-gradient(180deg,#7ce0b0,#43b382);
+  text-shadow:none;box-shadow:inset 0 -1px 3px rgba(0,0,0,.3)}
+.logseg button:focus-visible{outline:2px solid #7ce0b0;outline-offset:-2px}
+/* APP LOG rows: monospace file lines, denser than event rows, no per-row divider.
+   Wrap long lines rather than scroll horizontally (the panel already scrolls y). */
+.log.applog{padding:6px 10px}
+.logln{font:500 12px/1.45 var(--mono);color:#6fbf90;white-space:pre-wrap;word-break:break-word;
+  padding:1px 0;text-shadow:0 0 4px rgba(87,224,138,.30)}
+.logln.warn{color:#ffce6b;text-shadow:0 0 5px rgba(255,179,71,.4)}
+.logln.err{color:#ff7a68;text-shadow:0 0 5px rgba(255,90,74,.45)}
 .log{container-type:inline-size;position:relative;height:190px;overflow-y:auto;padding:8px 10px;border-radius:8px;
   background:radial-gradient(120% 100% at 50% 0%,#04120a,#010704 75%);box-shadow:inset 0 2px 10px rgba(0,0,0,.85)}
 .log::-webkit-scrollbar{width:8px}.log::-webkit-scrollbar-track{background:#020604}
@@ -2419,7 +2441,7 @@ var _pollQ=[], _pollActive=false;
 // QUEUE -- so history waiting to run never delays the generator status. It still can't
 // preempt a request already IN FLIGHT (that's the one-at-a-time contract), it just loses
 // its place in line. Unknown keys default to lowest priority.
-var _pollPrio={state:0,events:1,sys:2};
+var _pollPrio={state:0,events:1,logs:1,sys:2};
 function pollFetch(key,path,ms){
   return new Promise(function(resolve){
     for(var i=0;i<_pollQ.length;i++){          // coalesce a still-queued same-key job
@@ -2587,15 +2609,56 @@ function evtEl(e){var row=document.createElement('div');row.className='evt';
   var m=document.createElement('span');m.className='m';m.textContent=e.message;
   row.appendChild(t);row.appendChild(g);row.appendChild(m);return row;}
 function setCount(n){totalEvents=n;$('logCount').textContent=n+' EVENT'+(n===1?'':'S');}
+// Every events render guards on logView==='events': a late /api/events response must
+// NOT paint after the user has switched to APP LOG (it would wipe the app-log lines).
 function loadInitialEvents(){var lg=$('log');if(lg&&!lg.children.length)lg.classList.add('loading');   // spinner while the empty log loads
-  pollFetch('events','/api/events?limit=100').then(function(d){if(!d)return;var log=$('log');log.classList.remove('loading');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
+  pollFetch('events','/api/events?limit=100').then(function(d){if(!d||logView!=='events')return;var log=$('log');log.classList.remove('loading');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
 // Delta poll: only pull events AFTER the newest sequence we already hold.
-function loadNewEvents(){if(!newestSeq){loadInitialEvents();return;}pollFetch('events','/api/events?after='+newestSeq+'&limit=100').then(function(d){if(!d)return;var evs=d.events||[];var log=$('log');for(var i=evs.length-1;i>=0;i--){log.insertBefore(evtEl(evs[i]),log.firstChild);}if(evs.length){newestSeq=evs[0].seq;}if(d.latest_seq)setCount(d.latest_seq);});}
-function loadOlderEvents(){if(loadingOlder||oldestSeq==null)return;loadingOlder=true;api('/api/events?before='+oldestSeq+'&limit=100').then(function(d){var evs=d.events||[];var log=$('log');evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){oldestSeq=evs[evs.length-1].seq;}loadingOlder=false;}).catch(function(){loadingOlder=false;});}
+function loadNewEvents(){if(!newestSeq){loadInitialEvents();return;}pollFetch('events','/api/events?after='+newestSeq+'&limit=100').then(function(d){if(!d||logView!=='events')return;var evs=d.events||[];var log=$('log');for(var i=evs.length-1;i>=0;i--){log.insertBefore(evtEl(evs[i]),log.firstChild);}if(evs.length){newestSeq=evs[0].seq;}if(d.latest_seq)setCount(d.latest_seq);});}
+function loadOlderEvents(){if(logView!=='events'||loadingOlder||oldestSeq==null)return;loadingOlder=true;api('/api/events?before='+oldestSeq+'&limit=100').then(function(d){var evs=d.events||[];var log=$('log');evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){oldestSeq=evs[evs.length-1].seq;}loadingOlder=false;}).catch(function(){loadingOlder=false;});}
+
+/* ---------- application-log view (raw log-file tail) ---------- */
+// The EVENT LOG panel toggles between the curated event store and the raw application
+// log file. logView is the current mode ('events'|'log'), persisted so the panel comes
+// back the way you left it. Both feeds render into the same #log element.
+var LS_LOGVIEW='gp.logview';
+var logView='events';
+try{if(localStorage.getItem(LS_LOGVIEW)==='log')logView='log';}catch(e){}
+// Build one app-log row. Colourise by the "[LEVEL]" token so WARN/ERROR stand out.
+function logLnEl(s){var d=document.createElement('div');d.className='logln';
+  if(/\\[(ERROR|CRITICAL)\\]/.test(s))d.classList.add('err');
+  else if(/\\[WARN(ING)?\\]/.test(s))d.classList.add('warn');
+  d.textContent=s;return d;}
+// Fetch + render the log-file tail through the SINGLE serial poll queue (key 'logs',
+// events-tier priority). Guarded so a late response can't paint after switching to
+// EVENTS. Oldest-first (file/tail order); keeps the view pinned to the newest line
+// only when the user is already scrolled to the bottom (so reading history isn't
+// yanked away on the 4s refresh).
+function loadAppLog(){var lg=$('log');if(!lg.children.length)lg.classList.add('loading');
+  pollFetch('logs','/api/logs?lines=200',30000).then(function(d){if(!d||logView!=='log')return;
+    var log=$('log');log.classList.remove('loading');
+    var lines=d.lines||[];
+    var atBottom=(log.scrollTop+log.clientHeight>=log.scrollHeight-4);
+    log.innerHTML='';for(var i=0;i<lines.length;i++){log.appendChild(logLnEl(lines[i]));}
+    $('logCount').textContent=lines.length+' LINE'+(lines.length===1?'':'S');
+    if(atBottom)log.scrollTop=log.scrollHeight;});}
+// One dispatch point for the ongoing 4s refresh + post-action settle: pull whichever
+// feed is currently shown so we never render the wrong one into #log.
+function loadLogFeed(){if(logView==='log')loadAppLog();else loadNewEvents();}
+// Switch views: persist, light the active segment, clear + reload the panel NOW (don't
+// wait for the next 4s tick). Resetting the event cursors forces a fresh initial event
+// load when returning to EVENTS so the list rebuilds cleanly.
+function setLogView(v){logView=(v==='log')?'log':'events';
+  try{localStorage.setItem(LS_LOGVIEW,logView);}catch(e){}
+  var seg=$('logViewToggle');
+  if(seg){var bs=seg.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].getAttribute('data-view')===logView);}}
+  var log=$('log');log.innerHTML='';log.scrollTop=0;
+  if(logView==='log'){log.classList.add('applog');loadAppLog();}
+  else{log.classList.remove('applog');newestSeq=0;oldestSeq=null;loadInitialEvents();}}
 
 /* ---------- actions ---------- */
-function refresh(){fetchState(function(s){if(s)applyState(s);});loadNewEvents();}
-function settle(target){var n=0;(function step(){setTimeout(function(){fetchState(function(s){if(s)applyState(s);if((s&&s.running===target)||++n>20){busy=false;sw.disabled=false;if(s)applyState(s);loadNewEvents();}else step();});},600);})();}
+function refresh(){fetchState(function(s){if(s)applyState(s);});loadLogFeed();}
+function settle(target){var n=0;(function step(){setTimeout(function(){fetchState(function(s){if(s)applyState(s);if((s&&s.running===target)||++n>20){busy=false;sw.disabled=false;if(s)applyState(s);loadLogFeed();}else step();});},600);})();}
 var sw=$('powerSwitch');
 var confirmOverlayEl=$('confirmOverlay');
 /* Element focused before the dialog opened (normally #powerSwitch) so we can
@@ -2970,6 +3033,13 @@ setInterval(netRender,2000);netRender();
 
 /* ---------- boot ---------- */
 buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');
+// EVENT LOG view toggle: wire the segmented buttons + restore the persisted view. In
+// APP-LOG mode we set the class + light the segment here; the initial fetch is driven
+// by the first refresh() below (loadLogFeed -> loadAppLog), which shows the spinner.
+(function(){var seg=$('logViewToggle');if(!seg)return;
+  seg.addEventListener('click',function(e){var b=e.target.closest('button[data-view]');if(!b)return;setLogView(b.getAttribute('data-view'));});
+  var bs=seg.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].getAttribute('data-view')===logView);}
+  if(logView==='log')$('log').classList.add('applog');})();
 // SYSTEM drawer: poll history only while open (zero cost when closed). Its persisted open
 // state is restored by initDrawer, which fires this callback -- so a drawer left open
 // resumes polling immediately on load (no more re-opening it every launch).
@@ -3272,7 +3342,15 @@ HTML_TEMPLATE_BODY = """
       <div>
         <div class="log-head">
           <span class="section-label" style="margin:0">EVENT LOG</span>
-          <span class="log-count" id="logCount">0 EVENTS</span>
+          <div class="log-tools">
+            <!-- Toggle the panel between the curated EVENT store (default) and the raw
+                 application log file tail. View choice persists to localStorage. -->
+            <div class="logseg" id="logViewToggle" role="group" aria-label="Log view">
+              <button type="button" data-view="events" class="on">EVENTS</button>
+              <button type="button" data-view="log">APP LOG</button>
+            </div>
+            <span class="log-count" id="logCount">0 EVENTS</span>
+          </div>
         </div>
         <div class="log" id="log"></div>
       </div>
@@ -3749,6 +3827,64 @@ def api_system_history():
         "sample_seconds": max(5, int(CONFIG.get("SYSTEM_HISTORY_SECONDS", 15))),
         "capacity": _sys_history.maxlen,
         "server_now": time.time(),
+    })
+
+
+def _tail_lines(path, n):
+    """Return up to the last `n` lines of a text file, read efficiently from the END.
+
+    Reads fixed-size blocks BACKWARD from EOF, prepending each, and stops as soon as
+    we've collected more than `n` newlines (so the first line we keep is guaranteed
+    whole) OR we've consumed the whole file. Cost is therefore bounded by the bytes of
+    those last `n` lines, NOT the whole (10MB-capped) log -- so an APP-LOG poll stays
+    cheap even as the file grows. Missing/empty file -> []. Decoded UTF-8 with errors
+    REPLACED so a multibyte char torn across a block boundary can never raise.
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            pos = f.tell()
+            if pos == 0:
+                return []            # empty file -> nothing to tail
+            block = 4096
+            data = b""
+            # Walk backward a block at a time until we have >n newlines or hit BOF.
+            while pos > 0 and data.count(b"\n") <= n:
+                step = min(block, pos)
+                pos -= step
+                f.seek(pos)
+                data = f.read(step) + data
+            # splitlines() drops the trailing newline and handles a final partial line;
+            # [-n:] keeps only the last n (older overshoot from the final block trimmed).
+            return data.decode("utf-8", "replace").splitlines()[-n:]
+    except (FileNotFoundError, OSError):
+        # Log file not created yet (fresh install) or unreadable -> empty, never a 500.
+        return []
+
+
+@app.route('/api/logs', methods=['GET'])
+@auth_required
+def api_logs():
+    """Tail of the application log file, for the EVENT LOG panel's 'APP LOG' view.
+
+    The path is FIXED server-side (log_path = SCRIPT_DIR / LOG_FILE) and never derived
+    from any request input, so there is zero path-traversal surface -- `lines` only
+    controls HOW MANY trailing lines, clamped to a sane window. Oldest-first (natural
+    file order) so the client renders it exactly like `tail`. Missing file -> [].
+
+    Query params:
+      lines -- trailing line count (default 200, clamped 1..500).
+
+    Response JSON: {"lines": [<str>, ...], "path": "<log file name>"}
+    """
+    # type=int returns the default for a missing OR unparseable value, so `lines` is
+    # always an int; the clamp then bounds both the read cost and the response size.
+    lines = request.args.get("lines", default=200, type=int)
+    lines = max(1, min(lines, 500))
+    return jsonify({
+        "lines": _tail_lines(log_path, lines),
+        # Just the basename -- the UI shows it as a label; the absolute path is internal.
+        "path": log_path.name,
     })
 
 

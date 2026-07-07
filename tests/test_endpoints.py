@@ -256,3 +256,115 @@ class TestSystemDrawerMarkup:
                     "sysChart-vitals", "sysChart-link"):
             assert f'id="{cid}"' in body
         assert "SYSTEM" in body and "SENSORS" in body
+
+
+class TestAppLogEndpoint:
+    """GET /api/logs -- the tail of the application log file backing the EVENT LOG
+    panel's 'APP LOG' view. Path is FIXED (log_path), so `lines` only controls count."""
+
+    def _point_log(self, module, tmp_path, text):
+        """Write `text` to a temp file and repoint the module's log_path at it.
+        Returns the Path. Not monkeypatch: these tests receive `module` + `tmp_path`
+        directly and set the global; reset_globals doesn't touch log_path, so we
+        restore it explicitly in each test via the returned original where needed."""
+        p = tmp_path / "app.log"
+        p.write_text(text, encoding="utf-8")
+        module.log_path = p
+        return p
+
+    def test_requires_auth(self, client):
+        # @auth_required with a key configured -> no key means 401.
+        assert client.get("/api/logs").status_code == 401
+
+    def test_returns_last_n_lines(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            self._point_log(module, tmp_path,
+                            "".join(f"line {i}\n" for i in range(1, 11)))
+            data = client.get(_q("/api/logs?lines=3")).get_json()
+            # Oldest-first (file order); the LAST 3 of 10 lines.
+            assert data["lines"] == ["line 8", "line 9", "line 10"]
+            assert data["path"] == "app.log"
+        finally:
+            module.log_path = orig
+
+    def test_default_lines_is_200(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            # 250 lines present; default (no ?lines) returns the last 200.
+            self._point_log(module, tmp_path,
+                            "".join(f"L{i}\n" for i in range(250)))
+            lines = client.get(_q("/api/logs")).get_json()["lines"]
+            assert len(lines) == 200
+            assert lines[0] == "L50" and lines[-1] == "L249"
+        finally:
+            module.log_path = orig
+
+    def test_lines_clamped_to_max_500(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            # 800 lines; ask for far more than the cap -> exactly 500 returned.
+            self._point_log(module, tmp_path,
+                            "".join(f"L{i}\n" for i in range(800)))
+            lines = client.get(_q("/api/logs?lines=99999")).get_json()["lines"]
+            assert len(lines) == 500
+            assert lines[-1] == "L799"
+        finally:
+            module.log_path = orig
+
+    def test_lines_clamped_to_min_1(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            self._point_log(module, tmp_path, "a\nb\nc\n")
+            # lines=0 (and negatives) clamp UP to 1 -> just the final line.
+            assert client.get(_q("/api/logs?lines=0")).get_json()["lines"] == ["c"]
+        finally:
+            module.log_path = orig
+
+    def test_bad_lines_falls_back_to_default(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            self._point_log(module, tmp_path,
+                            "".join(f"L{i}\n" for i in range(10)))
+            # Non-numeric 'lines' -> type=int yields the 200 default, so all 10 return.
+            assert len(client.get(_q("/api/logs?lines=xyz")).get_json()["lines"]) == 10
+        finally:
+            module.log_path = orig
+
+    def test_missing_file_returns_empty(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            # Point at a path that does not exist -> [] and HTTP 200 (never a 500).
+            module.log_path = tmp_path / "does-not-exist.log"
+            resp = client.get(_q("/api/logs"))
+            assert resp.status_code == 200
+            assert resp.get_json()["lines"] == []
+        finally:
+            module.log_path = orig
+
+    def test_empty_file_returns_empty(self, client, module, tmp_path):
+        orig = module.log_path
+        try:
+            self._point_log(module, tmp_path, "")
+            assert client.get(_q("/api/logs")).get_json()["lines"] == []
+        finally:
+            module.log_path = orig
+
+    def test_tail_spans_multiple_blocks(self, client, module, tmp_path):
+        # Each line is ~200 bytes; 100 lines ~= 20KB, forcing several 4096-byte
+        # backward reads so the block-boundary stitching in _tail_lines is exercised.
+        orig = module.log_path
+        try:
+            body = "".join(f"{i:04d}-" + ("x" * 200) + "\n" for i in range(100))
+            self._point_log(module, tmp_path, body)
+            lines = client.get(_q("/api/logs?lines=5")).get_json()["lines"]
+            assert len(lines) == 5
+            assert lines[0].startswith("0095-") and lines[-1].startswith("0099-")
+        finally:
+            module.log_path = orig
+
+    def test_tail_lines_helper_handles_no_trailing_newline(self, module, tmp_path):
+        # A file whose last line has no trailing "\n" (mid-write) still yields that line.
+        p = tmp_path / "partial.log"
+        p.write_text("first\nsecond\nthird", encoding="utf-8")
+        assert module._tail_lines(p, 2) == ["second", "third"]
