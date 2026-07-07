@@ -2294,6 +2294,15 @@ footer a:hover{text-decoration:underline}
 .sys-panel:not(.collapsed) .sys-caret{transform:rotate(180deg)}  /* points up when the chart is expanded, mirroring an open drawer */
 .sys-facestat{font:600 13px/1 var(--mono,monospace);letter-spacing:.4px}  /* drawer-face 1m-load (+temp) readout */
 .fs-sep{color:#6a6a66}  /* muted dot between the load and temp on the face */
+/* Chart-header right side: the legend (shown expanded) and the latest-values readout
+   (shown collapsed) share ONE grid cell so they overlap, and cross-fade on collapse --
+   so collapsing all charts leaves a compact live-values dashboard. Caret sits outside. */
+.sys-head-right{display:flex;align-items:center;gap:10px}
+.sys-head-swap{display:grid;align-items:center;justify-items:end}
+.sys-head-swap>*{grid-area:1/1;transition:opacity .3s}
+.sys-head-vals{opacity:0;pointer-events:none;white-space:nowrap;display:flex;gap:8px;font:600 12px/1 var(--mono,monospace);letter-spacing:.4px}
+.sys-panel.collapsed .sys-legend{opacity:0;pointer-events:none}
+.sys-panel.collapsed .sys-head-vals{opacity:1;pointer-events:auto}
 /* Chart body slides open/closed like a drawer (max-height + padding transition) instead of
    snapping. 300px is generous headroom over the ~230px content (200px screen + strip), so
    the expand always completes; overflow:hidden clips during the slide. */
@@ -2509,20 +2518,15 @@ function applyState(s){
   setSysFaceStat(s.sys||{});
   tick();
 }
-// Paint the SYSTEM drawer face stat: 1m load average (always shown when present) plus
-// temperature after a dot separator WHEN available -- temp is omitted off a Pi rather than
-// shown as a placeholder. Hidden entirely if load is unavailable, so no bare "--" ever.
+// Paint the SYSTEM drawer face stat: a SINGLE glanceable value -- CPU% (amber, matching the
+// COMPUTE chart's CPU line). Hidden entirely when unavailable (no sample yet) so no bare
+// "--" ever. One value only -- two looked cluttered on the face.
 function setSysFaceStat(sys){
   var el=$('sysFaceStat');if(!el)return;
-  var l=sys.load1,t=sys.temp;
-  if(l==null){el.style.display='none';el.innerHTML='';return;}
+  var c=sys.cpu;
+  if(c==null){el.style.display='none';el.innerHTML='';return;}
   el.style.display='';
-  var html='<span style="color:#9fb5ff">1m '+l.toFixed(2)+'</span>';
-  if(t!=null){                                   // append "· NN°C" only when a sensor exists
-    var tc=t>=75?'#ff8a6a':t>=60?'#ffb347':'#7ce0b0';
-    html+='<span class="fs-sep"> \\u00b7 </span><span style="color:'+tc+'">'+Math.round(t)+'\\u00b0C</span>';
-  }
-  el.innerHTML=html;
+  el.innerHTML='<span style="color:#ffb347">CPU '+Math.round(c)+'%</span>';
 }
 function setTog(id,on){$(id).setAttribute('aria-checked',on?'true':'false');}
 function tick(){if(!state)return;$('uptime').textContent=fmtClock(uptimeSecs());updateOdometer(liveTotalHours());renderFuel();}
@@ -2922,33 +2926,39 @@ initDrawer('sysDrawer','sys',function(open){
     if((thr&0x4)||(thr&0x10000)||(thr&0x40000))return "#ffb347";return "#7ce0b0";}
   // Build the hover strip: time LEFT, colour-matched values RIGHT. Each value's colour
   // matches its chart line.
+  // Colour-matched value segments for a point -- shared by the hover strip AND the
+  // collapsed-chart header readout, so both always agree.
+  function valsHTML(chart,p){
+    if(!p)return "";
+    if(chart==="compute")return seg("CPU "+num(p.cpu,"%"),"#ffb347")+seg("MEM "+num(p.mem,"%"),"#6fd3e0");
+    if(chart==="load")return seg("1m "+num(p.load1,"",2),"#9fb5ff")+seg("5m "+num(p.load5,"",2),"#eb9fd0");
+    if(chart==="vitals"){var v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
+      var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));return v;}
+    if(chart==="link")return seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
+    return "";}
   function stripHTML(chart,p){
     if(!p)return '<span class="t">\\u2014</span>';
-    var v="";
-    if(chart==="compute")v=seg("CPU "+num(p.cpu,"%"),"#ffb347")+seg("MEM "+num(p.mem,"%"),"#6fd3e0");
-    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#9fb5ff")+seg("5m "+num(p.load5,"",2),"#eb9fd0");
-    else if(chart==="vitals"){v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
-      var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));}
-    else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
     // The LEFT time indicator is only meaningful while hovering a point; at rest it's just
     // "-Ns" of the latest sample (noise). Show it only on hover -- keep an empty .t span so
     // the values stay right-aligned via the strip's space-between layout.
     var tstr=hoverIdx>=0?esc(relTime(p.t)):"";
-    return '<span class="t">'+tstr+'</span><span class="v">'+v+'</span>';}
+    return '<span class="t">'+tstr+'</span><span class="v">'+valsHTML(chart,p)+'</span>';}
 
   var hoverIdx=-1;                 // -1 => show latest
   function updateStatus(){
     var pts=SYS.view,p=null;
     if(pts.length)p=hoverIdx>=0&&hoverIdx<pts.length?pts[hoverIdx]:pts[pts.length-1];
+    var last=pts.length?pts[pts.length-1]:null;   // latest sample: collapsed-header readout + chip
     for(var c in SYS.CHARTS){
       var strip=document.querySelector('#sysChart-'+c+' .sys-strip');
-      if(strip)strip.innerHTML=stripHTML(c,p);}
+      if(strip)strip.innerHTML=stripHTML(c,p);
+      // collapsed chart shows its LATEST values in the header (cross-fades with the legend)
+      var hv=document.querySelector('#sysChart-'+c+' .sys-head-vals');
+      if(hv)hv.innerHTML=valsHTML(c,last);}
     // The throttle/undervolt chip reflects the LATEST sample; it lives in the drawer body
     // (visible only when the drawer is open). Off a Pi there's no throttle data -> HIDE the
-    // chip entirely rather than show a useless "--". (The FACE stat -- 1m load + optional
-    // temp -- is driven by applyState from the state poll, so it stays live even when the
-    // drawer is collapsed and history isn't polling.)
-    var last=pts.length?pts[pts.length-1]:null;
+    // chip entirely rather than show a useless "--". (The FACE stat -- CPU% -- is driven by
+    // applyState from the state poll, so it stays live even when the drawer is collapsed.)
     var chip=$('sysThrChip');
     if(chip){var t=last?last.thr:null;
       if(t==null){chip.style.display="none";}
@@ -3286,15 +3296,16 @@ HTML_TEMPLATE_BODY = """
               <span class="sys-chip clean" id="sysThrChip">—</span>
             </div>
 
-            <!-- LOAD: 1m + 5m (auto max). Placed above COMPUTE per design. -->
-            <div class="sys-panel" data-chart="load" id="sysChart-load">
+            <!-- COMPUTE: CPU% + MEM% (fixed 0-100) -->
+            <div class="sys-panel" data-chart="compute" id="sysChart-compute">
               <div class="sys-panel-face">
-                <span class="sys-panel-title">LOAD</span>
-                <span class="sys-legend">
-                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#9fb5ff;color:#9fb5ff"></span>1m</span>
-                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#eb9fd0;color:#eb9fd0"></span>5m</span>
-                  <span class="sys-caret" aria-hidden="true">▾</span>
+                <span class="sys-panel-title">COMPUTE</span>
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
+                  <span class="sys-leg" data-series="cpu"><span class="sw" style="background:#ffb347;color:#ffb347"></span>CPU</span>
+                  <span class="sys-leg" data-series="mem"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>MEM</span>
                 </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
               </div>
               <div class="sys-panel-body">
                 <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
@@ -3302,15 +3313,16 @@ HTML_TEMPLATE_BODY = """
               </div>
             </div>
 
-            <!-- COMPUTE: CPU% + MEM% (fixed 0-100) -->
-            <div class="sys-panel" data-chart="compute" id="sysChart-compute">
+            <!-- LOAD: 1m + 5m (auto max) -->
+            <div class="sys-panel" data-chart="load" id="sysChart-load">
               <div class="sys-panel-face">
-                <span class="sys-panel-title">COMPUTE</span>
-                <span class="sys-legend">
-                  <span class="sys-leg" data-series="cpu"><span class="sw" style="background:#ffb347;color:#ffb347"></span>CPU</span>
-                  <span class="sys-leg" data-series="mem"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>MEM</span>
-                  <span class="sys-caret" aria-hidden="true">▾</span>
+                <span class="sys-panel-title">LOAD</span>
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
+                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#9fb5ff;color:#9fb5ff"></span>1m</span>
+                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#eb9fd0;color:#eb9fd0"></span>5m</span>
                 </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
               </div>
               <div class="sys-panel-body">
                 <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
@@ -3322,11 +3334,12 @@ HTML_TEMPLATE_BODY = """
             <div class="sys-panel" data-chart="vitals" id="sysChart-vitals">
               <div class="sys-panel-face">
                 <span class="sys-panel-title">SENSORS</span>
-                <span class="sys-legend">
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
                   <span class="sys-leg" data-series="temp"><span class="sw" style="background:#ff8a6a;color:#ff8a6a"></span>°C</span>
                   <span class="sys-leg" data-series="volt"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>V</span>
-                  <span class="sys-caret" aria-hidden="true">▾</span>
                 </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
               </div>
               <div class="sys-panel-body">
                 <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
@@ -3338,11 +3351,12 @@ HTML_TEMPLATE_BODY = """
             <div class="sys-panel" data-chart="link" id="sysChart-link">
               <div class="sys-panel-face">
                 <span class="sys-panel-title">WLINK</span>
-                <span class="sys-legend">
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
                   <span class="sys-leg" data-series="rssi"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>dBm</span>
                   <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Quality</span>
-                  <span class="sys-caret" aria-hidden="true">▾</span>
                 </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
               </div>
               <div class="sys-panel-body">
                 <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
@@ -3616,15 +3630,15 @@ def api_state():
             "fuel_enabled": alerts_state.get("fuel_enabled", True),
         }
     snap["server_now"] = time.time()
-    # SYSTEM drawer FACE stats, shown even when the drawer is collapsed and history isn't
-    # being polled. Primary = 1m load average: always available and read fresh & cheap from
-    # /proc/loadavg (no stateful delta like CPU%, so it's safe on the request path). Plus
-    # temperature when a thermal zone exists -- the UI appends it after a dot separator, and
-    # omits it entirely when null (off a Pi) rather than showing a placeholder. Both are
-    # cheap sysfs reads; throttle is intentionally excluded (vcgencmd subprocess, too costly
-    # for the frequent state poll -- the throttle chip updates from the history poll).
-    _load1, _load5 = _read_loadavg()
-    snap["sys"] = {"load1": _load1, "temp": _read_temp_c()}
+    # SYSTEM drawer FACE stat -- a single glanceable value shown even when the drawer is
+    # collapsed. CPU% is the most universally understood "how busy" metric and is always
+    # available. Pulled from the last ring-buffer sample, NOT computed here: _cpu_pct() is a
+    # stateful delta against the sampler-owned _prev_cpu, so calling it from the request path
+    # would corrupt the sampler's baseline. At most one sample-interval stale (fine for a
+    # collapsed-drawer glance); None until the first sample lands -> the UI hides it.
+    with _sys_hist_lock:
+        _last_sys = _sys_history[-1] if _sys_history else None
+    snap["sys"] = {"cpu": _last_sys["cpu"] if _last_sys else None}
     # Web Push info for the client: whether the server can send (library + VAPID key),
     # the public key the browser needs to subscribe, and how many devices are subscribed.
     snap["push"] = {
