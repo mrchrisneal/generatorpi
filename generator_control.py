@@ -2831,11 +2831,11 @@ HTML_TEMPLATE_BODY = """
   <div class="body">
     <!-- ===== LEFT COLUMN ===== -->
     <div class="col col-left">
-      <!-- Status annunciator (read-only) -->
-      <div class="annunciator">
-        <div class="lamp"></div>
-        <div>
-          <div class="ann-label">STATUS</div>
+      <!-- Status annunciator (read-only). Heading OUTSIDE the card, flush-left, like DETAIL. -->
+      <div>
+        <div class="section-label">STATUS</div>
+        <div class="annunciator">
+          <div class="lamp"></div>
           <div class="ann-value" id="statusWord">{{ 'RUNNING' if status.running else 'STOPPED' }}</div>
         </div>
       </div>
