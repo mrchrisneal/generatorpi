@@ -2230,6 +2230,10 @@ footer a:hover{text-decoration:underline}
 .sys-chip.clean{color:#7ce0b0;background:#0e1a14}
 .sys-chip.thr{color:#ffb347;background:#1a1509}
 .sys-chip.uv{color:#ff8a6a;background:#1c0f0d}
+.sys-win{display:flex;border:1px solid #14241d;border-radius:7px;overflow:hidden}
+.sys-win button{background:#0b1113;border:0;color:#6f8f7e;font:600 13px/1 var(--mono,monospace);padding:5px 10px;cursor:pointer;letter-spacing:.4px}
+.sys-win button+button{border-left:1px solid #14241d}
+.sys-win button.on{background:#0e1a14;color:#7ce0b0;text-shadow:0 0 6px rgba(124,224,176,.5)}
 .sys-panel{border-radius:9px;overflow:hidden;background:linear-gradient(180deg,#0b1113,#070b0d);border:1px solid #000;margin-bottom:12px}
 .sys-panel-face{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;cursor:pointer;user-select:none}
 .sys-panel-title{font:700 13px/1 var(--mono,monospace);letter-spacing:1.2px;color:#9fb3ad}
@@ -2549,7 +2553,9 @@ $('testPushBtn').addEventListener('click',function(){post('/api/push/test').then
 var SYS=(function(){
   var SVGNS="http://www.w3.org/2000/svg";
   var W=300,H=100;                 // viewBox units (preserveAspectRatio=none stretches)
-  var points=[];                   // last fetched samples
+  var points=[];                   // full fetched buffer (up to ~1h)
+  var view=[];                     // slice of points within the selected time window
+  var windowSec=3600;              // duration selector: 300 / 900 / 3600 (default 60m)
   // Per-chart definitions: which series, colors, axis behavior.
   var CHARTS={
     compute:{series:[{k:"cpu",c:"#ffb347"},{k:"mem",c:"#6fd3e0"}],min:0,max:100},
@@ -2564,18 +2570,24 @@ var SYS=(function(){
     for(var a in attrs)e.setAttribute(a,attrs[a]);return e;}
   function svgOf(chart){return document.querySelector('#sysChart-'+chart+' .sysgraph');}
 
-  // Value range for a set of series keys across all points (nulls skipped).
+  // Restrict the full buffer to the selected time window (relative to the newest point).
+  function computeView(){
+    if(!points.length){view=[];return;}
+    var cut=points[points.length-1].t-windowSec;
+    view=points.filter(function(p){return p.t>=cut;});}
+
+  // Value range for a set of series keys across the VISIBLE points (nulls skipped).
   function rangeOf(keys){var lo=Infinity,hi=-Infinity;
-    for(var i=0;i<points.length;i++){for(var j=0;j<keys.length;j++){
-      var v=points[i][keys[j]];if(v==null)continue;if(v<lo)lo=v;if(v>hi)hi=v;}}
+    for(var i=0;i<view.length;i++){for(var j=0;j<keys.length;j++){
+      var v=view[i][keys[j]];if(v==null)continue;if(v<lo)lo=v;if(v>hi)hi=v;}}
     if(lo===Infinity)return null;return [lo,hi];}
 
   // Build "x,y x,y" polyline segments for one series, splitting on nulls so gaps
   // aren't drawn as straight lines through missing data.
   function segs(key,ymin,ymspan){
-    var n=points.length,out=[],cur=[];
+    var n=view.length,out=[],cur=[];
     for(var i=0;i<n;i++){
-      var v=points[i][key];
+      var v=view[i][key];
       if(v==null){if(cur.length){out.push(cur);cur=[];}continue;}
       var x=n<2?0:(i/(n-1))*W;
       var y=H-((v-ymin)/(ymspan||1))*H;
@@ -2597,20 +2609,16 @@ var SYS=(function(){
     // faint horizontal grid
     for(var g=1;g<4;g++)svg.appendChild(el("line",
       {x1:0,y1:g*H/4,x2:W,y2:g*H/4,"class":"grid"}));
-    if(!points.length)return;
+    if(!view.length)return;
     // throttle/undervolt alert bands behind VITALS
-    if(def.bands){var n=points.length,run=null;
+    if(def.bands){var n=view.length,run=null;
       for(var i=0;i<=n;i++){
-        var bad=i<n&&points[i].thr!=null&&((points[i].thr&0x1)||(points[i].thr&0x4));
+        var bad=i<n&&view[i].thr!=null&&((view[i].thr&0x1)||(view[i].thr&0x4));
         if(bad&&run===null)run=i;
         else if(!bad&&run!==null){
           var x0=(run/(n-1))*W,x1=((i-1)/(n-1))*W;
           svg.appendChild(el("rect",{x:x0,y:0,width:Math.max(1,x1-x0),height:H,"class":"band"}));
           run=null;}}}
-    // reference line (LOAD @ 1.0)
-    if(def.ref!=null){var sc=scaleFor(def,def.series[0].k);
-      var yr=H-((def.ref-sc[0])/(sc[1]||1))*H;
-      svg.appendChild(el("line",{x1:0,y1:yr,x2:W,y2:yr,"class":"refline"}));}
     // series polylines
     def.series.forEach(function(s){
       if(hidden[s.k])return;
@@ -2636,15 +2644,20 @@ var SYS=(function(){
     if(lc){s[0].style.color=lc;s[1].style.color=lc;}
     if(rc){s[2].style.color=rc;s[3].style.color=rc;}}
 
-  function render(){for(var c in CHARTS){
-    if(!document.getElementById('sysChart-'+c).classList.contains('collapsed'))draw(c);}
+  function render(){
+    computeView();
+    for(var c in CHARTS){
+      if(!document.getElementById('sysChart-'+c).classList.contains('collapsed'))draw(c);}
     if(window.SYS_afterRender)window.SYS_afterRender();}
 
   function load(){return api('/api/system/history').then(function(d){
     points=(d&&d.points)||[];render();});}
 
   return {load:load,render:render,draw:draw,CHARTS:CHARTS,hidden:hidden,
-          get points(){return points;},set points(v){points=v;}};
+          setWindow:function(s){windowSec=s;render();},
+          getWindow:function(){return windowSec;},
+          get points(){return points;},set points(v){points=v;},
+          get view(){return view;}};
 })();
 
 /* ---------- boot ---------- */
@@ -2684,12 +2697,12 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#7ce0b0")+seg("5m "+num(p.load5,"",2),"#eb9fd0");
     else if(chart==="vitals"){v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
       var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));}
-    else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("Qual "+num(p.qual,""),"#ffb347");
+    else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
     return '<span class="t">'+esc(relTime(p.t))+'</span><span class="v">'+v+'</span>';}
 
   var hoverIdx=-1;                 // -1 => show latest
   function updateStatus(){
-    var pts=SYS.points,p=null;
+    var pts=SYS.view,p=null;
     if(pts.length)p=hoverIdx>=0&&hoverIdx<pts.length?pts[hoverIdx]:pts[pts.length-1];
     for(var c in SYS.CHARTS){
       var strip=document.querySelector('#sysChart-'+c+' .sys-strip');
@@ -2714,7 +2727,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
   function showAt(idx){hoverIdx=idx;
     document.querySelectorAll('#sysDrawer .sysgraph .cross,#sysDrawer .sysgraph .dot')
       .forEach(function(n){n.remove();});
-    var pts=SYS.points;
+    var pts=SYS.view;
     if(idx>=0&&pts.length>1){var x=(idx/(pts.length-1))*300;
       for(var c in SYS.CHARTS){var svg=document.querySelector('#sysChart-'+c+' .sysgraph');
         if(!svg||document.getElementById('sysChart-'+c).classList.contains('collapsed'))continue;
@@ -2730,7 +2743,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
         if(e.touches[0])move(e.touches[0].clientX,scr);},{passive:true});
       scr.addEventListener('mouseleave',function(){showAt(-1);});});}
   function move(clientX,scr){var r=scr.getBoundingClientRect();
-    var pts=SYS.points;if(!pts.length)return;
+    var pts=SYS.view;if(!pts.length)return;
     var frac=Math.min(1,Math.max(0,(clientX-r.left)/r.width));
     showAt(Math.round(frac*(pts.length-1)));}
 
@@ -2763,7 +2776,23 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
   // Re-apply strips after every data render.
   window.SYS_afterRender=function(){updateStatus();};
 
-  applyCollapsed();applyHidden();bindEyes();bindLegend();bindHover();updateStatus();
+  // Duration selector (5m/15m/60m), persisted. Filters the visible window client-side;
+  // the buffer already holds up to an hour, so no refetch is needed.
+  var LS_W="gp.sys.window";
+  function bindWindow(){
+    var saved=parseInt(localStorage.getItem(LS_W))||3600;
+    var btns=document.querySelectorAll('#sysWin button');
+    btns.forEach(function(b){
+      var sec=parseInt(b.getAttribute('data-sec'));
+      b.classList.toggle('on',sec===saved);
+      b.addEventListener('click',function(){
+        btns.forEach(function(x){x.classList.remove('on');});
+        b.classList.add('on');
+        try{localStorage.setItem(LS_W,String(sec));}catch(e){}
+        hoverIdx=-1;SYS.setWindow(sec);});});
+    SYS.setWindow(saved);}
+
+  applyCollapsed();applyHidden();bindEyes();bindLegend();bindHover();bindWindow();updateStatus();
 })();
 registerSW();
 refresh();
@@ -2976,7 +3005,12 @@ HTML_TEMPLATE_BODY = """
         <div class="drawer-clip" id="sysClip">
           <div class="drawer-cavity">
             <div class="sys-hdr">
-              <div><span class="sys-temp-big ok" id="sysHdrTemp">—</span></div>
+              <span class="sys-temp-big ok" id="sysHdrTemp">—</span>
+              <span class="sys-win" id="sysWin">
+                <button type="button" data-sec="300">5m</button>
+                <button type="button" data-sec="900">15m</button>
+                <button type="button" data-sec="3600">60m</button>
+              </span>
               <span class="sys-chip clean" id="sysThrChip">—</span>
             </div>
 
@@ -3034,7 +3068,7 @@ HTML_TEMPLATE_BODY = """
                 <span class="sys-panel-title">WLINK</span>
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="rssi"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>dBm</span>
-                  <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Qual</span>
+                  <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Quality</span>
                   <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
                 </span>
               </div>
