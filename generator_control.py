@@ -1964,8 +1964,12 @@ button{font-family:inherit}
 .sh-sub.on{color:#7ce0b0}.sh-sub.off{color:#9a948a}
 .sh-net{display:flex;flex-direction:column;align-items:flex-end;gap:3px;color:#8aa;font:600 14px/1 var(--mono,monospace);letter-spacing:.5px}
 .sh-net.ok{color:#7ce0b0}.sh-net.slow{color:#ffdd55}.sh-net.bad{color:#ff8a6a}
-.sh-net-sub{display:flex;gap:7px}
-.sh-net .nb-pend{color:#b8b4ac;font-weight:700}
+.sh-net-sub{display:flex;align-items:center;gap:7px}
+.sh-net .nb-pend{display:inline-flex;align-items:center;gap:4px;color:#b8b4ac;font-weight:700}
+.sh-net .nb-ico{width:13px;height:13px;display:block}
+.stickyhdr.syncing .nb-ico{animation:nbspin .9s linear infinite}
+@keyframes nbspin{to{transform:rotate(360deg)}}
+.sh-net .nb-sep{color:#5f5b54}
 .sh-net .nb-ms{color:#b8b4ac;font-weight:600}
 .sh-net.bad #nbState{animation:nbpulse 1s infinite}
 @keyframes nbpulse{0%,100%{opacity:1}50%{opacity:.22}}
@@ -2770,7 +2774,7 @@ function netRender(){
   else{cls='ok';state='ONLINE';}                        // green: under 1s
   ind.className='sh-net '+cls;
   var hdr=$('stickyHdr');if(hdr)hdr.classList.toggle('syncing',NET.pending>0);
-  $('nbPend').textContent='('+NET.pending+')';
+  $('nbPendN').textContent=NET.pending;
   $('nbState').textContent=state;
   $('nbMs').textContent=(ms!=null&&!reconnecting)?(ms+' ms'):'';
 }
@@ -2938,7 +2942,7 @@ HTML_TEMPLATE_BODY = """
   </span>
   <span class="sh-net ok" id="netInd">
     <span id="nbState">&mdash;</span>
-    <span class="sh-net-sub"><span class="nb-pend" id="nbPend">(0)</span><span class="nb-ms" id="nbMs"></span></span>
+    <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg><span id="nbPendN">0</span></span><span class="nb-sep">&middot;</span><span class="nb-ms" id="nbMs"></span></span>
   </span>
 </div>
 <main class="panel" id="panel" data-running="{{ 'true' if status.running else 'false' }}">
