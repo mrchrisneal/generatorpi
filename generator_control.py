@@ -2080,9 +2080,9 @@ button{font-family:inherit}
 /* caution-tape footer: diagonal hazard stripes painted onto the curved metal -- a
    translucent vertical sheen (light top -> dark bottom) sits OVER the stripes so they
    read as part of the brushed-metal base, not a flat sticker. */
-.drawer-base{height:10px;
-  background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(0,0,0,.5)),repeating-linear-gradient(45deg,#e0b200 0 8px,#181206 8px 16px);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 2px 4px rgba(0,0,0,.6)}
+.drawer-base{height:5px;
+  background:linear-gradient(90deg,rgba(0,0,0,.9) 0,rgba(0,0,0,0) 7%,rgba(0,0,0,0) 93%,rgba(0,0,0,.9) 100%),linear-gradient(180deg,rgba(255,255,255,.08),rgba(0,0,0,.62)),repeating-linear-gradient(45deg,#a8820c 0 8px,#0c0c0c 8px 16px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 2px 4px rgba(0,0,0,.6)}
 .engrave{display:inline-flex;filter:drop-shadow(0 1px 0 rgba(255,255,255,.14)) drop-shadow(0 -1px 1px rgba(0,0,0,.5))}
 .engrave svg{width:18px;height:18px;display:block}
 .warn-copy{font:600 12px var(--mono);color:#e0b090;line-height:1.5}
