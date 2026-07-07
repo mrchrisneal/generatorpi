@@ -2326,11 +2326,16 @@ footer{border-top:1px solid rgba(255,255,255,.06);padding-top:16px;
 footer .frow{font:500 12px var(--mono);color:#a6a094}
 footer a{color:rgba(255,255,255,.9);text-decoration:none}
 footer a:hover{text-decoration:underline}
-/* Update banner (shown only when out of date) inherits the normal footer .frow size +
-   colour. The version link pulses yellow and the Update action highlights. */
+/* Contextual update-status line inherits the normal footer .frow size + colour. The
+   version link pulses yellow when out of date; the action link highlights; a small
+   spinner shows while a check is in flight. */
+footer #verLink{cursor:pointer}
 footer #verLink.out-of-date{color:#ffcf5a;font-weight:700;animation:verpulse 1.4s ease-in-out infinite}
 footer #updAction{color:#ffcf5a;font-weight:700}
 @keyframes verpulse{0%,100%{opacity:1}50%{opacity:.5}}
+.upd-spin{display:none;width:11px;height:11px;margin-right:7px;vertical-align:-1px;
+  border:2px solid rgba(255,255,255,.25);border-top-color:#cfe6dd;border-radius:50%}
+footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s linear infinite}
 
 /* ---- start confirm dialog ---- */
 /* position:fixed (not absolute) so the overlay + card center in the VIEWPORT, not
@@ -3394,35 +3399,49 @@ setInterval(function(){if(!busy)refresh();},4000);
    version. ONLY when a newer one exists do we reveal the footer update banner (+ pulse the
    version yellow); otherwise the banner stays hidden. Runs once on load; the server ALSO
    checks hourly and pushes a notification (once per run) when no browser is open. */
-function _updFailed(row,t,a,v){                               // shared "couldn't check" banner
-  t.textContent='Update check failed';
-  a.textContent='Check again';a.dataset.mode='recheck';a.href='#';a.removeAttribute('target');
-  row.style.display='';if(v)v.classList.remove('out-of-date');
+/* Populate the contextual update line. text = the status; actionLabel/actionMode/href set
+   the trailing " · <link>" (omitted when actionLabel is falsy). Always reveals the row. */
+function _updSet(text,actionLabel,actionMode,href){
+  var row=$('updRow'),a=$('updAction'),sep=$('updSep');
+  $('updText').textContent=text;
+  if(actionLabel){
+    a.textContent=actionLabel;a.dataset.mode=actionMode||'';
+    if(href){a.href=href;a.target='_blank';a.rel='noopener';}else{a.href='#';a.removeAttribute('target');}
+    a.style.display='';sep.style.display='';
+  }else{a.style.display='none';sep.style.display='none';}
+  row.style.display='';
 }
-function checkUpdate(){
-  var row=$('updRow'),t=$('updText'),a=$('updAction'),v=$('verLink');if(!row||!t||!a)return;
+/* Check for a newer release. `manual` (version click / "Check again") shows a spinner +
+   "Checking…" and, when UP TO DATE, reports "Version up-to-date" as feedback. An AUTOMATIC
+   (on-load) check stays silent when up to date -- the line only surfaces for
+   available/failed. Both reveal the line for an available update (+ pulse) or a failure. */
+function checkUpdate(manual){
+  var row=$('updRow'),v=$('verLink');if(!row)return;
+  if(manual){row.classList.add('checking');_updSet('Checking for updates\\u2026');if(v)v.classList.remove('out-of-date');}
   api('/api/check-update').then(function(d){
+    row.classList.remove('checking');
     if(d&&d.update_available&&d.latest){                      // update available
-      t.textContent='v'+d.latest+' available';                // compact: "vX.Y.Z available · Update"
-      a.textContent='Update';a.dataset.mode='update';
-      a.href='https://github.com/mrchrisneal/generatorpi/releases';a.target='_blank';a.rel='noopener';
-      row.style.display='';if(v)v.classList.add('out-of-date');
+      _updSet('v'+d.latest+' available','Update','update','https://github.com/mrchrisneal/generatorpi/releases');
+      if(v)v.classList.add('out-of-date');
     }else if(!d||d.latest==null){                             // couldn't reach the repo
-      _updFailed(row,t,a,v);
-    }else{                                                    // up to date -> hide the banner
-      row.style.display='none';if(v)v.classList.remove('out-of-date');
+      _updSet('Update check failed','Check again','recheck');
+      if(v)v.classList.remove('out-of-date');
+    }else{                                                    // up to date
+      if(v)v.classList.remove('out-of-date');
+      if(manual){_updSet('Version up-to-date');}             // feedback for a manual check
+      else{row.style.display='none';}                        // silent on a normal load
     }
-  }).catch(function(){_updFailed(row,t,a,v);});               // network/JS error == failed
+  }).catch(function(){row.classList.remove('checking');_updSet('Update check failed','Check again','recheck');if(v)v.classList.remove('out-of-date');});
 }
-/* The action link re-checks in the failed state; in the update state it navigates to
-   releases (its href). */
+/* The action link re-checks (manual) in the failed state; in the update state it navigates
+   to releases via its href. */
 $('updAction').addEventListener('click',function(e){
-  if(this.dataset.mode!=='update'){e.preventDefault();checkUpdate();}
+  if(this.dataset.mode!=='update'){e.preventDefault();checkUpdate(true);}
 });
-/* Clicking the version (v1.0.0) does a MANUAL update check instead of navigating -- the
-   title attribute tells the user so on hover. Up to date -> the banner stays hidden. */
+/* Clicking the version (v1.0.0) runs a MANUAL check instead of navigating -- the title
+   tooltip says so on hover. */
 (function(){var vl=$('verLink');if(!vl)return;
-  vl.addEventListener('click',function(e){e.preventDefault();checkUpdate();});})();
+  vl.addEventListener('click',function(e){e.preventDefault();checkUpdate(true);});})();
 checkUpdate();
 setInterval(function(){tick();},1000);
 })();
@@ -3788,10 +3807,12 @@ HTML_TEMPLATE_BODY = """
   <footer>
     <div class="frow">&copy; 2026 <a href="https://neal.media" target="_blank" rel="noopener">Chris Neal</a> &amp; <a href="https://neal.tools" target="_blank" rel="noopener">Alex Neal</a></div>
     <div class="frow"><a id="verLink" href="#" role="button" title="Click to check for a new version">v{{ version }}</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
-    <!-- Update banner: shown ONLY when a newer release is available (hidden otherwise).
-         Checked server-side against the repo's raw VERSION file; when out of date the
-         #verLink above also pulses yellow. Populated + toggled by checkUpdate() in JS. -->
-    <div class="frow upd" id="updRow" style="display:none"><span id="updText"></span> · <a href="#" id="updAction">Update</a></div>
+    <!-- Contextual update-status line: appears only during/after update activity --
+         "[spinner] Checking for updates…", "Version up-to-date" (after a manual check),
+         "vX.Y.Z available · Update", or "Update check failed · Check again". Hidden on a
+         normal load when up to date. Server-checked against the repo's raw VERSION; when
+         out of date #verLink above also pulses yellow. Driven by checkUpdate() in JS. -->
+    <div class="frow upd" id="updRow" style="display:none"><span class="upd-spin" aria-hidden="true"></span><span id="updText"></span><span id="updSep"> · </span><a href="#" id="updAction"></a></div>
   </footer>
 
   <!-- Start confirmation dialog -->
