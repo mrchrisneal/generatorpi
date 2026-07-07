@@ -2077,8 +2077,12 @@ button{font-family:inherit}
 .drawer-cavity{padding:16px;display:flex;flex-direction:column;gap:14px;
   background:linear-gradient(180deg,#0a0a0c,#0d0d10);
   box-shadow:inset 0 13px 16px -11px rgba(0,0,0,.95),inset 7px 0 10px -8px rgba(0,0,0,.9),inset -7px 0 10px -8px rgba(0,0,0,.9),inset 0 -9px 12px -8px rgba(0,0,0,.9)}
-.drawer-base{height:10px;background:linear-gradient(180deg,#1a1a1e,#0b0b0d);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 2px 4px rgba(0,0,0,.6)}
+/* caution-tape footer: diagonal hazard stripes painted onto the curved metal -- a
+   translucent vertical sheen (light top -> dark bottom) sits OVER the stripes so they
+   read as part of the brushed-metal base, not a flat sticker. */
+.drawer-base{height:10px;
+  background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(0,0,0,.5)),repeating-linear-gradient(45deg,#e0b200 0 8px,#181206 8px 16px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 2px 4px rgba(0,0,0,.6)}
 .engrave{display:inline-flex;filter:drop-shadow(0 1px 0 rgba(255,255,255,.14)) drop-shadow(0 -1px 1px rgba(0,0,0,.5))}
 .engrave svg{width:18px;height:18px;display:block}
 .warn-copy{font:600 12px var(--mono);color:#e0b090;line-height:1.5}
@@ -2549,7 +2553,7 @@ var SYS=(function(){
   // Per-chart definitions: which series, colors, axis behavior.
   var CHARTS={
     compute:{series:[{k:"cpu",c:"#ffb347"},{k:"mem",c:"#6fd3e0"}],min:0,max:100},
-    load:{series:[{k:"load1",c:"#7ce0b0"},{k:"load5",c:"#c3a6ff"}],min:0,max:"auto",ref:1.0},
+    load:{series:[{k:"load1",c:"#9fb5ff"},{k:"load5",c:"#eb9fd0"}],min:0,max:"auto"},
     vitals:{series:[{k:"temp",c:"#ff8a6a",axis:"l"},{k:"volt",c:"#6fd3e0",axis:"r"}],
             dual:true,bands:true},
     link:{series:[{k:"rssi",c:"#7ce0b0",axis:"l"},{k:"qual",c:"#ffb347",axis:"r"}],dual:true}
@@ -2677,10 +2681,10 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     if(!p)return '<span class="t">\\u2014</span>';
     var v="";
     if(chart==="compute")v=seg("CPU "+num(p.cpu,"%"),"#ffb347")+seg("MEM "+num(p.mem,"%"),"#6fd3e0");
-    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#7ce0b0")+seg("5m "+num(p.load5,"",2),"#c3a6ff");
+    else if(chart==="load")v=seg("1m "+num(p.load1,"",2),"#7ce0b0")+seg("5m "+num(p.load5,"",2),"#eb9fd0");
     else if(chart==="vitals"){v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
       var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));}
-    else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
+    else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("Qual "+num(p.qual,""),"#ffb347");
     return '<span class="t">'+esc(relTime(p.t))+'</span><span class="v">'+v+'</span>';}
 
   var hoverIdx=-1;                 // -1 => show latest
@@ -2998,7 +3002,7 @@ HTML_TEMPLATE_BODY = """
                 <span class="sys-panel-title">LOAD</span>
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="load1"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>1m</span>
-                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#c3a6ff;color:#c3a6ff"></span>5m</span>
+                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#eb9fd0;color:#eb9fd0"></span>5m</span>
                   <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
                 </span>
               </div>
@@ -3030,7 +3034,7 @@ HTML_TEMPLATE_BODY = """
                 <span class="sys-panel-title">WLINK</span>
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="rssi"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>dBm</span>
-                  <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Q</span>
+                  <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Qual</span>
                   <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
                 </span>
               </div>
