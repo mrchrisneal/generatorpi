@@ -2225,7 +2225,9 @@ footer a:hover{text-decoration:underline}
 
 /* ---- SYSTEM drawer + CRT charts (uniform 13px text, matching the event log .evt) ---- */
 .drawer.sys{--tint:#0d1418}
-.sys-hdr{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
+.sys-hdr{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin-bottom:6px}
+.sys-hdr .sys-win{grid-column:2;justify-self:center}
+.sys-hdr .sys-chip{grid-column:3;justify-self:end}
 .sys-temp-big{font:700 13px/1 var(--mono,monospace);letter-spacing:.5px}
 .sys-temp-big.ok{color:#7ce0b0}.sys-temp-big.warn{color:#ffb347}.sys-temp-big.hot{color:#ff8a6a}
 .sys-chip{font:600 13px/1 var(--mono,monospace);padding:5px 9px;border-radius:7px;border:1px solid #000;letter-spacing:.6px}
@@ -2271,6 +2273,10 @@ footer a:hover{text-decoration:underline}
   .sys-legend{gap:6px}
   .sys-leg{gap:4px}
   .sys-leg .sw{width:10px}
+  /* stack the header: duration selector on its own centered line, chip below */
+  .sys-hdr{grid-template-columns:1fr;justify-items:center;row-gap:8px}
+  .sys-hdr .sys-win{grid-column:1}
+  .sys-hdr .sys-chip{grid-column:1;justify-self:center}
 }
 </style>{% endraw %}
 </head>"""
@@ -2720,13 +2726,12 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
       if(strip)strip.innerHTML=stripHTML(c,p);}
     // header + face live status always reflect the LATEST sample
     var last=pts.length?pts[pts.length-1]:null;
-    var big=$('sysHdrTemp'),face=$('sysFaceTemp'),chip=$('sysThrChip');
+    var face=$('sysFaceTemp'),chip=$('sysThrChip');
     if(last&&last.temp!=null){
       var cls=last.temp>=75?"hot":last.temp>=60?"warn":"ok";
-      big.className="sys-temp-big "+cls;big.textContent=last.temp.toFixed(1)+"\\u00b0C";
       face.style.color=cls==="hot"?"#ff8a6a":cls==="warn"?"#ffb347":"#7ce0b0";
       face.textContent=last.temp.toFixed(0)+"\\u00b0C";
-    }else{big.textContent="\\u2014";face.textContent="\\u2014";}
+    }else{face.textContent="\\u2014";}
     if(chip){var t=last?last.thr:null;
       if(t!=null&&(t&0x1)){chip.className="sys-chip uv";chip.textContent="UNDERVOLTING";}
       else if(t!=null&&((t&0x10000)||(t&0x40000))){chip.className="sys-chip thr";chip.textContent="THROTTLED";}
@@ -3016,7 +3021,6 @@ HTML_TEMPLATE_BODY = """
         <div class="drawer-clip" id="sysClip">
           <div class="drawer-cavity">
             <div class="sys-hdr">
-              <span class="sys-temp-big ok" id="sysHdrTemp">—</span>
               <span class="sys-win" id="sysWin">
                 <button type="button" data-sec="300">5m</button>
                 <button type="button" data-sec="900">15m</button>
