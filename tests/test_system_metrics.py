@@ -214,7 +214,12 @@ class TestHistoryEndpoint:
         assert data["sample_seconds"] == 15
         assert data["capacity"] == module._sys_history.maxlen
         assert "server_now" in data
-        assert len(data["points"]) == 1 and data["points"][0]["cpu"] == 42.0
+        # COLUMNAR contract: `count` rows, `cols` has exactly the SYS_FIELDS keys, and
+        # every column is an array of length == count (so colsToRows can zip them).
+        assert data["count"] == 1
+        assert set(data["cols"]) == set(module.SYS_FIELDS)
+        assert all(len(v) == data["count"] for v in data["cols"].values())
+        assert data["cols"]["cpu"][0] == 42.0 and data["cols"]["t"][0] == 1
 
     def test_since_returns_only_newer_points(self, client, module):
         module._sys_history.clear()
@@ -226,7 +231,7 @@ class TestHistoryEndpoint:
                                             "qual": None})
         resp = client.get(f"/api/system/history?since=20&key={self.API_KEY}")
         assert resp.status_code == 200
-        assert [p["t"] for p in resp.get_json()["points"]] == [30]  # only t > 20
+        assert resp.get_json()["cols"]["t"] == [30]  # only t > 20
 
     def test_bad_since_returns_full_buffer(self, client, module):
         module._sys_history.clear()
@@ -236,4 +241,4 @@ class TestHistoryEndpoint:
                                         "thr": None, "rssi": None, "qual": None})
         resp = client.get(f"/api/system/history?since=notanumber&key={self.API_KEY}")
         assert resp.status_code == 200
-        assert len(resp.get_json()["points"]) == 1  # malformed 'since' -> full buffer
+        assert resp.get_json()["count"] == 1  # malformed 'since' -> full buffer

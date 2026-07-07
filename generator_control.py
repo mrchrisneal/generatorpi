@@ -1509,6 +1509,12 @@ def evaluate_low_fuel():
 # instead of crashing the sampler.
 # ---------------------------------------------------------------------------
 
+# The metric fields in a single history point, in a FIXED order. This tuple is the
+# single source of truth shared by _sample_system() (which builds each point) and the
+# columnar /api/system/history serializer (which emits one array per field). The
+# frontend's colsToRows() rebuilds row objects assuming this exact set of keys.
+SYS_FIELDS = ("t", "cpu", "mem", "load1", "load5", "temp", "volt", "thr", "rssi", "qual")
+
 # Fixed-size history. maxlen evicts the oldest point automatically, so memory is
 # bounded regardless of uptime. Guarded by _sys_hist_lock for snapshot-vs-append.
 _sys_history = collections.deque(maxlen=int(CONFIG.get("SYSTEM_HISTORY_POINTS", 240)))
@@ -2356,6 +2362,12 @@ function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':
    holds at most one job per key. A job that hangs past `ms` is aborted so the queue can't
    wedge. Resolves to parsed JSON, or null when coalesced/failed/aborted. */
 var _pollQ=[], _pollActive=false;
+// Lower number = higher priority when several jobs are queued. The control-critical
+// polls (state, then events) always jump ahead of a large history ('sys') fetch in the
+// QUEUE -- so history waiting to run never delays the generator status. It still can't
+// preempt a request already IN FLIGHT (that's the one-at-a-time contract), it just loses
+// its place in line. Unknown keys default to lowest priority.
+var _pollPrio={state:0,events:1,sys:2};
 function pollFetch(key,path,ms){
   return new Promise(function(resolve){
     for(var i=0;i<_pollQ.length;i++){          // coalesce a still-queued same-key job
@@ -2368,7 +2380,14 @@ function pollFetch(key,path,ms){
 function _drainPollQ(){
   if(_pollActive||!_pollQ.length)return;
   _pollActive=true;
-  var job=_pollQ.shift();
+  // Pick the highest-priority queued job (FIFO among equal priority).
+  var bi=0;
+  for(var i=1;i<_pollQ.length;i++){
+    var pi=(_pollPrio[_pollQ[i].key]==null?9:_pollPrio[_pollQ[i].key]);
+    var pb=(_pollPrio[_pollQ[bi].key]==null?9:_pollPrio[_pollQ[bi].key]);
+    if(pi<pb)bi=i;
+  }
+  var job=_pollQ.splice(bi,1)[0];
   var ctrl=('AbortController' in window)?new AbortController():null;
   var to=setTimeout(function(){if(ctrl)ctrl.abort();},job.ms||30000);
   netFetch(job.path,ctrl?{signal:ctrl.signal}:{})
@@ -2662,7 +2681,18 @@ var SYS=(function(){
   var view=[];                     // slice of points within the selected time window
   var windowSec=3600;              // duration selector: 300 / 900 / 3600 (default 60m)
   var capacity=240;                // server ring-buffer size (from endpoint); caps our buffer
-  var loading=false;               // history's OWN in-flight guard (own lane, see load())
+  // Field order MUST match the backend SYS_FIELDS tuple (minus "t", handled separately).
+  var COLKEYS=["cpu","mem","load1","load5","temp","volt","thr","rssi","qual"];
+  // Rebuild row objects {t,cpu,mem,...} from the columnar payload {cols:{t:[...],...}}.
+  // The charts consume row objects, so we reconstruct them here rather than reworking
+  // every consumer to read columns. Returns [] if the payload is empty/malformed.
+  function colsToRows(d){
+    var c=d&&d.cols;if(!c||!c.t)return [];
+    var n=c.t.length,out=new Array(n);
+    for(var i=0;i<n;i++){var row={t:c.t[i]};
+      for(var k=0;k<COLKEYS.length;k++){var col=c[COLKEYS[k]];row[COLKEYS[k]]=col?col[i]:null;}
+      out[i]=row;}
+    return out;}
   // Per-chart definitions: which series, colors, axis behavior.
   var CHARTS={
     compute:{series:[{k:"cpu",c:"#ffb347"},{k:"mem",c:"#6fd3e0"}],min:0,max:100},
@@ -2758,25 +2788,18 @@ var SYS=(function(){
     if(window.SYS_afterRender)window.SYS_afterRender();}
 
   function load(){
-    // History runs on its OWN lane -- NOT the shared state/events serial queue. The
-    // initial full-buffer payload is large (the whole hour), so on a laggy link it can
-    // take many seconds; if it shared the single poll lane it would block state/events
-    // for that whole time (the app would appear to "stall"). Its own in-flight guard
-    // still prevents history requests stacking up. Delta poll after the first fetch so
-    // subsequent updates ship only the NEW points (tiny), not the whole hour again.
-    if(loading)return Promise.resolve();
-    loading=true;
+    // History goes through the SAME single serial poll queue as state/events (key 'sys')
+    // -- only ONE request is ever in flight across the whole app. The columnar payload +
+    // ?since= delta keep history small enough that it doesn't monopolize the lane: the
+    // first open ships the (now-compact) buffer once, then every poll ships only the NEW
+    // points. pollFetch coalesces a still-queued 'sys' job (freshest ?since=) and handles
+    // the abort-timeout, so nothing stacks and the queue can't wedge.
     var q='/api/system/history';
     if(points.length)q+='?since='+points[points.length-1].t;
-    var ctrl=('AbortController' in window)?new AbortController():null;
-    var to=setTimeout(function(){if(ctrl)ctrl.abort();},30000);
-    return netFetch(q,ctrl?{signal:ctrl.signal}:{})
-      .then(function(r){return r.json().catch(function(){return {};});})
-      .catch(function(){return null;})
-      .then(function(d){clearTimeout(to);loading=false;
-        if(!d)return;
+    return pollFetch('sys',q,30000).then(function(d){
+        if(!d)return;                       // coalesced / failed / aborted -- nothing to merge
         if(d.capacity)capacity=d.capacity;
-        var fresh=d.points||[];
+        var fresh=colsToRows(d);
         if(!points.length){points=fresh;}
         else if(fresh.length){
           var lastT=points[points.length-1].t;
@@ -3547,8 +3570,16 @@ def api_system_history():
             points = [p for p in points if p["t"] > since_t]
         except (ValueError, TypeError):
             pass  # malformed 'since' -> fall back to the full buffer
+    # COLUMNAR payload: emit one array per field instead of an array-of-objects. A
+    # row-wise body repeats all 10 key names on EVERY point (240 on the Pi, 900 in dev)
+    # -- thousands of redundant bytes. Columnar names each key ONCE, roughly halving the
+    # wire size, so history is small enough to share the SINGLE serial poll lane with
+    # state/events without stalling the flaky link. The client rebuilds row objects.
+    # SYS_FIELDS order is the contract the frontend's colsToRows() relies on.
+    cols = {k: [p[k] for p in points] for k in SYS_FIELDS}
     return jsonify({
-        "points": points,
+        "cols": cols,
+        "count": len(points),
         "sample_seconds": max(5, int(CONFIG.get("SYSTEM_HISTORY_SECONDS", 15))),
         "capacity": _sys_history.maxlen,
         "server_now": time.time(),
