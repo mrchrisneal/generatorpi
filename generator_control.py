@@ -19,6 +19,8 @@ import os
 import sys
 import time
 import threading
+import collections
+import subprocess
 import hmac
 import json
 import math
@@ -102,6 +104,10 @@ CONFIG = {
     # How often (seconds) the background monitor re-checks the fuel projection to fire a
     # low-fuel push. Cheap; low fuel develops over many minutes of runtime.
     "FUEL_MONITOR_SECONDS": 60,
+    # SYSTEM perf-history sampler (in-memory only, zero disk writes). How often to
+    # sample host metrics into the ring buffer, and how many points to retain.
+    "SYSTEM_HISTORY_SECONDS": 15,   # sample cadence; clamped to >= 5s at use
+    "SYSTEM_HISTORY_POINTS": 240,   # ring-buffer capacity (~1 hour at 15s)
 }
 
 # Werkzeug password hashes always start with one of these method prefixes
@@ -1488,6 +1494,63 @@ def evaluate_low_fuel():
         )
         return "push"
     return "skip"
+
+
+# ---------------------------------------------------------------------------
+# SYSTEM perf history -- an in-memory ring buffer of cheap host metrics sampled
+# on ONE background daemon thread. RAM only: nothing here ever touches the SD
+# card. Every reader below fails SOFT (returns None) so a missing source (no
+# thermal zone / no vcgencmd / no wlan0 on a dev box) degrades to a null series
+# instead of crashing the sampler.
+# ---------------------------------------------------------------------------
+
+# Fixed-size history. maxlen evicts the oldest point automatically, so memory is
+# bounded regardless of uptime. Guarded by _sys_hist_lock for snapshot-vs-append.
+_sys_history = collections.deque(maxlen=int(CONFIG.get("SYSTEM_HISTORY_POINTS", 240)))
+_sys_hist_lock = threading.Lock()
+
+# Previous (total, idle) jiffies from /proc/stat, held between samples so CPU% is a
+# DELTA computed by the sampler -- never a per-request cost.
+_prev_cpu = None
+
+
+def _read_cpu_times():
+    """Return (total_jiffies, idle_jiffies) from the aggregate 'cpu' line of
+    /proc/stat, or None if it can't be read/parsed. idle counts idle+iowait."""
+    try:
+        with open("/proc/stat") as f:
+            line = f.readline()
+        parts = line.split()
+        if not parts or parts[0] != "cpu":
+            return None
+        vals = [int(x) for x in parts[1:]]
+        # Fields: user nice system idle iowait irq softirq steal guest guest_nice
+        idle = vals[3] + (vals[4] if len(vals) > 4 else 0)  # idle + iowait
+        return (sum(vals), idle)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _cpu_delta_pct(prev, cur):
+    """Utilization % between two (total, idle) samples, or None when it can't be
+    computed (no previous sample yet, or no elapsed time)."""
+    if prev is None or cur is None:
+        return None
+    total_d = cur[0] - prev[0]
+    idle_d = cur[1] - prev[1]
+    if total_d <= 0:
+        return None
+    return round(100.0 * (total_d - idle_d) / total_d, 1)
+
+
+def _cpu_pct():
+    """Stateful CPU% for the sampler: reads /proc/stat, diffs against the previous
+    read, stores the new read. Returns None on the first call (seeds the baseline)
+    and on any read failure."""
+    global _prev_cpu
+    cur = _read_cpu_times()
+    prev, _prev_cpu = _prev_cpu, cur
+    return _cpu_delta_pct(prev, cur)
 
 
 def fuel_monitor_loop():
