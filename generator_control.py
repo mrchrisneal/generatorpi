@@ -2330,9 +2330,13 @@ footer a:hover{text-decoration:underline}
    version link pulses yellow when out of date; the action link highlights; a small
    spinner shows while a check is in flight. */
 footer #verLink{cursor:pointer}
-footer #verLink.out-of-date{color:#ffcf5a;font-weight:700;animation:verpulse 1.4s ease-in-out infinite}
-footer #updAction{color:#ffcf5a;font-weight:700}
-@keyframes verpulse{0%,100%{opacity:1}50%{opacity:.5}}
+/* Out of date: the version link is static yellow; ONLY the caution icon to its left
+   glows and pulses. The Update action keeps the normal footer link colour. */
+footer #verLink.out-of-date{color:#ffcf5a;font-weight:700}
+.ver-caution{display:none;width:12px;height:12px;margin-right:5px;vertical-align:-2px}
+footer #verLink.out-of-date .ver-caution{display:inline-block;color:#ffcf5a;
+  filter:drop-shadow(0 0 3px rgba(255,207,90,.85));animation:verpulse 1.4s ease-in-out infinite}
+@keyframes verpulse{0%,100%{opacity:1}50%{opacity:.4}}
 .upd-spin{display:none;width:11px;height:11px;margin-right:7px;vertical-align:-1px;
   border:2px solid rgba(255,255,255,.25);border-top-color:#cfe6dd;border-radius:50%}
 footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s linear infinite}
@@ -3402,8 +3406,12 @@ setInterval(function(){if(!busy)refresh();},4000);
 /* Populate the contextual update line. text = the status; actionLabel/actionMode/href set
    the trailing " · <link>" (omitted when actionLabel is falsy). Always reveals the row. */
 function _updSet(text,actionLabel,actionMode,href){
-  var row=$('updRow'),a=$('updAction'),sep=$('updSep');
-  $('updText').textContent=text;
+  var row=$('updRow'),a=$('updAction'),sep=$('updSep'),tx=$('updText');
+  tx.textContent=text;
+  // The status text itself links to releases whenever an update href is provided (the
+  // "available" state); otherwise it's a plain, non-linked label.
+  if(href){tx.href=href;tx.target='_blank';tx.rel='noopener';}
+  else{tx.removeAttribute('href');tx.removeAttribute('target');}
   if(actionLabel){
     a.textContent=actionLabel;a.dataset.mode=actionMode||'';
     if(href){a.href=href;a.target='_blank';a.rel='noopener';}else{a.href='#';a.removeAttribute('target');}
@@ -3806,13 +3814,13 @@ HTML_TEMPLATE_BODY = """
   <!-- Footer -->
   <footer>
     <div class="frow">&copy; 2026 <a href="https://neal.media" target="_blank" rel="noopener">Chris Neal</a> &amp; <a href="https://neal.tools" target="_blank" rel="noopener">Alex Neal</a></div>
-    <div class="frow"><a id="verLink" href="#" role="button" title="Click to check for a new version">v{{ version }}</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
+    <div class="frow"><a id="verLink" href="#" role="button" title="Click to check for a new version"><svg class="ver-caution" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>v{{ version }}</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
     <!-- Contextual update-status line: appears only during/after update activity --
          "[spinner] Checking for updates…", "Version up-to-date" (after a manual check),
          "vX.Y.Z available · Update", or "Update check failed · Check again". Hidden on a
          normal load when up to date. Server-checked against the repo's raw VERSION; when
          out of date #verLink above also pulses yellow. Driven by checkUpdate() in JS. -->
-    <div class="frow upd" id="updRow" style="display:none"><span class="upd-spin" aria-hidden="true"></span><span id="updText"></span><span id="updSep"> · </span><a href="#" id="updAction"></a></div>
+    <div class="frow upd" id="updRow" style="display:none"><span class="upd-spin" aria-hidden="true"></span><a id="updText"></a><span id="updSep"> · </span><a href="#" id="updAction"></a></div>
   </footer>
 
   <!-- Start confirmation dialog -->
