@@ -2081,7 +2081,7 @@ button{font-family:inherit}
    translucent vertical sheen (light top -> dark bottom) sits OVER the stripes so they
    read as part of the brushed-metal base, not a flat sticker. */
 .drawer-base{height:5px;
-  background:linear-gradient(90deg,rgba(0,0,0,.9) 0,rgba(0,0,0,0) 7%,rgba(0,0,0,0) 93%,rgba(0,0,0,.9) 100%),linear-gradient(180deg,rgba(255,255,255,.08),rgba(0,0,0,.62)),repeating-linear-gradient(45deg,#a8820c 0 8px,#0c0c0c 8px 16px);
+  background:linear-gradient(rgba(0,0,0,.2),rgba(0,0,0,.2)),linear-gradient(90deg,rgba(0,0,0,.9) 0,rgba(0,0,0,0) 7%,rgba(0,0,0,0) 93%,rgba(0,0,0,.9) 100%),linear-gradient(180deg,rgba(255,255,255,.08),rgba(0,0,0,.62)),repeating-linear-gradient(45deg,#b8760c 0 8px,#0c0c0c 8px 16px);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 2px 4px rgba(0,0,0,.6)}
 .engrave{display:inline-flex;filter:drop-shadow(0 1px 0 rgba(255,255,255,.14)) drop-shadow(0 -1px 1px rgba(0,0,0,.5))}
 .engrave svg{width:18px;height:18px;display:block}
