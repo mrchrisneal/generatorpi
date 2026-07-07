@@ -2324,7 +2324,7 @@ footer a:hover{text-decoration:underline}
 /* Readout strip is joined to the screen bottom (no gap): screen rounds the top corners &
    drops its bottom border, the strip rounds the bottom corners. A distinct gradient + a
    brighter top border keep it visually segmented from the graph above. */
-.sys-strip{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:0;padding:6px 9px;border-radius:0 0 6px 6px;background:linear-gradient(180deg,#080d0b,#050908);border:1px solid #152a23;border-top:1px solid #1d3e33;font:600 13px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px}
+.sys-strip{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:0;padding:6px 9px;border-radius:0 0 6px 6px;background:linear-gradient(180deg,#0c1411,#050908);border:1px solid #152a23;border-top:1px solid #163027;font:600 13px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px}
 .sys-strip .t{color:#6f8f7e;white-space:nowrap;flex:0 0 auto}
 .sys-strip .v{display:flex;gap:14px;flex:1 1 auto;justify-content:flex-end;flex-wrap:wrap}
 .sys-strip .v span{text-shadow:0 0 6px currentColor}
