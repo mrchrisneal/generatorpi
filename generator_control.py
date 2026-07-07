@@ -2623,8 +2623,25 @@ $('threshSlider').addEventListener('input',function(){$('threshVal').textContent
 $('threshSlider').addEventListener('change',function(){post('/api/alerts',{threshold:parseInt(this.value,10)}).then(refresh);});
 
 /* ---------- drawers ---------- */
-function initDrawer(id,cls){var d=$(id);var face=d.querySelector('.drawer-face');var clip=d.querySelector('.drawer-clip');
-  face.addEventListener('click',function(){var open=d.className.indexOf('open')<0;d.className='drawer '+cls+(open?' open':'');face.setAttribute('aria-expanded',open?'true':'false');clip.style.maxHeight=open?'1600px':'0';});}
+// Drawer open/closed state persists across launches (localStorage key gp.drawer.<id>), so
+// the panels come back the way you left them. onToggle(open) fires on every state change
+// (click AND restore) -- the SYSTEM drawer uses it to start/stop history polling.
+function initDrawer(id,cls,onToggle){
+  var d=$(id),face=d.querySelector('.drawer-face'),clip=d.querySelector('.drawer-clip');
+  var LSK='gp.drawer.'+id;
+  function setOpen(open,save){
+    d.className='drawer '+cls+(open?' open':'');
+    face.setAttribute('aria-expanded',open?'true':'false');
+    clip.style.maxHeight=open?'1600px':'0';
+    if(save){try{localStorage.setItem(LSK,open?'1':'0');}catch(e){}}
+    if(onToggle)onToggle(open);
+  }
+  face.addEventListener('click',function(){setOpen(d.className.indexOf('open')<0,true);});
+  // Restore persisted open state on load. Suppress the slide transition for the restore so
+  // the drawer doesn't animate open on every page load -- it should just already be open.
+  var saved=null;try{saved=localStorage.getItem(LSK);}catch(e){}
+  if(saved==='1'){var prev=clip.style.transition;clip.style.transition='none';setOpen(true,false);void clip.offsetHeight;clip.style.transition=prev;}
+}
 
 /* ---------- event-log infinite scroll ---------- */
 $('log').addEventListener('scroll',function(){if(this.scrollTop+this.clientHeight>=this.scrollHeight-24){loadOlderEvents();}});
@@ -2877,16 +2894,15 @@ function netRender(){
 setInterval(netRender,2000);netRender();
 
 /* ---------- boot ---------- */
-buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');initDrawer('sysDrawer','sys');
-// Poll system history only while the SYSTEM drawer is open (zero cost when closed).
-(function(){
-  var d=$('sysDrawer'),face=d.querySelector('.drawer-face'),timer=null;
-  face.addEventListener('click',function(){
-    var open=d.className.indexOf('open')>=0;   // class already toggled by initDrawer
-    if(open){SYS.load();timer=setInterval(function(){SYS.load();},15000);}
-    else if(timer){clearInterval(timer);timer=null;}
-  });
-})();
+buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');
+// SYSTEM drawer: poll history only while open (zero cost when closed). Its persisted open
+// state is restored by initDrawer, which fires this callback -- so a drawer left open
+// resumes polling immediately on load (no more re-opening it every launch).
+var _sysTimer=null;
+initDrawer('sysDrawer','sys',function(open){
+  if(open){SYS.load();if(!_sysTimer)_sysTimer=setInterval(function(){SYS.load();},15000);}
+  else if(_sysTimer){clearInterval(_sysTimer);_sysTimer=null;}
+});
 
 /* ---------- SYSTEM interaction: hover, strips, collapse, legend, status ---------- */
 (function(){
