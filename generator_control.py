@@ -2867,7 +2867,9 @@ $('fuelToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='
 function setHideHttp(hide){_hideHttp=!!hide;
   try{localStorage.setItem(LS_HIDEHTTP,_hideHttp?'1':'0');}catch(e){}
   setTog('httpToggle',!_hideHttp);
-  if(logView==='log'){_logOffset=null;$('log').innerHTML='';loadAppLog();}}
+  // Flipping the filter re-fetches the app-log to re-filter the 1000-line window, so the
+  // toggle DOES make a request -> spin the selected half until that reload settles.
+  if(logView==='log'){_logOffset=null;$('log').innerHTML='';toggleSpin('httpToggle',!_hideHttp,loadAppLog());}}
 function toggleHttp(){setHideHttp($('httpToggle').getAttribute('aria-checked')==='true');}
 $('httpToggle').addEventListener('click',toggleHttp);
 $('httpToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleHttp();}});
