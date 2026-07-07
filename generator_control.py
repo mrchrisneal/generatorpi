@@ -2308,7 +2308,7 @@ footer a:hover{text-decoration:underline}
    the expand always completes; overflow:hidden clips during the slide. */
 .sys-panel-body{padding:0 10px 6px;overflow:hidden;max-height:300px;transition:max-height .45s cubic-bezier(.4,0,.2,1),padding .45s cubic-bezier(.4,0,.2,1)}
 .sys-panel.collapsed .sys-panel-body{max-height:0;padding-bottom:0}
-.sys-screen{position:relative;height:200px;border-radius:6px;overflow:hidden;background:radial-gradient(120% 100% at 50% 0%,#0c1a16,#060b0a);border:1px solid #10201b;box-shadow:inset 0 0 22px rgba(0,0,0,.7)}
+.sys-screen{position:relative;height:200px;border-radius:6px 6px 0 0;overflow:hidden;background:radial-gradient(120% 100% at 50% 0%,#0c1a16,#060b0a);border:1px solid #152a23;border-bottom:none;box-shadow:inset 0 0 22px rgba(0,0,0,.7)}
 .sys-screen::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.16) 2px 3px)}
 .sysgraph{position:absolute;inset:0;width:100%;height:100%}
 .sysgraph .grid{stroke:rgba(120,220,180,.10);stroke-width:.5}
@@ -2321,7 +2321,10 @@ footer a:hover{text-decoration:underline}
 .sys-ax{position:absolute;font:600 13px/1 var(--mono,monospace);color:#7f9;opacity:.85;pointer-events:none;text-shadow:0 0 4px rgba(0,0,0,.9)}
 .sys-ax.tl{top:4px;left:5px}.sys-ax.bl{bottom:4px;left:5px}
 .sys-ax.tr{top:4px;right:5px;color:#6fd3e0}.sys-ax.br{bottom:4px;right:5px;color:#6fd3e0}
-.sys-strip{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:7px;padding:6px 9px;border-radius:5px;background:#060d0b;border:1px solid #10201b;font:600 13px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px}
+/* Readout strip is joined to the screen bottom (no gap): screen rounds the top corners &
+   drops its bottom border, the strip rounds the bottom corners. A distinct gradient + a
+   brighter top border keep it visually segmented from the graph above. */
+.sys-strip{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:0;padding:6px 9px;border-radius:0 0 6px 6px;background:linear-gradient(180deg,#080d0b,#050908);border:1px solid #152a23;border-top:1px solid #1d3e33;font:600 13px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px}
 .sys-strip .t{color:#6f8f7e;white-space:nowrap;flex:0 0 auto}
 .sys-strip .v{display:flex;gap:14px;flex:1 1 auto;justify-content:flex-end;flex-wrap:wrap}
 .sys-strip .v span{text-shadow:0 0 6px currentColor}
