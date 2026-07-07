@@ -1985,7 +1985,7 @@ button{font-family:inherit}
 @keyframes nbpulse{0%,100%{opacity:1}50%{opacity:.22}}
 .stickyhdr .sh-prog{position:absolute;bottom:0;left:-30%;height:2px;width:30%;pointer-events:none;
   background:linear-gradient(90deg,transparent,#7ce0b0,transparent);opacity:0}
-.stickyhdr.syncing .sh-prog{opacity:.9;animation:shslide 1.15s linear infinite}
+.stickyhdr.slow .sh-prog{opacity:.9;animation:shslide 1.15s linear infinite}  /* last-ditch: only when a request has been in flight >=1s (spinner covers normal loads) */
 @keyframes shslide{0%{left:-30%}100%{left:100%}}
 
 /* ---- body columns ---- */
@@ -2225,6 +2225,16 @@ input[type=range].thresh::-moz-range-thumb{width:20px;height:20px;border:0;borde
 .btn3d:focus-visible{outline:3px solid #ffca7a;outline-offset:3px}
 .btn3d.amber{color:#ffd89a}.btn3d.steel{color:#c7c3bc}.btn3d.cyan{color:#9fdcec}.btn3d.green{color:#b6e89a}
 .btn3d.red{background:linear-gradient(180deg,#ff8a54,#d23a10);--b:#7a1e06;color:#fff}
+/* Async button in flight: hide the label (width preserved) + show a spinner in its place. */
+.btn3d.loading{color:transparent!important;pointer-events:none;position:relative}
+.btn3d.loading>*{visibility:hidden}
+.btn3d.loading::after{content:"";position:absolute;top:50%;left:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border:2px solid rgba(235,235,235,.32);border-top-color:#f0f0f0;border-radius:50%;animation:btnspin .7s linear infinite}
+@keyframes btnspin{to{transform:rotate(360deg)}}
+/* Toggle half being switched TO shows a spinner in place of its I/O glyph while loading.
+   font-size:0 collapses the glyph so the half's flex centering centers the spinner; 15px
+   matches the glyph size. */
+.iotoggle .half.loading{font-size:0}
+.iotoggle .half.loading::after{content:"";display:inline-block;width:12px;height:12px;border:2px solid rgba(210,225,215,.35);border-top-color:#dff2e8;border-radius:50%;animation:btnspin .7s linear infinite}
 .btn3dsm{min-height:40px;padding:0 12px}
 .led{width:9px;height:9px;border-radius:50%}
 .led.amber{background:#ffb347;box-shadow:0 0 7px rgba(255,180,71,.7)}
@@ -2310,6 +2320,12 @@ footer a:hover{text-decoration:underline}
 .sys-panel.collapsed .sys-panel-body{max-height:0;padding-bottom:0}
 .sys-screen{position:relative;height:200px;border-radius:6px 6px 0 0;overflow:hidden;background:radial-gradient(120% 100% at 50% 0%,#0c1a16,#060b0a);border:1px solid #152a23;border-bottom:none;box-shadow:inset 0 0 22px rgba(0,0,0,.7)}
 .sys-screen::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.16) 2px 3px)}
+/* Spinner shown on a chart screen until its first data lands (or a slow first load). */
+.sys-screen.loading::before{content:"";position:absolute;top:50%;left:50%;width:26px;height:26px;margin:-13px 0 0 -13px;border:3px solid rgba(124,224,176,.22);border-top-color:#7ce0b0;border-radius:50%;animation:sysspin .8s linear infinite;z-index:4;pointer-events:none}
+@keyframes sysspin{to{transform:rotate(360deg)}}
+/* Event log: spinner centered while the empty log makes its first load. */
+.log.loading{position:relative;min-height:60px}
+.log.loading::before{content:"";position:absolute;top:50%;left:50%;width:22px;height:22px;margin:-11px 0 0 -11px;border:3px solid rgba(124,224,176,.22);border-top-color:#7ce0b0;border-radius:50%;animation:sysspin .8s linear infinite;z-index:2}
 .sysgraph{position:absolute;inset:0;width:100%;height:100%}
 .sysgraph .grid{stroke:rgba(120,220,180,.10);stroke-width:.5}
 .sysgraph .refline{stroke:rgba(255,179,71,.35);stroke-width:.7;stroke-dasharray:3 3}
@@ -2367,12 +2383,26 @@ var newestSeq=0, oldestSeq=null, loadingOlder=false, totalEvents=0;
 var NET={pending:0,lastOk:0,lastErr:0,samples:[]};
 function _nowMs(){return (window.performance&&performance.now)?performance.now():Date.now();}
 function netFetch(path,opts){
+  if(NET.pending===0){                     // first request in flight -> arm the slow-line timer
+    clearTimeout(NET._slowTimer);
+    NET._slowTimer=setTimeout(function(){  // still pending after 1s -> reveal the last-ditch line
+      if(NET.pending>0){var h=$('stickyHdr');if(h)h.classList.add('slow');}
+    },1000);
+  }
   NET.pending++;netRender();
   var t0=_nowMs();
+  function settle(){                       // shared teardown (success + error)
+    NET.pending--;
+    if(NET.pending===0){                   // nothing in flight -> disarm timer + hide the line
+      clearTimeout(NET._slowTimer);
+      var h=$('stickyHdr');if(h)h.classList.remove('slow');
+    }
+    netRender();
+  }
   return fetch(location.origin+path,opts||{}).then(function(r){
     NET.samples.push(_nowMs()-t0);if(NET.samples.length>8)NET.samples.shift(); // rolling avg of last 8
-    NET.lastOk=Date.now();NET.pending--;netRender();return r;
-  },function(e){NET.lastErr=Date.now();NET.pending--;netRender();throw e;});
+    NET.lastOk=Date.now();settle();return r;
+  },function(e){NET.lastErr=Date.now();settle();throw e;});
 }
 function api(path,opts){return netFetch(path,opts).then(function(r){return r.json().catch(function(){return {};});});}
 function post(path,body){return api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});}
@@ -2557,7 +2587,8 @@ function evtEl(e){var row=document.createElement('div');row.className='evt';
   var m=document.createElement('span');m.className='m';m.textContent=e.message;
   row.appendChild(t);row.appendChild(g);row.appendChild(m);return row;}
 function setCount(n){totalEvents=n;$('logCount').textContent=n+' EVENT'+(n===1?'':'S');}
-function loadInitialEvents(){pollFetch('events','/api/events?limit=100').then(function(d){if(!d)return;var log=$('log');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
+function loadInitialEvents(){var lg=$('log');if(lg&&!lg.children.length)lg.classList.add('loading');   // spinner while the empty log loads
+  pollFetch('events','/api/events?limit=100').then(function(d){if(!d)return;var log=$('log');log.classList.remove('loading');log.innerHTML='';var evs=d.events||[];evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){newestSeq=evs[0].seq;oldestSeq=evs[evs.length-1].seq;}setCount(d.latest_seq||evs.length);});}
 // Delta poll: only pull events AFTER the newest sequence we already hold.
 function loadNewEvents(){if(!newestSeq){loadInitialEvents();return;}pollFetch('events','/api/events?after='+newestSeq+'&limit=100').then(function(d){if(!d)return;var evs=d.events||[];var log=$('log');for(var i=evs.length-1;i>=0;i--){log.insertBefore(evtEl(evs[i]),log.firstChild);}if(evs.length){newestSeq=evs[0].seq;}if(d.latest_seq)setCount(d.latest_seq);});}
 function loadOlderEvents(){if(loadingOlder||oldestSeq==null)return;loadingOlder=true;api('/api/events?before='+oldestSeq+'&limit=100').then(function(d){var evs=d.events||[];var log=$('log');evs.forEach(function(e){log.appendChild(evtEl(e));});if(evs.length){oldestSeq=evs[evs.length-1].seq;}loadingOlder=false;}).catch(function(){loadingOlder=false;});}
@@ -2598,7 +2629,12 @@ function closeConfirm(revert){
   if(restore&&typeof restore.focus==='function'){restore.focus();}
 }
 $('confirmCancel').addEventListener('click',function(){closeConfirm(true);});
-$('confirmStart').addEventListener('click',function(){closeConfirm(false);doStart();});
+$('confirmStart').addEventListener('click',function(){
+  var cb=$('confirmStart');
+  if(cb.classList.contains('loading'))return;                      // anti-double-click
+  cb.classList.add('loading');$('confirmCancel').disabled=true;    // spinner on START; hold the modal open
+  doStart().then(function(){cb.classList.remove('loading');$('confirmCancel').disabled=false;closeConfirm(false);});
+});
 /* Escape cancels the dialog (reverting the switch) while it is open. */
 document.addEventListener('keydown',function(e){if(confirmOpen&&(e.key==='Escape'||e.key==='Esc')){e.preventDefault();closeConfirm(true);}});
 /* Backdrop click cancels — only when the click lands on the overlay itself,
@@ -2607,23 +2643,45 @@ confirmOverlayEl.addEventListener('click',function(e){if(e.target===confirmOverl
 /* Disable the switch for the whole in-flight start/stop so a mid-settle flip
    can't kick off a second concurrent settle() loop. Re-enabled wherever busy is
    cleared (settle completion + every failure/reject path). */
-function doStart(){busy=true;sw.disabled=true;post('/api/start').then(function(d){if(d&&d.success===false){busy=false;sw.disabled=false;sw.checked=false;refresh();}else{settle(true);}}).catch(function(){busy=false;sw.disabled=false;sw.checked=false;refresh();});}
+function doStart(){busy=true;sw.disabled=true;return post('/api/start').then(function(d){if(d&&d.success===false){busy=false;sw.disabled=false;sw.checked=false;refresh();}else{settle(true);}}).catch(function(){busy=false;sw.disabled=false;sw.checked=false;refresh();});}
 /* /api/stop returns {success:false} when the relay is busy with an in-progress
    start; honor it (like doStart) instead of settling to OFF and flipping back. */
 function doStop(){busy=true;sw.disabled=true;sw.checked=false;post('/api/stop').then(function(d){if(d&&d.success===false){busy=false;sw.disabled=false;refresh();return;}settle(false);}).catch(function(){busy=false;sw.disabled=false;refresh();});}
-$('markRunBtn').addEventListener('click',function(){post('/api/set_running',{running:true}).then(refresh);});
-$('markStopBtn').addEventListener('click',function(){post('/api/set_running',{running:false}).then(refresh);});
+// Wrap an async button action with a spinner: on click, disable + hide the label + show a
+// spinner in its place (the button keeps its width); restore on settle. The factory returns
+// the action's promise, or a falsy value to skip (e.g. invalid input) so no spinner shows.
+function btnBusy(id,factory){
+  var b=$(id);if(!b)return;
+  b.addEventListener('click',function(){
+    if(b.classList.contains('loading'))return;          // anti-double-click
+    var p=factory();
+    if(!p||!p.then)return;                               // nothing async happened (bad input, etc.)
+    b.classList.add('loading');
+    p.catch(function(){}).then(function(){b.classList.remove('loading');});
+  });
+}
+btnBusy('markRunBtn',function(){return post('/api/set_running',{running:true}).then(refresh);});
+btnBusy('markStopBtn',function(){return post('/api/set_running',{running:false}).then(refresh);});
 
 /* ---------- fuel controls ---------- */
 function numVal(id){var v=parseFloat($(id).value);return isFinite(v)?v:null;}
-$('setRateBtn').addEventListener('click',function(){var v=numVal('rateInput');if(v==null)return;post('/api/fuel/rate',{rate:v}).then(function(){$('rateInput').value='';refresh();});});
-$('resetRateBtn').addEventListener('click',function(){post('/api/fuel/rate/reset').then(function(){$('rateInput').value='';refresh();});});
-$('recordBtn').addEventListener('click',function(){var v=numVal('readingInput');if(v==null)return;post('/api/fuel/reading',{level:v}).then(function(){$('readingInput').value='';refresh();});});
-$('fillBtn').addEventListener('click',function(){var v=numVal('fillInput');if(v==null)return;post('/api/fuel/fill',{level:v}).then(function(){$('fillInput').value='';refresh();});});
+btnBusy('setRateBtn',function(){var v=numVal('rateInput');if(v==null)return;return post('/api/fuel/rate',{rate:v}).then(function(){$('rateInput').value='';refresh();});});
+btnBusy('resetRateBtn',function(){return post('/api/fuel/rate/reset').then(function(){$('rateInput').value='';refresh();});});
+btnBusy('recordBtn',function(){var v=numVal('readingInput');if(v==null)return;return post('/api/fuel/reading',{level:v}).then(function(){$('readingInput').value='';refresh();});});
+btnBusy('fillBtn',function(){var v=numVal('fillInput');if(v==null)return;return post('/api/fuel/fill',{level:v}).then(function(){$('fillInput').value='';refresh();});});
 
 /* ---------- alert toggle + threshold ---------- */
+// Show a spinner on the toggle half being switched TO (I=on, O=off) while the request is
+// in flight; clear on settle. `on` = the NEW state. Returns the promise unchanged.
+function toggleSpin(id,on,p){
+  var t=$(id);if(!t||!p||!p.then)return p;
+  var half=t.querySelector(on?'.half.i':'.half.o');
+  if(half)half.classList.add('loading');
+  p.catch(function(){}).then(function(){if(half)half.classList.remove('loading');});
+  return p;
+}
 function setToggle(on){$('alertToggle').setAttribute('aria-checked',on?'true':'false');}
-function toggleAlerts(){var on=$('alertToggle').getAttribute('aria-checked')==='true';post('/api/alerts',{enabled:!on}).then(refresh);}
+function toggleAlerts(){var on=$('alertToggle').getAttribute('aria-checked')==='true';toggleSpin('alertToggle',!on,post('/api/alerts',{enabled:!on}).then(refresh));}
 $('alertToggle').addEventListener('click',toggleAlerts);
 $('alertToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleAlerts();}});
 $('threshSlider').addEventListener('input',function(){$('threshVal').textContent=this.value+'%';if(state){state.alerts=state.alerts||{};state.alerts.alert_threshold=parseInt(this.value,10);renderFuel();}});
@@ -2654,7 +2712,7 @@ function initDrawer(id,cls,onToggle){
 $('log').addEventListener('scroll',function(){if(this.scrollTop+this.clientHeight>=this.scrollHeight-24){loadOlderEvents();}});
 
 /* ---------- fuel feature toggle ---------- */
-function toggleFuel(){var on=$('fuelToggle').getAttribute('aria-checked')==='true';post('/api/alerts',{fuel_enabled:!on}).then(refresh);}
+function toggleFuel(){var on=$('fuelToggle').getAttribute('aria-checked')==='true';toggleSpin('fuelToggle',!on,post('/api/alerts',{fuel_enabled:!on}).then(refresh));}
 $('fuelToggle').addEventListener('click',toggleFuel);
 $('fuelToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleFuel();}});
 
@@ -2675,6 +2733,8 @@ function urlB64ToUint8(base64){
 }
 function pushApplyState(p){serverPush.supported=!!p.supported;serverPush.vapidKey=p.vapid_public_key||'';refreshPushUI();}
 function refreshPushUI(){
+  // A push flow just settled -> clear any spinner on the push-toggle halves.
+  var _pt=$('pushToggle');if(_pt){var _hl=_pt.querySelectorAll('.half.loading');for(var _i=0;_i<_hl.length;_i++)_hl[_i].classList.remove('loading');}
   var testBtn=$('testPushBtn');
   if(!pushSupported){setTog('pushToggle',false);setPushHelp('Push unavailable on this browser/origin \\u2014 using in-page alerts.');testBtn.disabled=true;return;}
   if(!serverPush.supported){setTog('pushToggle',false);setPushHelp('Push not configured on the server \\u2014 using in-page alerts.');testBtn.disabled=true;return;}
@@ -2695,19 +2755,19 @@ function registerSW(){
        SERVER has it too -- the browser's local subscription and the server's stored
        record can drift (server db reset, subscription pruned, different instance).
        This idempotent upsert re-syncs it so the test button + pushes actually work. */
-    reg.pushManager.getSubscription().then(function(sub){if(sub){post('/api/push/subscribe',sub.toJSON());}}).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');});
+    reg.pushManager.getSubscription().then(function(sub){if(sub){post('/api/push/subscribe',sub.toJSON());}}).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');refreshPushUI();});
     refreshPushUI();
   }).catch(function(){pushSupported=false;refreshPushUI();});
 }
 function enablePush(){
-  if(!pushSupported||!serverPush.supported||!serverPush.vapidKey||!swReg)return;
+  if(!pushSupported||!serverPush.supported||!serverPush.vapidKey||!swReg){refreshPushUI();return;}
   /* Promise.resolve() tolerates BOTH a returned promise (modern) and undefined
      (legacy callback-only requestPermission that would otherwise throw on .then). */
   Promise.resolve(Notification.requestPermission()).then(function(perm){
     if(perm!=='granted'){refreshPushUI();return;}
     swReg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8(serverPush.vapidKey)})
       .then(function(sub){post('/api/push/subscribe',sub.toJSON()).then(function(){refreshPushUI();refresh();});})
-      .catch(function(){setPushHelp('Could not subscribe (is the cert trusted?). In-page alerts still work.');});
+      .catch(function(){setPushHelp('Could not subscribe (is the cert trusted?). In-page alerts still work.');refreshPushUI();});
   });
 }
 function disablePush(){
@@ -2717,13 +2777,15 @@ function disablePush(){
     var ep=sub.endpoint;
     /* Catch an out-of-band unsubscribe rejection so it doesn't become an
        unhandled rejection or leave the toggle stale. */
-    sub.unsubscribe().then(function(){post('/api/push/unsubscribe',{endpoint:ep}).then(function(){refreshPushUI();refresh();});}).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');});
-  }).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');});
+    sub.unsubscribe().then(function(){post('/api/push/unsubscribe',{endpoint:ep}).then(function(){refreshPushUI();refresh();});}).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');refreshPushUI();});
+  }).catch(function(){setTog('pushToggle',false);setPushHelp('Push state unavailable \\u2014 using in-page alerts.');refreshPushUI();});
 }
-function togglePush(){var on=$('pushToggle').getAttribute('aria-checked')==='true';if(on)disablePush();else enablePush();}
+function togglePush(){var on=$('pushToggle').getAttribute('aria-checked')==='true';
+  var tgt=$('pushToggle').querySelector(!on?'.half.i':'.half.o');if(tgt)tgt.classList.add('loading');  // spinner on the target half; refreshPushUI clears it when the flow settles
+  if(on)disablePush();else enablePush();}
 $('pushToggle').addEventListener('click',togglePush);
 $('pushToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();togglePush();}});
-$('testPushBtn').addEventListener('click',function(){post('/api/push/test').then(function(d){setPushHelp((d&&d.success)?'Test sent \\u2014 check your notifications.':((d&&d.message)||'Test failed.'));});});
+btnBusy('testPushBtn',function(){return post('/api/push/test').then(function(d){setPushHelp((d&&d.success)?'Test sent \\u2014 check your notifications.':((d&&d.message)||'Test failed.'));});});
 
 /* ---------- SYSTEM charts (hand-rolled inline SVG, no libs) ---------- */
 var SYS=(function(){
@@ -2833,8 +2895,13 @@ var SYS=(function(){
     if(lc){s[0].style.color=lc;s[1].style.color=lc;}
     if(rc){s[2].style.color=rc;s[3].style.color=rc;}}
 
+  // Toggle the loading spinner on every chart screen (shown until data lands).
+  function setScreensLoading(on){
+    for(var c in CHARTS){var scr=document.querySelector('#sysChart-'+c+' .sys-screen');
+      if(scr)scr.classList.toggle('loading',on);}}
   function render(){
     computeView();
+    setScreensLoading(!points.length);   // clears the spinner once the first data is in
     for(var c in CHARTS){
       if(!document.getElementById('sysChart-'+c).classList.contains('collapsed'))draw(c);}
     if(window.SYS_afterRender)window.SYS_afterRender();}
@@ -2848,6 +2915,7 @@ var SYS=(function(){
     // the abort-timeout, so nothing stacks and the queue can't wedge.
     var q='/api/system/history';
     if(points.length)q+='?since='+points[points.length-1].t;
+    else setScreensLoading(true);          // first load: show the spinners right away
     return pollFetch('sys',q,30000).then(function(d){
         if(!d)return;                       // coalesced / failed / aborted -- nothing to merge
         if(d.capacity)capacity=d.capacity;
@@ -3077,7 +3145,7 @@ HTML_TEMPLATE_BODY = """
   </span>
   <span class="sh-net ok" id="netInd">
     <span id="nbState">&mdash;</span>
-    <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></span><span class="nb-sep">&middot;</span><span class="nb-ms" id="nbMs"></span></span>
+    <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></span><span class="nb-ms" id="nbMs"></span></span>
   </span>
 </div>
 <main class="panel" id="panel" data-running="{{ 'true' if status.running else 'false' }}">
