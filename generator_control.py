@@ -2488,8 +2488,112 @@ $('pushToggle').addEventListener('click',togglePush);
 $('pushToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();togglePush();}});
 $('testPushBtn').addEventListener('click',function(){post('/api/push/test').then(function(d){setPushHelp((d&&d.success)?'Test sent \\u2014 check your notifications.':((d&&d.message)||'Test failed.'));});});
 
+/* ---------- SYSTEM charts (hand-rolled inline SVG, no libs) ---------- */
+var SYS=(function(){
+  var SVGNS="http://www.w3.org/2000/svg";
+  var W=300,H=100;                 // viewBox units (preserveAspectRatio=none stretches)
+  var points=[];                   // last fetched samples
+  // Per-chart definitions: which series, colors, axis behavior.
+  var CHARTS={
+    compute:{series:[{k:"cpu",c:"#ffb347"},{k:"mem",c:"#6fd3e0"}],min:0,max:100},
+    load:{series:[{k:"load1",c:"#7ce0b0"},{k:"load5",c:"#4a8f74"}],min:0,max:"auto",ref:1.0},
+    vitals:{series:[{k:"temp",c:"#ff8a6a",axis:"l"},{k:"volt",c:"#6fd3e0",axis:"r"}],
+            dual:true,bands:true},
+    link:{series:[{k:"rssi",c:"#7ce0b0",axis:"l"},{k:"qual",c:"#ffb347",axis:"r"}],dual:true}
+  };
+  var hidden={};                   // series key -> true when legend-toggled off
+
+  function el(name,attrs){var e=document.createElementNS(SVGNS,name);
+    for(var a in attrs)e.setAttribute(a,attrs[a]);return e;}
+  function svgOf(chart){return document.querySelector('#sysChart-'+chart+' .sysgraph');}
+
+  // Value range for a set of series keys across all points (nulls skipped).
+  function rangeOf(keys){var lo=Infinity,hi=-Infinity;
+    for(var i=0;i<points.length;i++){for(var j=0;j<keys.length;j++){
+      var v=points[i][keys[j]];if(v==null)continue;if(v<lo)lo=v;if(v>hi)hi=v;}}
+    if(lo===Infinity)return null;return [lo,hi];}
+
+  // Build "x,y x,y" polyline segments for one series, splitting on nulls so gaps
+  // aren't drawn as straight lines through missing data.
+  function segs(key,ymin,ymspan){
+    var n=points.length,out=[],cur=[];
+    for(var i=0;i<n;i++){
+      var v=points[i][key];
+      if(v==null){if(cur.length){out.push(cur);cur=[];}continue;}
+      var x=n<2?0:(i/(n-1))*W;
+      var y=H-((v-ymin)/(ymspan||1))*H;
+      cur.push(x.toFixed(1)+","+y.toFixed(1));
+    }
+    if(cur.length)out.push(cur);return out;}
+
+  // Scale helper for a chart+series: returns [ymin, yspan] honoring fixed/auto/dual.
+  function scaleFor(def,key){
+    if(def.dual){var r=rangeOf([key]);if(!r)return [0,1];
+      var pad=(r[1]-r[0])*0.15||1;return [r[0]-pad,(r[1]-r[0])+2*pad];}
+    if(def.max==="auto"){var rr=rangeOf(def.series.map(function(s){return s.k;}));
+      var top=rr?Math.max(1.0,rr[1]*1.2):1.0;return [def.min,top-def.min];}
+    return [def.min,def.max-def.min];}
+
+  function draw(chart){
+    var def=CHARTS[chart],svg=svgOf(chart);if(!svg)return;
+    while(svg.firstChild)svg.removeChild(svg.firstChild);
+    // faint horizontal grid
+    for(var g=1;g<4;g++)svg.appendChild(el("line",
+      {x1:0,y1:g*H/4,x2:W,y2:g*H/4,"class":"grid"}));
+    if(!points.length)return;
+    // throttle/undervolt alert bands behind VITALS
+    if(def.bands){var n=points.length,run=null;
+      for(var i=0;i<=n;i++){
+        var bad=i<n&&points[i].thr!=null&&((points[i].thr&0x1)||(points[i].thr&0x4));
+        if(bad&&run===null)run=i;
+        else if(!bad&&run!==null){
+          var x0=(run/(n-1))*W,x1=((i-1)/(n-1))*W;
+          svg.appendChild(el("rect",{x:x0,y:0,width:Math.max(1,x1-x0),height:H,"class":"band"}));
+          run=null;}}}
+    // reference line (LOAD @ 1.0)
+    if(def.ref!=null){var sc=scaleFor(def,def.series[0].k);
+      var yr=H-((def.ref-sc[0])/(sc[1]||1))*H;
+      svg.appendChild(el("line",{x1:0,y1:yr,x2:W,y2:yr,"class":"refline"}));}
+    // series polylines
+    def.series.forEach(function(s){
+      if(hidden[s.k])return;
+      var sc=scaleFor(def,s.k);
+      segs(s.k,sc[0],sc[1]).forEach(function(seg){
+        var pl=el("polyline",{points:seg.join(" ")});
+        pl.style.stroke=s.c;pl.style.color=s.c;svg.appendChild(pl);});});
+    // dual-axis min/max labels (left + right)
+    if(def.dual){
+      var l=scaleFor(def,def.series[0].k),r=scaleFor(def,def.series[1].k);
+      svg.appendChild(txt(2,9,(l[0]+l[1]).toFixed(0),"axlab"));
+      svg.appendChild(txt(2,H-2,l[0].toFixed(0),"axlab"));
+      svg.appendChild(txt(W-2,9,(r[0]+r[1]).toFixed(2),"axlab r","end"));
+      svg.appendChild(txt(W-2,H-2,r[0].toFixed(2),"axlab r","end"));}
+  }
+  function txt(x,y,s,cls,anchor){var t=el("text",{x:x,y:y,"class":cls});
+    if(anchor)t.setAttribute("text-anchor",anchor);t.textContent=s;return t;}
+
+  function render(){for(var c in CHARTS){
+    if(!document.getElementById('sysChart-'+c).classList.contains('collapsed'))draw(c);}
+    if(window.SYS_afterRender)window.SYS_afterRender();}
+
+  function load(){return api('/api/system/history').then(function(d){
+    points=(d&&d.points)||[];render();});}
+
+  return {load:load,render:render,draw:draw,CHARTS:CHARTS,hidden:hidden,
+          get points(){return points;},set points(v){points=v;}};
+})();
+
 /* ---------- boot ---------- */
 buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');initDrawer('sysDrawer','sys');
+// Poll system history only while the SYSTEM drawer is open (zero cost when closed).
+(function(){
+  var d=$('sysDrawer'),face=d.querySelector('.drawer-face'),timer=null;
+  face.addEventListener('click',function(){
+    var open=d.className.indexOf('open')>=0;   // class already toggled by initDrawer
+    if(open){SYS.load();timer=setInterval(function(){SYS.load();},15000);}
+    else if(timer){clearInterval(timer);timer=null;}
+  });
+})();
 registerSW();
 refresh();
 setInterval(function(){if(!busy)refresh();},4000);
