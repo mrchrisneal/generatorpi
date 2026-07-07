@@ -108,6 +108,11 @@ CONFIG = {
     # sample host metrics into the ring buffer, and how many points to retain.
     "SYSTEM_HISTORY_SECONDS": 15,   # sample cadence; clamped to >= 5s at use
     "SYSTEM_HISTORY_POINTS": 240,   # ring-buffer capacity (~1 hour at 15s)
+    # SYSTEM sensor selection. Empty = auto-detect the best sensor in Python; set a
+    # value in the env file to force a specific one (useful when auto-detect guesses
+    # wrong on unusual hardware).
+    "SYSTEM_TEMP_PATH": "",         # thermal-zone temp file; "" = auto-pick the CPU zone
+    "SYSTEM_WIFI_IFACE": "",        # wireless iface for RSSI (e.g. wlan0); "" = first found
 }
 
 # Werkzeug password hashes always start with one of these method prefixes
@@ -1583,11 +1588,50 @@ def _read_mem_pct():
         return None
 
 
-def _read_temp_c():
-    """SoC temperature in degrees C from the thermal zone (millidegrees / 1000),
-    or None."""
+# Cached auto-detected thermal-zone path (resolved once; scanning every sample is waste).
+_temp_path_cache = None
+
+
+def _auto_temp_path():
+    """Pick the best thermal-zone temp file in Python: honor SYSTEM_TEMP_PATH if set,
+    else scan /sys/class/thermal for a zone whose `type` looks like the CPU/SoC sensor
+    (cpu/soc/x86_pkg/arm), falling back to the first zone, then thermal_zone0. Cached so
+    the scan runs once."""
+    global _temp_path_cache
+    override = CONFIG.get("SYSTEM_TEMP_PATH", "")
+    if override:
+        return override
+    if _temp_path_cache is not None:
+        return _temp_path_cache
+    default = "/sys/class/thermal/thermal_zone0/temp"
+    chosen = default
     try:
-        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+        import glob
+        first = None
+        for zt in sorted(glob.glob("/sys/class/thermal/thermal_zone*/type")):
+            base = zt.rsplit("/", 1)[0] + "/temp"
+            if first is None:
+                first = base
+            try:
+                kind = open(zt).read().strip().lower()
+            except OSError:
+                continue
+            if any(k in kind for k in ("cpu", "soc", "x86_pkg", "arm")):
+                chosen = base
+                break
+        else:
+            chosen = first or default
+    except Exception:
+        chosen = default
+    _temp_path_cache = chosen
+    return chosen
+
+
+def _read_temp_c():
+    """SoC/CPU temperature in degrees C (millidegrees / 1000), or None. Reads the
+    auto-selected (or SYSTEM_TEMP_PATH-overridden) thermal zone."""
+    try:
+        with open(_auto_temp_path()) as f:
             return round(int(f.read().strip()) / 1000.0, 1)
     except (OSError, ValueError):
         return None
@@ -1595,15 +1639,19 @@ def _read_temp_c():
 
 def _read_wifi():
     """(rssi_dbm, link_quality) from /proc/net/wireless, or (None, None). The first
-    two lines are headers; the first interface data line has the form:
+    two lines are headers; an interface data line has the form:
         wlan0: 0000   48.  -62.  -256   ...
-    where col 2 = link quality and col 3 = signal level (dBm). Trailing dots are
-    stripped before int()."""
+    where col 2 = link quality and col 3 = signal level (dBm). Uses SYSTEM_WIFI_IFACE
+    if set, else the first interface found. Trailing dots are stripped before int()."""
+    want = CONFIG.get("SYSTEM_WIFI_IFACE", "")
     try:
         with open("/proc/net/wireless") as f:
             lines = f.readlines()
         for line in lines[2:]:
             if ":" in line:
+                name = line.split(":", 1)[0].strip()
+                if want and name != want:
+                    continue
                 fields = line.split()
                 qual = int(float(fields[2].rstrip(".")))
                 rssi = int(float(fields[3].rstrip(".")))
@@ -2169,23 +2217,23 @@ footer a:hover{text-decoration:underline}
 
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 
-/* ---- SYSTEM drawer + CRT charts ---- */
+/* ---- SYSTEM drawer + CRT charts (uniform 13px text, matching the event log .evt) ---- */
 .drawer.sys{--tint:#0d1418}
 .sys-hdr{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px}
-.sys-temp-big{font:700 22px/1 var(--mono,monospace);letter-spacing:.5px}
+.sys-temp-big{font:700 13px/1 var(--mono,monospace);letter-spacing:.5px}
 .sys-temp-big.ok{color:#7ce0b0}.sys-temp-big.warn{color:#ffb347}.sys-temp-big.hot{color:#ff8a6a}
-.sys-chip{font:600 11px/1 var(--mono,monospace);padding:5px 9px;border-radius:7px;border:1px solid #000;letter-spacing:.6px}
+.sys-chip{font:600 13px/1 var(--mono,monospace);padding:5px 9px;border-radius:7px;border:1px solid #000;letter-spacing:.6px}
 .sys-chip.clean{color:#7ce0b0;background:#0e1a14}
 .sys-chip.thr{color:#ffb347;background:#1a1509}
 .sys-chip.uv{color:#ff8a6a;background:#1c0f0d}
 .sys-panel{border-radius:9px;overflow:hidden;background:linear-gradient(180deg,#0b1113,#070b0d);border:1px solid #000;margin-bottom:12px}
 .sys-panel-face{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;cursor:pointer;user-select:none}
-.sys-panel-title{font:700 12px/1 var(--mono,monospace);letter-spacing:1.2px;color:#9fb3ad}
+.sys-panel-title{font:700 13px/1 var(--mono,monospace);letter-spacing:1.2px;color:#9fb3ad}
 .sys-legend{display:flex;gap:12px;align-items:center}
-.sys-leg{display:flex;gap:5px;align-items:center;font:600 10px/1 var(--mono,monospace);letter-spacing:.5px;color:#8aa;cursor:pointer}
-.sys-leg .sw{width:11px;height:3px;border-radius:2px;box-shadow:0 0 5px currentColor}
+.sys-leg{display:flex;gap:5px;align-items:center;font:600 13px/1 var(--mono,monospace);letter-spacing:.5px;color:#8aa;cursor:pointer}
+.sys-leg .sw{width:12px;height:3px;border-radius:2px;box-shadow:0 0 5px currentColor}
 .sys-leg.off{opacity:.32;text-decoration:line-through}
-.sys-eye{background:none;border:0;color:#6a8;cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}
+.sys-eye{background:none;border:0;color:#6a8;cursor:pointer;font:600 13px/1 var(--mono,monospace);padding:2px 4px}
 .sys-panel.collapsed .sys-panel-body{display:none}
 .sys-panel-body{padding:0 10px 6px}
 .sys-screen{position:relative;height:200px;border-radius:6px;overflow:hidden;background:radial-gradient(120% 100% at 50% 0%,#0c1a16,#060b0a);border:1px solid #10201b;box-shadow:inset 0 0 22px rgba(0,0,0,.7)}
@@ -2195,11 +2243,13 @@ footer a:hover{text-decoration:underline}
 .sysgraph .refline{stroke:rgba(255,179,71,.35);stroke-width:.7;stroke-dasharray:3 3}
 .sysgraph .band{fill:rgba(255,80,60,.16)}
 .sysgraph polyline{fill:none;stroke-width:1.4;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px currentColor)}
-.sysgraph .axlab{fill:#6f8;font:9px var(--mono,monospace);opacity:.7}
-.sysgraph .axlab.r{fill:#6fd3e0}
 .sysgraph .cross{stroke:rgba(255,255,255,.45);stroke-width:.6}
 .sysgraph .dot{r:2.4;filter:drop-shadow(0 0 4px currentColor)}
-.sys-strip{margin-top:7px;padding:6px 9px;border-radius:5px;background:#060d0b;border:1px solid #10201b;color:#8fe6bf;font:600 11px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px;text-shadow:0 0 6px rgba(120,230,180,.4)}
+/* y-axis corner labels as crisp HTML (SVG text would distort under non-uniform scale) */
+.sys-ax{position:absolute;font:600 13px/1 var(--mono,monospace);color:#7f9;opacity:.85;pointer-events:none;text-shadow:0 0 4px rgba(0,0,0,.9)}
+.sys-ax.tl{top:4px;left:5px}.sys-ax.bl{bottom:4px;left:5px}
+.sys-ax.tr{top:4px;right:5px;color:#6fd3e0}.sys-ax.br{bottom:4px;right:5px;color:#6fd3e0}
+.sys-strip{margin-top:7px;padding:6px 9px;border-radius:5px;background:#060d0b;border:1px solid #10201b;color:#8fe6bf;font:600 13px/1.3 var(--mono,monospace);letter-spacing:.4px;min-height:15px;text-shadow:0 0 6px rgba(120,230,180,.4)}
 </style>{% endraw %}
 </head>"""
 
@@ -2561,16 +2611,17 @@ var SYS=(function(){
       segs(s.k,sc[0],sc[1]).forEach(function(seg){
         var pl=el("polyline",{points:seg.join(" ")});
         pl.style.stroke=s.c;pl.style.color=s.c;svg.appendChild(pl);});});
-    // dual-axis min/max labels (left + right)
-    if(def.dual){
-      var l=scaleFor(def,def.series[0].k),r=scaleFor(def,def.series[1].k);
-      svg.appendChild(txt(2,9,(l[0]+l[1]).toFixed(0),"axlab"));
-      svg.appendChild(txt(2,H-2,l[0].toFixed(0),"axlab"));
-      svg.appendChild(txt(W-2,9,(r[0]+r[1]).toFixed(2),"axlab r","end"));
-      svg.appendChild(txt(W-2,H-2,r[0].toFixed(2),"axlab r","end"));}
+    // y-axis corner labels for EVERY chart (crisp HTML overlay; SVG text would distort
+    // under the non-uniform viewBox scale). Left axis = series[0]; right = series[1] (dual).
+    var l=scaleFor(def,def.series[0].k),tr="",br="";
+    if(def.dual){var r=scaleFor(def,def.series[1].k);tr=axfmt(r[0]+r[1]);br=axfmt(r[0]);}
+    setAx(chart,axfmt(l[0]+l[1]),axfmt(l[0]),tr,br);
   }
-  function txt(x,y,s,cls,anchor){var t=el("text",{x:x,y:y,"class":cls});
-    if(anchor)t.setAttribute("text-anchor",anchor);t.textContent=s;return t;}
+  function axfmt(v){return v===0?"0":(Math.abs(v)<10?v.toFixed(2):v.toFixed(0));}
+  function setAx(chart,tl,bl,tr,br){
+    var s=document.querySelectorAll('#sysChart-'+chart+' .sys-ax');
+    if(s.length<4)return;
+    s[0].textContent=tl;s[1].textContent=bl;s[2].textContent=tr;s[3].textContent=br;}
 
   function render(){for(var c in CHARTS){
     if(!document.getElementById('sysChart-'+c).classList.contains('collapsed'))draw(c);}
@@ -2614,7 +2665,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     return "\\u2014";}
   function thrWord(thr){if(thr==null)return "";
     if(thr&0x1)return "\\u26d4undervolt";if(thr&0x4)return "\\u26a0throttle";
-    if((thr&0x10000)||(thr&0x40000))return "\\u26a0since-boot";return "\\u2713clean";}
+    if((thr&0x10000)||(thr&0x40000))return "\\u26a0since-boot";return "\\u2713nominal";}
 
   var hoverIdx=-1;                 // -1 => show latest
   function updateStatus(){
@@ -2635,7 +2686,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     if(chip){var t=last?last.thr:null;
       if(t!=null&&(t&0x1)){chip.className="sys-chip uv";chip.textContent="UNDERVOLTING";}
       else if(t!=null&&((t&0x10000)||(t&0x40000))){chip.className="sys-chip thr";chip.textContent="THROTTLED";}
-      else if(t!=null){chip.className="sys-chip clean";chip.textContent="CLEAN";}
+      else if(t!=null){chip.className="sys-chip clean";chip.textContent="NOMINAL";}
       else{chip.className="sys-chip clean";chip.textContent="\\u2014";}}
   }
 
@@ -2920,7 +2971,7 @@ HTML_TEMPLATE_BODY = """
                 </span>
               </div>
               <div class="sys-panel-body">
-                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
                 <div class="sys-strip">—</div>
               </div>
             </div>
@@ -2936,7 +2987,7 @@ HTML_TEMPLATE_BODY = """
                 </span>
               </div>
               <div class="sys-panel-body">
-                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
                 <div class="sys-strip">—</div>
               </div>
             </div>
@@ -2952,7 +3003,7 @@ HTML_TEMPLATE_BODY = """
                 </span>
               </div>
               <div class="sys-panel-body">
-                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
                 <div class="sys-strip">—</div>
               </div>
             </div>
@@ -2968,7 +3019,7 @@ HTML_TEMPLATE_BODY = """
                 </span>
               </div>
               <div class="sys-panel-body">
-                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg></div>
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
                 <div class="sys-strip">—</div>
               </div>
             </div>

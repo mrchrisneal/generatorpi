@@ -55,10 +55,14 @@ class TestProcReaders:
         assert module._read_mem_pct() == 75.0
 
     def test_read_temp_c(self, module, monkeypatch):
+        # Force the path via override so the read is deterministic (no zone auto-scan).
+        monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "/x/temp")
         monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO("58200\n"))
         assert module._read_temp_c() == 58.2
 
     def test_read_temp_missing_is_none(self, module, monkeypatch):
+        monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "/x/temp")
+
         def boom(*a, **k):
             raise FileNotFoundError
         monkeypatch.setattr(builtins, "open", boom)
@@ -78,6 +82,48 @@ class TestProcReaders:
             raise FileNotFoundError
         monkeypatch.setattr(builtins, "open", boom)
         assert module._read_wifi() == (None, None)
+
+
+class TestSensorSelection:
+    def test_temp_path_override_wins(self, module, monkeypatch):
+        monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "/custom/zoneX/temp")
+        assert module._auto_temp_path() == "/custom/zoneX/temp"
+
+    def test_auto_temp_path_picks_cpu_zone(self, module, monkeypatch):
+        monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "")
+        monkeypatch.setattr(module, "_temp_path_cache", None)
+        import glob
+        # zone0 = some sink; zone1 = the cpu zone -> auto-detect should choose zone1.
+        monkeypatch.setattr(glob, "glob", lambda p: [
+            "/sys/class/thermal/thermal_zone0/type",
+            "/sys/class/thermal/thermal_zone1/type"])
+        types = {"/sys/class/thermal/thermal_zone0/type": "acpitz",
+                 "/sys/class/thermal/thermal_zone1/type": "x86_pkg_temp"}
+        monkeypatch.setattr(builtins, "open",
+                            lambda p, *a, **k: io.StringIO(types[p]))
+        assert module._auto_temp_path() == "/sys/class/thermal/thermal_zone1/temp"
+
+    def test_auto_temp_path_falls_back_to_first(self, module, monkeypatch):
+        monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "")
+        monkeypatch.setattr(module, "_temp_path_cache", None)
+        import glob
+        monkeypatch.setattr(glob, "glob", lambda p: [
+            "/sys/class/thermal/thermal_zone0/type"])
+        monkeypatch.setattr(builtins, "open",
+                            lambda p, *a, **k: io.StringIO("some-unknown-sink"))
+        # No cpu-like zone -> falls back to the first zone's temp file.
+        assert module._auto_temp_path() == "/sys/class/thermal/thermal_zone0/temp"
+
+    def test_wifi_iface_override_selects_named(self, module, monkeypatch):
+        monkeypatch.setitem(module.CONFIG, "SYSTEM_WIFI_IFACE", "wlan1")
+        fake = (
+            "hdr1\nhdr2\n"
+            " wlan0: 0000   40.  -70.  -256   0 0 0\n"
+            " wlan1: 0000   55.  -50.  -256   0 0 0\n"
+        )
+        monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO(fake))
+        # Must skip wlan0 and return wlan1's (rssi, qual).
+        assert module._read_wifi() == (-50, 55)
 
 
 class TestVcgencmd:
