@@ -1949,18 +1949,24 @@ button{font-family:inherit}
 
 /* ---- compact sticky header (slides in past the placard) ---- brushed-metal to match .panel */
 .stickyhdr{position:fixed;top:0;left:0;right:0;z-index:60;display:flex;align-items:center;
-  justify-content:space-between;gap:12px;padding:9px 16px;overflow:hidden;
+  justify-content:space-between;gap:12px;padding:9px 34px;overflow:hidden;
+  border-radius:0 0 10px 10px;
   transform:translateY(-102%);transition:transform .22s ease;
   background:linear-gradient(180deg,#2b2c31 0%,#1a1b1e 55%,#111214 100%);
-  border-bottom:1px solid #000;
+  border:1px solid #000;border-top:0;
   box-shadow:0 3px 12px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.10)}
 .stickyhdr.show{transform:translateY(0)}
+.stickyhdr .rivet.l{left:13px;top:50%;transform:translateY(-50%)}
+.stickyhdr .rivet.r{right:13px;top:50%;transform:translateY(-50%)}
+.sh-brand{display:flex;flex-direction:column;gap:3px;line-height:1}
 .sh-title{font:800 15px/1 sans-serif;letter-spacing:.14em;color:#e8e4dc;text-shadow:0 1px 0 #000,0 0 8px rgba(255,255,255,.05)}
+.sh-sub{font:700 10px/1 var(--mono,monospace);letter-spacing:.14em}
+.sh-sub.on{color:#7ce0b0}.sh-sub.off{color:#9a948a}
 .sh-net{display:flex;align-items:center;gap:8px;color:#8aa;font:600 13px/1 var(--mono,monospace);letter-spacing:.5px}
-.sh-net .nb-dot{width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
-.sh-net.ok{color:#7ce0b0}.sh-net.slow{color:#ffb347}.sh-net.bad{color:#ff8a6a}
+.sh-net.ok{color:#7ce0b0}.sh-net.slow{color:#ffdd55}.sh-net.bad{color:#ff8a6a}
+.sh-net .nb-pend{color:#b8b4ac;font-weight:700}
 .sh-net .nb-ms{color:#b8b4ac;font-weight:600}
-.sh-net.bad .nb-dot{animation:nbpulse 1s infinite}
+.sh-net.bad #nbState{animation:nbpulse 1s infinite}
 @keyframes nbpulse{0%,100%{opacity:1}50%{opacity:.22}}
 .stickyhdr .sh-prog{position:absolute;bottom:0;left:-30%;height:2px;width:30%;pointer-events:none;
   background:linear-gradient(90deg,transparent,#7ce0b0,transparent);opacity:0}
@@ -2321,13 +2327,14 @@ var newestSeq=0, oldestSeq=null, loadingOlder=false, totalEvents=0;
 /* Central TIMED fetch: every request flows through here so the bottom status bar can show
    live connection health, rough latency (time-to-complete), and pending activity -- the
    signal that matters most on the flaky Pi link. */
-var NET={pending:0,lastMs:null,lastOk:0,lastErr:0};
+var NET={pending:0,lastOk:0,lastErr:0,samples:[]};
 function _nowMs(){return (window.performance&&performance.now)?performance.now():Date.now();}
 function netFetch(path,opts){
   NET.pending++;netRender();
   var t0=_nowMs();
   return fetch(location.origin+path,opts||{}).then(function(r){
-    NET.lastMs=_nowMs()-t0;NET.lastOk=Date.now();NET.pending--;netRender();return r;
+    NET.samples.push(_nowMs()-t0);if(NET.samples.length>8)NET.samples.shift(); // rolling avg of last 8
+    NET.lastOk=Date.now();NET.pending--;netRender();return r;
   },function(e){NET.lastErr=Date.now();NET.pending--;netRender();throw e;});
 }
 function api(path,opts){return netFetch(path,opts).then(function(r){return r.json().catch(function(){return {};});});}
@@ -2419,6 +2426,7 @@ function applyState(s){
   if(!s)return; state=s; clockOffset=s.server_now*1000-Date.now();
   panel.setAttribute('data-running',s.running?'true':'false');
   $('statusWord').textContent=s.running?'RUNNING':'STOPPED';
+  var sub=$('shSub');if(sub){sub.textContent=s.running?'Generator ON':'Generator OFF';sub.className='sh-sub '+(s.running?'on':'off');}
   $('detailMsg').textContent=s.running?('Start sequence completed '+DASH+' verify the unit is running.'):('System idle '+DASH+' generator stopped. Flip switch up to start.');
   $('regLastCmd').textContent=cmdLabel(s.last_command);
   $('regAttempts').textContent=s.start_attempts;
@@ -2752,15 +2760,18 @@ function netRender(){
   var now=Date.now();
   var stale=NET.lastOk&&(now-NET.lastOk>15000);
   var reconnecting=(NET.pending===0&&NET.lastErr>NET.lastOk)||stale;
-  var ms=NET.lastMs,cls='ok',state='ONLINE';
-  if(reconnecting){cls='bad';state='RECONNECTING';}
+  var n=NET.samples.length;
+  var ms=n?Math.round(NET.samples.reduce(function(a,b){return a+b;},0)/n):null; // avg of last 8
+  var cls='ok',state='ONLINE';
+  if(reconnecting){cls='bad';state='RECONNECTING';}   // red reserved for no-connection
   else if(ms==null){state='CONNECTING';}
-  else if(ms>1000){cls='bad';state='LAGGY';}
-  else if(ms>250){cls='slow';state='SLOW';}
+  else if(ms>=1000){cls='slow';state='SLOW';}          // yellow: connected but slow
+  else{cls='ok';state='ONLINE';}                        // green: under 1s
   ind.className='sh-net '+cls;
   var hdr=$('stickyHdr');if(hdr)hdr.classList.toggle('syncing',NET.pending>0);
+  $('nbPend').textContent='('+NET.pending+')';
   $('nbState').textContent=state;
-  $('nbMs').textContent=(ms!=null&&!reconnecting)?(Math.round(ms)+' ms'):'';
+  $('nbMs').textContent=(ms!=null&&!reconnecting)?(ms+' ms'):'';
 }
 // Reveal the sticky header once scrolled past the placard.
 (function(){var hdr=$('stickyHdr');if(!hdr)return;
@@ -2919,8 +2930,12 @@ HTML_TEMPLATE_BODY = """
      live connection / latency / pending indicator. Metal finish to match the panel. -->
 <div class="stickyhdr" id="stickyHdr">
   <span class="sh-prog"></span>
-  <span class="sh-title">GeneratorPi</span>
-  <span class="sh-net ok" id="netInd"><span class="nb-dot"></span><span id="nbState">&mdash;</span><span class="nb-ms" id="nbMs"></span></span>
+  <span class="rivet l"></span><span class="rivet r"></span>
+  <span class="sh-brand">
+    <span class="sh-title">GeneratorPi</span>
+    <span class="sh-sub {{ 'on' if status.running else 'off' }}" id="shSub">{{ 'Generator ON' if status.running else 'Generator OFF' }}</span>
+  </span>
+  <span class="sh-net ok" id="netInd"><span class="nb-pend" id="nbPend">(0)</span><span id="nbState">&mdash;</span><span class="nb-ms" id="nbMs"></span></span>
 </div>
 <main class="panel" id="panel" data-running="{{ 'true' if status.running else 'false' }}">
   <span class="rivet tl"></span><span class="rivet tr"></span>
