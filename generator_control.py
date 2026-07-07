@@ -1100,9 +1100,10 @@ def auth_required(f):
             # Record HOW we authed so downstream audit logs don't trust a spoofable
             # Authorization header a keyed caller might also send (see caller_identity).
             g.auth_method = "apikey"
-            # Log method + path ONLY -- never request.full_path / query_string,
-            # which would contain the key.
-            log.info(f"apikey@{ip} -> {request.method} {request.path}")
+            # The access-audit line is emitted POST-handler by the _access_audit_log
+            # after_request hook, so it can carry the response status code (which the
+            # APP LOG's "hide routine HTTP traffic" filter keys off). Method + path only
+            # there -- never the query string, which would contain the key.
             return f(*args, **kwargs)
 
         # Path 2 -- HTTP Basic Auth (browser login / manual fallback). A present
@@ -1131,7 +1132,8 @@ def auth_required(f):
         # Successful basic auth -- clear any prior failures for this IP
         record_success(ip)
         g.auth_method = "basic"
-        log.info(f"{auth.username}@{ip} -> {request.method} {request.path}")
+        # Access-audit line emitted post-handler (see _access_audit_log) so it can
+        # include the response status the APP LOG's traffic filter keys off.
         return f(*args, **kwargs)
     return decorated
 
@@ -2659,6 +2661,16 @@ function logLnEl(s){var d=document.createElement('div');d.className='logln';
 // only when the user is already scrolled to the bottom (so reading history isn't
 // yanked away on the 4s refresh).
 var _logOffset=null;   // byte cursor into the log file; null forces a full (reset) fetch
+// "Hide routine HTTP traffic" display filter (per-browser pref, persisted to localStorage).
+// When on, routine SUCCESSFUL access lines are hidden from the APP LOG so real events aren't
+// drowned out; errors (4xx/5xx) and non-access lines are ALWAYS shown. The server still logs
+// everything -- this is display-only. Access lines read "<who>@<ip> -> <METHOD> <path> <status>".
+var LS_HIDEHTTP='gp.hidehttp';
+var _hideHttp=false;
+try{_hideHttp=localStorage.getItem(LS_HIDEHTTP)==='1';}catch(e){}
+var _accessRe=/ -> (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) \\S+ ([0-9]{3})(?:\\s|$)/;
+function _isRoutineHttp(line){var m=line.match(_accessRe);return !!m&&(+m[1])<400;}   // 2xx/3xx only
+function _logHidden(line){return _hideHttp&&_isRoutineHttp(line);}                    // filter predicate
 function _setLogCount(){var n=$('log').querySelectorAll('.logln').length;$('logCount').textContent=n+' LINE'+(n===1?'':'S');}
 // INCREMENTAL app-log fetch: pass our byte cursor so the server returns ONLY the newly
 // appended lines (an idle poll is a few bytes, not ~70KB). reset=true (initial load or a
@@ -2673,12 +2685,12 @@ function loadAppLog(){var lg=$('log');if(!lg.children.length)lg.classList.add('l
     if(typeof d.offset==='number')_logOffset=d.offset;   // advance the delta cursor
     var atTop=(log.scrollTop<=4);
     if(d.reset){   // full tail -> rebuild newest-first (top = most recent)
-      log.innerHTML='';for(var i=lines.length-1;i>=0;i--)log.appendChild(logLnEl(lines[i]));
+      log.innerHTML='';for(var i=lines.length-1;i>=0;i--){if(_logHidden(lines[i]))continue;log.appendChild(logLnEl(lines[i]));}
       _setLogCount();if(atTop)log.scrollTop=0;return;
     }
     if(!lines.length)return;                              // nothing new -> leave view as-is
     // Delta: insert oldest->newest before the current top so the newest ends up on top.
-    for(var j=0;j<lines.length;j++)log.insertBefore(logLnEl(lines[j]),log.firstChild);
+    for(var j=0;j<lines.length;j++){if(_logHidden(lines[j]))continue;log.insertBefore(logLnEl(lines[j]),log.firstChild);}
     while(log.children.length>1000)log.removeChild(log.lastChild);   // cap rendered rows
     _setLogCount();if(atTop)log.scrollTop=0;});}
 // True only when the panel is scrolled to the very top (newest end, both panes).
@@ -2827,6 +2839,28 @@ function toggleFuel(){var on=$('fuelToggle').getAttribute('aria-checked')==='tru
 $('fuelToggle').addEventListener('click',toggleFuel);
 $('fuelToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleFuel();}});
 
+/* ---------- LOG VIEWER: routine-HTTP display filter (Settings) ---------- */
+// Client-only pref: the httpToggle's I(on)=SHOW routine traffic, so aria-checked === !_hideHttp.
+// Flipping it persists to localStorage and, if the APP LOG is showing, forces a full re-fetch so
+// the 1000-line window is re-filtered (a delta alone couldn't retroactively hide/show old rows).
+function setHideHttp(hide){_hideHttp=!!hide;
+  try{localStorage.setItem(LS_HIDEHTTP,_hideHttp?'1':'0');}catch(e){}
+  setTog('httpToggle',!_hideHttp);
+  if(logView==='log'){_logOffset=null;$('log').innerHTML='';loadAppLog();}}
+function toggleHttp(){setHideHttp($('httpToggle').getAttribute('aria-checked')==='true');}
+$('httpToggle').addEventListener('click',toggleHttp);
+$('httpToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleHttp();}});
+
+/* ---------- RESET local preferences (Settings) ---------- */
+// Escape hatch: wipe THIS browser's gp.* preference keys (open panels, chart layout, log
+// source + filters) and reload so everything restores to defaults. Local-only -- never
+// touches the generator or server. Scoped to gp.* so any unrelated keys are left alone.
+$('resetPrefsBtn').addEventListener('click',function(){
+  var b=$('resetPrefsBtn');if(b.classList.contains('loading'))return;b.classList.add('loading');
+  try{var ks=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf('gp.')===0)ks.push(k);}
+    for(var j=0;j<ks.length;j++)localStorage.removeItem(ks[j]);}catch(e){}
+  location.reload();});
+
 /* ---------- web push ---------- */
 /* Requires a service worker + PushManager + a SECURE CONTEXT. On a self-signed cert the
    origin may not be secure until the client trusts it, so this degrades gracefully:
@@ -2834,7 +2868,16 @@ $('fuelToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='
 var swReg=null;
 var pushSupported=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window)&&(window.isSecureContext===true);
 var serverPush={supported:false,vapidKey:''};
-function setPushHelp(t){$('pushHelp').textContent=t;}
+// Wiki base for "how to enable" deep-links surfaced when push can't be turned on.
+var WIKI='https://github.com/mrchrisneal/generatorpi/wiki';
+// Set the push helper text. With a wikiPage, append a "Setup guide" link so the user can
+// learn how to enable push successfully. Built via DOM nodes (not innerHTML) so the message
+// can never inject markup, and a plain textContent fast-path for the no-link (success) cases.
+function setPushHelp(t,wikiPage){var el=$('pushHelp');
+  if(!wikiPage){el.textContent=t;return;}
+  el.textContent=t+' ';
+  var a=document.createElement('a');a.href=WIKI+'/'+wikiPage;a.target='_blank';a.rel='noopener';
+  a.textContent='Setup guide \\u2197';el.appendChild(a);}
 function urlB64ToUint8(base64){
   var pad='='.repeat((4-base64.length%4)%4);
   var b64=(base64+pad).replace(/-/g,'+').replace(/_/g,'/');
@@ -2847,9 +2890,12 @@ function refreshPushUI(){
   // A push flow just settled -> clear any spinner on the push-toggle halves.
   var _pt=$('pushToggle');if(_pt){var _hl=_pt.querySelectorAll('.half.loading');for(var _i=0;_i<_hl.length;_i++)_hl[_i].classList.remove('loading');}
   var testBtn=$('testPushBtn');
-  if(!pushSupported){setTog('pushToggle',false);setPushHelp('Push unavailable on this browser/origin \\u2014 using in-page alerts.');testBtn.disabled=true;return;}
-  if(!serverPush.supported){setTog('pushToggle',false);setPushHelp('Push not configured on the server \\u2014 using in-page alerts.');testBtn.disabled=true;return;}
-  if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in browser settings. Allow them to enable push.');testBtn.disabled=true;return;}
+  if(!pushSupported){setTog('pushToggle',false);
+    // Surface WHY it's unavailable (the two real causes) + a link to the enable guide.
+    var why=(window.isSecureContext!==true)?'Push needs a secure (HTTPS) connection on this device.':'This browser doesn\\u2019t support web push.';
+    setPushHelp(why+' In-page alerts still work.','Push-Notifications');testBtn.disabled=true;return;}
+  if(!serverPush.supported){setTog('pushToggle',false);setPushHelp('Push isn\\u2019t configured on the server (no VAPID keys). In-page alerts still work.','Push-Notifications');testBtn.disabled=true;return;}
+  if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in this browser\\u2019s site settings \\u2014 allow them to enable push.','Push-Notifications');testBtn.disabled=true;return;}
   if(swReg){
     swReg.pushManager.getSubscription().then(function(sub){
       var on=!!sub;setTog('pushToggle',on);
@@ -3087,7 +3133,8 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');
 (function(){var seg=$('logViewToggle');if(!seg)return;
   seg.addEventListener('click',function(e){var b=e.target.closest('button[data-view]');if(!b)return;setLogView(b.getAttribute('data-view'));});
   var bs=seg.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].getAttribute('data-view')===logView);}
-  if(logView==='log')$('log').classList.add('applog');})();
+  if(logView==='log')$('log').classList.add('applog');
+  setTog('httpToggle',!_hideHttp);})();   // reflect the persisted routine-HTTP filter pref
 // SYSTEM drawer: poll history only while open (zero cost when closed). Its persisted open
 // state is restored by initDrawer, which fires this callback -- so a drawer left open
 // resumes polling immediately on load (no more re-opening it every launch).
@@ -3367,6 +3414,36 @@ HTML_TEMPLATE_BODY = """
                 <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
               </div>
             </div>
+            <!-- LOG VIEWER: controls for the EVENT LOG panel in the right column. The
+                 EVENTS<->APP LOG source switch lives here (moved out of the panel header,
+                 which was too crowded), plus the routine-HTTP display filter. Both are
+                 per-browser view preferences persisted in localStorage. -->
+            <div class="section-label" style="margin:0">LOG VIEWER</div>
+            <div class="alert-cfg">
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>LOG SOURCE</span>
+                <div class="logseg" id="logViewToggle" role="group" aria-label="Log source">
+                  <button type="button" data-view="events" class="on">EVENTS</button>
+                  <button type="button" data-view="log">APP LOG</button>
+                </div>
+              </div>
+              <div class="helper">Switch the EVENT LOG panel between the curated event store and a live tail of the raw application log.</div>
+              <div class="drawer-divider"></div>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>ROUTINE HTTP</span>
+                <div class="iotoggle" id="httpToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Show routine HTTP traffic in the app log">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper">Show routine successful (2xx/3xx) request lines in the APP LOG. Errors (4xx/5xx) are always shown.</div>
+            </div>
+            <!-- RESET: escape hatch to clear THIS browser's saved preferences if the UI
+                 ever gets into a bad state. Local-only; never touches the generator/server. -->
+            <div class="section-label" style="margin:0">RESET</div>
+            <div class="alert-cfg">
+              <div class="helper">Clears every saved preference on <strong>this browser</strong> — open/closed panels, chart layout, log source &amp; filters. Does <strong>not</strong> affect the generator, the server, or other devices.</div>
+              <button type="button" class="btn3d steel" id="resetPrefsBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESET LOCAL PREFERENCES</button>
+            </div>
           </div>
         </div>
         <div class="drawer-base"></div>
@@ -3390,15 +3467,9 @@ HTML_TEMPLATE_BODY = """
       <div>
         <div class="log-head">
           <span class="section-label" style="margin:0">EVENT LOG</span>
-          <div class="log-tools">
-            <!-- Toggle the panel between the curated EVENT store (default) and the raw
-                 application log file tail. View choice persists to localStorage. -->
-            <div class="logseg" id="logViewToggle" role="group" aria-label="Log view">
-              <button type="button" data-view="events" class="on">EVENTS</button>
-              <button type="button" data-view="log">APP LOG</button>
-            </div>
-            <span class="log-count" id="logCount">0 EVENTS</span>
-          </div>
+          <!-- The EVENTS <-> APP LOG switch lives in Settings > LOG VIEWER (this header
+               was too crowded); here we keep only the title + the live count. -->
+          <span class="log-count" id="logCount">0 EVENTS</span>
         </div>
         <div class="log" id="log"></div>
       </div>
@@ -3689,6 +3760,39 @@ def set_security_headers(response):
     )
     if CONFIG["SSL_ENABLED"]:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
+@app.after_request
+def _access_audit_log(response):
+    """Access-audit log line, written AFTER the handler so it carries the response
+    STATUS code: "<caller>@<ip> -> <METHOD> <path> <status>".
+
+    Emitted for every AUTHENTICATED request (g.auth_method is set by auth_required on
+    both the API-key and basic-auth success paths). Unauthenticated failures (401 login
+    prompt, 429 lockout) are already logged as warnings inside auth_required, so we skip
+    them here to avoid a duplicate line. Method + path ONLY -- never request.full_path /
+    query_string, which can contain the API key.
+
+    The status lets the APP LOG view's "hide routine HTTP traffic" filter distinguish a
+    routine 2xx/3xx poll from a 4xx/5xx error (errors are always surfaced). We ALWAYS
+    write this line regardless of that toggle -- the toggle is a client-side DISPLAY
+    filter only; the server records all traffic per usual. Severity tracks the status so
+    a failed request stands out (and is colourised) in the log: 5xx error, 4xx warning,
+    else info. caller_identity() reads g.auth_method (not the spoofable Authorization
+    header), so a keyed caller can't forge the audit identity."""
+    if getattr(g, "auth_method", None):
+        status = response.status_code
+        line = (
+            f"{caller_identity()}@{request.remote_addr} -> "
+            f"{request.method} {request.path} {status}"
+        )
+        if status >= 500:
+            log.error(line)
+        elif status >= 400:
+            log.warning(line)
+        else:
+            log.info(line)
     return response
 
 
