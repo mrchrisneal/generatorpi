@@ -2170,6 +2170,7 @@ button{font-family:inherit}
 .crt-input::placeholder{color:#3f7d64}
 .crt-input:focus{outline:3px solid #ffca7a;outline-offset:2px}
 .helper{font:500 12px var(--mono);color:#ada79d;line-height:1.55;margin-top:9px}
+.helper strong{color:#d8d2c6;font-weight:700;letter-spacing:.03em}  /* bold field-name lead-in on helper text */
 /* Centered hairline divider between form rows in the drawers: ~30% width, 1px, faded
    ends, with 10px of margin above and below the line. */
 .drawer-divider{width:30%;height:1px;border:0;margin:10px auto;background:linear-gradient(90deg,transparent,rgba(255,255,255,.24),transparent)}
@@ -2286,9 +2287,18 @@ footer a:hover{text-decoration:underline}
 .sys-leg{display:flex;gap:5px;align-items:center;font:600 13px/1 var(--mono,monospace);letter-spacing:.5px;color:#8aa;cursor:pointer}
 .sys-leg .sw{width:12px;height:3px;border-radius:2px;box-shadow:0 0 5px currentColor}
 .sys-leg.off{opacity:.32;text-decoration:line-through}
-.sys-eye{background:none;border:0;color:#6a8;cursor:pointer;font:600 13px/1 var(--mono,monospace);padding:2px 4px}
-.sys-panel.collapsed .sys-panel-body{display:none}
-.sys-panel-body{padding:0 10px 6px}
+/* Chart caret: self-contained (NOT the shared .caret class -- that would inherit the
+   .drawer.open .caret rotate rule, since these live inside the open SYSTEM drawer, and
+   get stuck rotated regardless of collapse state). Matches the drawer caret's 14px. */
+.sys-caret{display:inline-block;transition:transform .35s;font-size:14px;color:#9b9689;padding:0 2px}
+.sys-panel:not(.collapsed) .sys-caret{transform:rotate(180deg)}  /* points up when the chart is expanded, mirroring an open drawer */
+.sys-facestat{font:600 13px/1 var(--mono,monospace);letter-spacing:.4px}  /* drawer-face 1m-load (+temp) readout */
+.fs-sep{color:#6a6a66}  /* muted dot between the load and temp on the face */
+/* Chart body slides open/closed like a drawer (max-height + padding transition) instead of
+   snapping. 300px is generous headroom over the ~230px content (200px screen + strip), so
+   the expand always completes; overflow:hidden clips during the slide. */
+.sys-panel-body{padding:0 10px 6px;overflow:hidden;max-height:300px;transition:max-height .45s cubic-bezier(.4,0,.2,1),padding .45s cubic-bezier(.4,0,.2,1)}
+.sys-panel.collapsed .sys-panel-body{max-height:0;padding-bottom:0}
 .sys-screen{position:relative;height:200px;border-radius:6px;overflow:hidden;background:radial-gradient(120% 100% at 50% 0%,#0c1a16,#060b0a);border:1px solid #10201b;box-shadow:inset 0 0 22px rgba(0,0,0,.7)}
 .sys-screen::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.16) 2px 3px)}
 .sysgraph{position:absolute;inset:0;width:100%;height:100%}
@@ -2494,7 +2504,25 @@ function applyState(s){
   setTog('fuelToggle',fEnabled);
   // Web push server state (vapid key + whether the server can send).
   pushApplyState(s.push||{});
+  // SYSTEM drawer FACE stat (1m load + optional temp) -- driven here from the state poll so
+  // it stays live even while the drawer is collapsed and history isn't being polled.
+  setSysFaceStat(s.sys||{});
   tick();
+}
+// Paint the SYSTEM drawer face stat: 1m load average (always shown when present) plus
+// temperature after a dot separator WHEN available -- temp is omitted off a Pi rather than
+// shown as a placeholder. Hidden entirely if load is unavailable, so no bare "--" ever.
+function setSysFaceStat(sys){
+  var el=$('sysFaceStat');if(!el)return;
+  var l=sys.load1,t=sys.temp;
+  if(l==null){el.style.display='none';el.innerHTML='';return;}
+  el.style.display='';
+  var html='<span style="color:#9fb5ff">1m '+l.toFixed(2)+'</span>';
+  if(t!=null){                                   // append "· NN°C" only when a sensor exists
+    var tc=t>=75?'#ff8a6a':t>=60?'#ffb347':'#7ce0b0';
+    html+='<span class="fs-sep"> \\u00b7 </span><span style="color:'+tc+'">'+Math.round(t)+'\\u00b0C</span>';
+  }
+  el.innerHTML=html;
 }
 function setTog(id,on){$(id).setAttribute('aria-checked',on?'true':'false');}
 function tick(){if(!state)return;$('uptime').textContent=fmtClock(uptimeSecs());updateOdometer(liveTotalHours());renderFuel();}
@@ -2886,7 +2914,11 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     else if(chart==="vitals"){v=seg(num(p.temp,"\\u00b0C",1),"#ff8a6a")+seg(num(p.volt,"V",2),"#6fd3e0");
       var w=thrWord(p.thr);if(w)v+=seg(w,thrColor(p.thr));}
     else if(chart==="link")v=seg(num(p.rssi,"dBm"),"#7ce0b0")+seg("q"+num(p.qual,""),"#ffb347");
-    return '<span class="t">'+esc(relTime(p.t))+'</span><span class="v">'+v+'</span>';}
+    // The LEFT time indicator is only meaningful while hovering a point; at rest it's just
+    // "-Ns" of the latest sample (noise). Show it only on hover -- keep an empty .t span so
+    // the values stay right-aligned via the strip's space-between layout.
+    var tstr=hoverIdx>=0?esc(relTime(p.t)):"";
+    return '<span class="t">'+tstr+'</span><span class="v">'+v+'</span>';}
 
   var hoverIdx=-1;                 // -1 => show latest
   function updateStatus(){
@@ -2895,19 +2927,19 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
     for(var c in SYS.CHARTS){
       var strip=document.querySelector('#sysChart-'+c+' .sys-strip');
       if(strip)strip.innerHTML=stripHTML(c,p);}
-    // header + face live status always reflect the LATEST sample
+    // The throttle/undervolt chip reflects the LATEST sample; it lives in the drawer body
+    // (visible only when the drawer is open). Off a Pi there's no throttle data -> HIDE the
+    // chip entirely rather than show a useless "--". (The FACE stat -- 1m load + optional
+    // temp -- is driven by applyState from the state poll, so it stays live even when the
+    // drawer is collapsed and history isn't polling.)
     var last=pts.length?pts[pts.length-1]:null;
-    var face=$('sysFaceTemp'),chip=$('sysThrChip');
-    if(last&&last.temp!=null){
-      var cls=last.temp>=75?"hot":last.temp>=60?"warn":"ok";
-      face.style.color=cls==="hot"?"#ff8a6a":cls==="warn"?"#ffb347":"#7ce0b0";
-      face.textContent=last.temp.toFixed(0)+"\\u00b0C";
-    }else{face.textContent="\\u2014";}
+    var chip=$('sysThrChip');
     if(chip){var t=last?last.thr:null;
-      if(t!=null&&(t&0x1)){chip.className="sys-chip uv";chip.textContent="UNDERVOLTING";}
-      else if(t!=null&&((t&0x10000)||(t&0x40000))){chip.className="sys-chip thr";chip.textContent="THROTTLED";}
-      else if(t!=null){chip.className="sys-chip clean";chip.textContent="NOMINAL";}
-      else{chip.className="sys-chip clean";chip.textContent="\\u2014";}}
+      if(t==null){chip.style.display="none";}
+      else{chip.style.display="";
+        if(t&0x1){chip.className="sys-chip uv";chip.textContent="UNDERVOLTING";}
+        else if((t&0x10000)||(t&0x40000)){chip.className="sys-chip thr";chip.textContent="THROTTLED";}
+        else{chip.className="sys-chip clean";chip.textContent="NOMINAL";}}}
   }
 
   // Synced crosshair: pointer x over any screen -> nearest index -> all strips.
@@ -2939,14 +2971,27 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
   function saveSet(k,arr){try{localStorage.setItem(k,JSON.stringify(arr));}catch(e){}}
   function applyCollapsed(){var cs=loadSet(LS_C);
     for(var c in SYS.CHARTS){$('sysChart-'+c).classList.toggle('collapsed',cs.indexOf(c)>=0);}}
-  function bindEyes(){
-    document.querySelectorAll('#sysDrawer .sys-eye').forEach(function(btn){
-      btn.addEventListener('click',function(e){e.stopPropagation();
-        var panel=btn.closest('.sys-panel'),c=panel.getAttribute('data-chart');
+  // The whole chart header toggles collapse/expand, EXCEPT clicks that land on a legend
+  // series chip (those toggle that series' visibility instead). The caret on the right is
+  // just a visual state indicator now -- driven purely by the .collapsed class via CSS.
+  function bindFaces(){
+    document.querySelectorAll('#sysDrawer .sys-panel-face').forEach(function(face){
+      var panel=face.closest('.sys-panel'),c=panel.getAttribute('data-chart');
+      face.setAttribute('role','button');face.setAttribute('tabindex','0');
+      face.setAttribute('aria-label','Collapse or expand the '+c+' chart');
+      function syncAria(){face.setAttribute('aria-expanded',panel.classList.contains('collapsed')?'false':'true');}
+      syncAria();
+      function toggle(){
         panel.classList.toggle('collapsed');
         var cs=loadSet(LS_C),i=cs.indexOf(c);
         if(panel.classList.contains('collapsed')){if(i<0)cs.push(c);}else if(i>=0)cs.splice(i,1);
-        saveSet(LS_C,cs);SYS.render();});});}
+        saveSet(LS_C,cs);syncAria();SYS.render();}
+      face.addEventListener('click',function(e){
+        if(e.target.closest('.sys-leg'))return;   // legend chip handles its own click
+        toggle();});
+      face.addEventListener('keydown',function(e){
+        if(e.target.closest('.sys-leg'))return;
+        if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();}});});}
 
   // Legend series toggles (persisted).
   function applyHidden(){var hs=loadSet(LS_H);hs.forEach(function(k){SYS.hidden[k]=true;});
@@ -2979,7 +3024,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');in
         hoverIdx=-1;SYS.setWindow(sec);});});
     SYS.setWindow(saved);}
 
-  applyCollapsed();applyHidden();bindEyes();bindLegend();bindHover();bindWindow();updateStatus();
+  applyCollapsed();applyHidden();bindFaces();bindLegend();bindHover();bindWindow();updateStatus();
 })();
 registerSW();
 refresh();
@@ -3047,7 +3092,7 @@ HTML_TEMPLATE_BODY = """
 
       <!-- Current-run nixie readout -->
       <div>
-        <div class="section-label">CURRENT RUN · HR:MIN:SEC</div>
+        <div class="section-label">CURRENT RUN (HH:MM:SS)</div>
         <div class="nixie" id="uptime">00:00:00</div>
       </div>
 
@@ -3136,8 +3181,12 @@ HTML_TEMPLATE_BODY = """
       </div>
 
       <!-- Modules: the feature drawers below (fuel projection + system perf history).
-           This heading labels the group; each drawer is its own container. -->
-      <div class="section-label">MODULES</div>
+           This heading labels the group; each drawer is its own container. The col's
+           20px flex-gap sits between the label and the first drawer on TOP of the
+           label's own 8px margin (~28px); pull it back to 8px (=20-12) so MODULES hugs
+           the drawer like every other header hugs its content. Flex-gap skips
+           display:none items, so this stays 8px even when the Fuel drawer is hidden. -->
+      <div class="section-label" style="margin-bottom:-12px">MODULES</div>
 
       <!-- Fuel Projection drawer -->
       <div class="drawer fuel" id="fuelDrawer">
@@ -3173,7 +3222,7 @@ HTML_TEMPLATE_BODY = """
                 <button type="button" class="btn3d cyan" id="setRateBtn">SET</button>
                 <button type="button" class="btn3d steel btn3dsm" id="resetRateBtn" aria-label="Reset drain rate to default">RESET</button>
               </div>
-              <div class="helper">Estimated automatically from readings, or set it here directly.</div>
+              <div class="helper"><strong>DRAIN RATE:</strong> Estimated automatically from readings, or set it here directly. (% per hour)</div>
             </div>
 
             <div class="alert-banner" id="alertBanner" role="alert">
@@ -3187,7 +3236,7 @@ HTML_TEMPLATE_BODY = """
                 <input class="crt-input" id="readingInput" type="number" step="1" min="0" max="100" inputmode="numeric" placeholder="e.g. 48" aria-label="Record observed level percent">
                 <button type="button" class="btn3d cyan" id="recordBtn">RECORD</button>
               </div>
-              <div class="helper">Each reading refines the linear drain estimate (level = start − rate × run-hours). More readings on one tank → better projection.</div>
+              <div class="helper"><strong>TANK LEVEL OBSERVATION:</strong> Each reading refines the linear drain estimate (level = start − rate × run-hours). More readings on one tank → better projection. (% full, 0-100)</div>
             </div>
 
             <div class="drawer-divider"></div>
@@ -3197,7 +3246,7 @@ HTML_TEMPLATE_BODY = """
                 <input class="crt-input" id="fillInput" type="number" step="1" min="0" max="100" inputmode="numeric" placeholder="e.g. 100" aria-label="Set gas tank level percent">
                 <button type="button" class="btn3d green" id="fillBtn">SET</button>
               </div>
-              <div class="helper">Resets the baseline level to the new fill; drain rate is retained.</div>
+              <div class="helper"><strong>SET TANK LEVEL (ADD/REMOVE GAS):</strong> Resets the baseline level to the new fill; drain rate is retained. (% full, 0-100)</div>
             </div>
           </div>
         </div>
@@ -3208,7 +3257,7 @@ HTML_TEMPLATE_BODY = """
       <div class="drawer sys" id="sysDrawer">
         <button type="button" class="drawer-face" aria-expanded="false" aria-controls="sysClip">
           <span class="face-left"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="6 12 9 9 12 12 15 8 18 11"/></svg></span>SYSTEM</span>
-          <span class="face-right"><span id="sysFaceTemp" style="color:#7ce0b0">—</span><span class="caret">▾</span></span>
+          <span class="face-right"><span id="sysFaceStat" class="sys-facestat"></span><span class="caret">▾</span></span>
         </button>
         <div class="drawer-clip" id="sysClip">
           <div class="drawer-cavity">
@@ -3221,14 +3270,14 @@ HTML_TEMPLATE_BODY = """
               <span class="sys-chip clean" id="sysThrChip">—</span>
             </div>
 
-            <!-- COMPUTE: CPU% + MEM% (fixed 0-100) -->
-            <div class="sys-panel" data-chart="compute" id="sysChart-compute">
+            <!-- LOAD: 1m + 5m (auto max). Placed above COMPUTE per design. -->
+            <div class="sys-panel" data-chart="load" id="sysChart-load">
               <div class="sys-panel-face">
-                <span class="sys-panel-title">COMPUTE</span>
+                <span class="sys-panel-title">LOAD</span>
                 <span class="sys-legend">
-                  <span class="sys-leg" data-series="cpu"><span class="sw" style="background:#ffb347;color:#ffb347"></span>CPU</span>
-                  <span class="sys-leg" data-series="mem"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>MEM</span>
-                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#9fb5ff;color:#9fb5ff"></span>1m</span>
+                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#eb9fd0;color:#eb9fd0"></span>5m</span>
+                  <span class="sys-caret" aria-hidden="true">▾</span>
                 </span>
               </div>
               <div class="sys-panel-body">
@@ -3237,14 +3286,14 @@ HTML_TEMPLATE_BODY = """
               </div>
             </div>
 
-            <!-- LOAD: 1m + 5m (auto max, ref line @1.0) -->
-            <div class="sys-panel" data-chart="load" id="sysChart-load">
+            <!-- COMPUTE: CPU% + MEM% (fixed 0-100) -->
+            <div class="sys-panel" data-chart="compute" id="sysChart-compute">
               <div class="sys-panel-face">
-                <span class="sys-panel-title">LOAD</span>
+                <span class="sys-panel-title">COMPUTE</span>
                 <span class="sys-legend">
-                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#9fb5ff;color:#9fb5ff"></span>1m</span>
-                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#eb9fd0;color:#eb9fd0"></span>5m</span>
-                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                  <span class="sys-leg" data-series="cpu"><span class="sw" style="background:#ffb347;color:#ffb347"></span>CPU</span>
+                  <span class="sys-leg" data-series="mem"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>MEM</span>
+                  <span class="sys-caret" aria-hidden="true">▾</span>
                 </span>
               </div>
               <div class="sys-panel-body">
@@ -3260,7 +3309,7 @@ HTML_TEMPLATE_BODY = """
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="temp"><span class="sw" style="background:#ff8a6a;color:#ff8a6a"></span>°C</span>
                   <span class="sys-leg" data-series="volt"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>V</span>
-                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                  <span class="sys-caret" aria-hidden="true">▾</span>
                 </span>
               </div>
               <div class="sys-panel-body">
@@ -3276,7 +3325,7 @@ HTML_TEMPLATE_BODY = """
                 <span class="sys-legend">
                   <span class="sys-leg" data-series="rssi"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>dBm</span>
                   <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Quality</span>
-                  <button type="button" class="sys-eye" aria-label="Collapse chart">◉</button>
+                  <span class="sys-caret" aria-hidden="true">▾</span>
                 </span>
               </div>
               <div class="sys-panel-body">
@@ -3551,6 +3600,15 @@ def api_state():
             "fuel_enabled": alerts_state.get("fuel_enabled", True),
         }
     snap["server_now"] = time.time()
+    # SYSTEM drawer FACE stats, shown even when the drawer is collapsed and history isn't
+    # being polled. Primary = 1m load average: always available and read fresh & cheap from
+    # /proc/loadavg (no stateful delta like CPU%, so it's safe on the request path). Plus
+    # temperature when a thermal zone exists -- the UI appends it after a dot separator, and
+    # omits it entirely when null (off a Pi) rather than showing a placeholder. Both are
+    # cheap sysfs reads; throttle is intentionally excluded (vcgencmd subprocess, too costly
+    # for the frequent state poll -- the throttle chip updates from the history poll).
+    _load1, _load5 = _read_loadavg()
+    snap["sys"] = {"load1": _load1, "temp": _read_temp_c()}
     # Web Push info for the client: whether the server can send (library + VAPID key),
     # the public key the browser needs to subscribe, and how many devices are subscribed.
     snap["push"] = {
