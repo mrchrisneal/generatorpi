@@ -2326,12 +2326,10 @@ footer{border-top:1px solid rgba(255,255,255,.06);padding-top:16px;
 footer .frow{font:500 12px var(--mono);color:#a6a094}
 footer a{color:rgba(255,255,255,.9);text-decoration:none}
 footer a:hover{text-decoration:underline}
-/* Update status line + out-of-date version. When a newer release is published, #verLink
-   turns yellow and pulses to draw the eye and the action link ("Update") highlights. */
-footer .frow.upd{font-size:11px;color:#7d786f}
-footer .frow.upd a{color:#9fdcec}
+/* Update banner (shown only when out of date) inherits the normal footer .frow size +
+   colour. The version link pulses yellow and the Update action highlights. */
 footer #verLink.out-of-date{color:#ffcf5a;font-weight:700;animation:verpulse 1.4s ease-in-out infinite}
-footer #updAction.avail{color:#ffcf5a;font-weight:700}
+footer #updAction{color:#ffcf5a;font-weight:700}
 @keyframes verpulse{0%,100%{opacity:1}50%{opacity:.5}}
 
 /* ---- start confirm dialog ---- */
@@ -3393,33 +3391,23 @@ refresh();
 setInterval(function(){if(!busy)refresh();},4000);
 /* ---------- footer update check ---------- */
 /* Ask the server (which can reach GitHub; the page's CSP can't) for the latest published
-   version and reflect it: out-of-date -> #verLink pulses yellow + the action becomes a
-   real "Update" link to releases; up-to-date -> "Check again". Runs once on load; the
-   server ALSO checks hourly and pushes a notification when no browser is open. */
+   version. ONLY when a newer one exists do we reveal the footer update banner (+ pulse the
+   version yellow); otherwise the banner stays hidden. Runs once on load; the server ALSO
+   checks hourly and pushes a notification (once per run) when no browser is open. */
 function checkUpdate(){
-  var t=$('updText'),a=$('updAction'),v=$('verLink');if(!t||!a)return;
-  t.textContent='Checking for updates\\u2026';a.textContent='';a.className='';a.removeAttribute('target');
+  var row=$('updRow'),t=$('updText'),a=$('updAction'),v=$('verLink');if(!row||!t||!a)return;
   api('/api/check-update').then(function(d){
-    var inst=(d&&d.installed)||(v?v.textContent.replace(/^v/,''):'?');
-    if(!d||d.latest==null){                                   // couldn't reach the repo
-      t.textContent='Installed v'+inst+' \\u00b7 latest unknown';a.textContent='Retry';
-      if(v)v.classList.remove('out-of-date');return;
-    }
-    if(d.update_available){
-      t.textContent='Installed v'+inst+' \\u00b7 latest v'+d.latest;
-      a.textContent='Update';a.className='avail';
+    if(d&&d.update_available&&d.latest){
+      t.textContent='Installed v'+(d.installed||'')+' \\u00b7 latest v'+d.latest;
       a.href='https://github.com/mrchrisneal/generatorpi/releases';a.target='_blank';a.rel='noopener';
+      row.style.display='';                    // reveal the banner
       if(v)v.classList.add('out-of-date');
-    }else{
-      t.textContent='Installed v'+inst+' \\u00b7 up to date';a.textContent='Check again';
+    }else{                                     // up to date / unknown / error -> stay hidden
+      row.style.display='none';
       if(v)v.classList.remove('out-of-date');
     }
-  }).catch(function(){t.textContent='Update check unavailable';a.textContent='Retry';if(v)v.classList.remove('out-of-date');});
+  }).catch(function(){row.style.display='none';if(v)v.classList.remove('out-of-date');});
 }
-$('updAction').addEventListener('click',function(e){
-  if(this.className==='avail')return;          // "Update" -> let the href navigate to releases
-  e.preventDefault();checkUpdate();            // "Check again"/"Retry" -> re-check
-});
 checkUpdate();
 setInterval(function(){tick();},1000);
 })();
@@ -3785,10 +3773,10 @@ HTML_TEMPLATE_BODY = """
   <footer>
     <div class="frow">&copy; 2026 <a href="https://neal.media" target="_blank" rel="noopener">Chris Neal</a> &amp; <a href="https://neal.tools" target="_blank" rel="noopener">Alex Neal</a></div>
     <div class="frow"><a id="verLink" href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">v{{ version }}</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
-    <!-- Update status: installed vs latest (checked server-side against the repo's raw
-         VERSION file). When a newer release exists, #verLink above pulses yellow and the
-         action becomes "Update". Populated by checkUpdate() in JS. -->
-    <div class="frow upd"><span id="updText">Installed v{{ version }}</span> · <a href="#" id="updAction">Check for updates</a></div>
+    <!-- Update banner: shown ONLY when a newer release is available (hidden otherwise).
+         Checked server-side against the repo's raw VERSION file; when out of date the
+         #verLink above also pulses yellow. Populated + toggled by checkUpdate() in JS. -->
+    <div class="frow upd" id="updRow" style="display:none"><span id="updText"></span> · <a href="#" id="updAction">Update</a></div>
   </footer>
 
   <!-- Start confirmation dialog -->
