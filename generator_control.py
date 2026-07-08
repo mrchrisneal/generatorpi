@@ -89,6 +89,11 @@ CONFIG = {
     # Web server
     "HOST": "0.0.0.0",                  # Bind address
     "PORT": 9400,                       # Bind port
+    # Service / auto-update behaviour (obeyed by the in-app self-updater). These must be real
+    # CONFIG defaults so the env-file loader (which only accepts keys already in CONFIG) can set
+    # them -- otherwise the updater's service opt-out is unreachable (audit M-2).
+    "SERVICE_ENABLED": 1,               # 0 = NOT run as a systemd service -> updater swaps in-process + re-execs instead of restarting a unit
+    "AUTOSTART": 1,                     # 0 = don't treat the service as auto-starting -> updater skips the systemd restart path
     # SSL / HTTPS
     "SSL_ENABLED": 1,                   # 1 = HTTPS, 0 = plain HTTP
     "SSL_CERT_DAYS": 365,              # Validity period for generated certs
@@ -3776,16 +3781,21 @@ function _waitBackAndReload(){
 }
 /* Post-restart result modal: the SAME terminal look, showing the FULL captured log; DISMISS
    clears it server-side so it never reappears until the next update. */
-function checkUpdateResult(){
+function checkUpdateResult(tries){
+  tries=tries||0;
+  // After a post-update cache-bust reload (the ?u= param), the systemd bootstrap writes its
+  // success/fail marker a few seconds AFTER the app first answers, so retry briefly to catch it
+  // rather than miss the result modal (audit M-4). A normal load checks once.
+  var retry=function(){if(tries<7&&location.search.indexOf('u=')>=0)setTimeout(function(){checkUpdateResult(tries+1);},2000);};
   api('/api/update/result').then(function(d){
-    if(!d||!d.pending)return;
+    if(!d||!d.pending){retry();return;}
     $('updResultTitle').textContent=(d.status==='success')?'UPDATE COMPLETE':'UPDATE FAILED';
     $('updResultNote').textContent=d.note||'';
     // Same colourised terminal as the live view, showing the FULL captured log; start at the
     // TOP so the reader can follow it from the beginning.
     var lg=$('updResultLog');lg.innerHTML=_termHTML(String(d.log||'(no log captured)').split('\\n'));lg.scrollTop=0;
     _ovShow('updResultModal');
-  }).catch(function(){});
+  }).catch(function(){retry();});
 }
 $('updResultDismiss').addEventListener('click',function(){
   var b=$('updResultDismiss');if(b.classList.contains('loading'))return;
@@ -5252,21 +5262,33 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
         "}\n"
         # Roll back on ANY exit that didn't reach SUCCEEDED=1 (covers unexpected deaths too).
         "SUCCEEDED=0\n"
+        "DONE_FLAG=\"$ROOT/backups/.gp_update_done\"; rm -f \"$DONE_FLAG\"\n"
         "on_exit() { [ \"$SUCCEEDED\" = 1 ] && return; log 'update did not complete - rolling back'; rollback; }\n"
         "trap on_exit EXIT\n"
+        # WATCHDOG (audit M-3): guarantee a BOUNDED recovery. If the whole apply isn't done within
+        # 30 min (a wedged systemctl restart / stuck mount leaving the app down), force a rollback
+        # and tear down this run's process group so we never hang indefinitely. $$ is the session
+        # leader's PID (setsid), so -$$ targets the bootstrap's group -- NOT the restarted service.
+        "( sleep 1800; [ -f \"$DONE_FLAG\" ] && exit 0; log 'WATCHDOG: 30m elapsed - forcing rollback'; rollback; kill -9 -$$ 2>/dev/null ) &\n"
+        "WATCHDOG=$!\n"
+        # Bound a stuck restart with `timeout` when it's available (dependency-free: fall back to a
+        # plain restart if `timeout` isn't installed, so a missing coreutils never fails the update).
+        "do_restart() { if command -v timeout >/dev/null 2>&1; then timeout 150 sudo systemctl restart \"$SVC\"; else sudo systemctl restart \"$SVC\"; fi; }\n"
         "sleep 1\n"
         # Swap while the OLD process is still running its in-memory code (safe for a python app),
         # then restart -- KillMode=process spares this detached bootstrap.
         "log 'swapping files'\n"
         f"( set -e\n{copies}\n) || exit 1\n"
         "log 'restarting service'\n"
-        "sudo systemctl restart \"$SVC\" 2>/dev/null || exit 1\n"
+        "do_restart 2>/dev/null || exit 1\n"
         "log 'waiting for the new version to serve'\n"
         "wait_healthy || exit 1\n"
         "log 'update OK'\n"
         "SUCCEEDED=1\n"
+        "touch \"$DONE_FLAG\"\n"                                    # tell the watchdog we finished
+        "kill \"$WATCHDOG\" 2>/dev/null\n"                          # cancel the watchdog
         "write_result success \"Updated to v$VER.\"\n"
-        f"rm -rf {q(str(staging))}; rm -f \"$0\"\n"
+        f"rm -f \"$DONE_FLAG\"; rm -rf {q(str(staging))}; rm -f \"$0\"\n"
     )
     fd, tmp = tempfile.mkstemp(prefix="gp-update-", suffix=".sh")
     os.close(fd)
@@ -5383,8 +5405,12 @@ def _run_update():
                 _update_state["systemd"] = False
             _update_log("[SWAPPING] files, then restarting the app…")
             _update_phase("swapping", "Applying update…", 0.86)
-            _swap(manifest)
+            # Arm rollback BEFORE the swap: if _swap raises partway (file k of n), the except
+            # path MUST restore from the backup, else the disk is left with a mixed old/new file
+            # set that would brick the next restart (audit H-1). The running process still holds
+            # the OLD code in RAM, so restoring the backup + not re-exec'ing keeps us reachable.
             swapped = True
+            _swap(manifest)
             with _update_lock:
                 _full_log = "\n".join(_update_state["log"])
             # Mark 'restarting' (NOT success) BEFORE re-exec; the freshly-started process flips
