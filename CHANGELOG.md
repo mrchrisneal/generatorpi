@@ -3,6 +3,14 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.0.2
+
+- **In-app self-updater hardening**: two-stage go/no-go update with a live progress
+  terminal, staged verify-before-swap (SHA-256 + compile), atomic file swap with backup
+  and automatic rollback, a 30-minute apply watchdog, and env-controlled service behaviour
+  (`SERVICE_ENABLED` / `AUTOSTART`). A generous central client request timeout keeps the UI
+  responsive on slow links.
+
 ## 1.0.1
 
 - **Version + update checking**: the footer shows the installed version and, when a

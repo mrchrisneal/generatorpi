@@ -12,6 +12,10 @@
 # Foundation, either version 3 of the License, or (at your option) any later version.
 # Distributed WITHOUT ANY WARRANTY. See the GNU AGPL v3 (the LICENSE file, or
 # https://www.gnu.org/licenses/agpl-3.0.html) for full terms.
+#
+# [v1.0.2 update-swap verification marker | 2026-07-07] This comment ships ONLY in the v1.0.2
+# release. If it is present on disk after an in-app update, the updater successfully downloaded
+# and swapped this file from GitHub. Harmless; may be kept or dropped in a later release.
 from gpiozero import OutputDevice
 import logging
 import logging.handlers
