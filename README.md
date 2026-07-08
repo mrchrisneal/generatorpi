@@ -26,12 +26,29 @@ GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E ge
 * **Predictive Fuel Tracking**: Linear drain model monitors fuel remaining and estimates running hours to empty.
 * **Web Push Alerts**: Out-of-browser notifications deliver status updates and low-fuel alerts directly to your devices.
 * **Security & Isolation**: Automatic hashing of credential configurations, fail-fast permission checks, and silenced access logging.
-* **System Metrics Annunciator**: Live monitoring of CPU temperatures, throttled states, load, and Wi-Fi signal quality.
+* **System Metrics**: Real-time monitoring of CPU temperature, throttling state, load, and Wi-Fi signal quality.
 * **Persistent Event Log**: SQLite-backed history, capped to keep disk usage bounded.
-* **Resilient Networking**: A single-flight, priority-with-fairness poll queue — purpose-built for one CPU core on a flaky Wi-Fi link — keeps control-critical status fresh, coalesces stale requests, and ages waiting jobs so nothing starves.
-* **Fast HTTPS on Modest Hardware**: An ECDSA P-256 certificate plus concurrent (threaded) request handling cut TLS handshakes from *seconds* to sub-second on a Raspberry Pi Zero 2 W.
+* **Tuned for Single-Core Hardware**: A single-flight, priority-with-fairness poll queue keeps control-critical status fresh without ever dogpiling the weak core, while an ECDSA P-256 certificate with threaded serving cuts TLS handshakes from *seconds* to sub-second on a Raspberry Pi Zero 2 W.
 * **One-Click Self-Updater**: In-app updates verified against a manifest (SHA-256), applied by an atomic file swap with automatic backup, rollback-on-failure, and a live two-stage progress terminal.
 * **Home Assistant Integration**: Exposes the generator as a switch plus sensors, ready to drop into dashboards and automations.
+
+---
+
+## Quick Start
+
+SSH into the Pi and install the prerequisite system packages:
+
+```bash
+sudo apt update && sudo apt install -y git openssl python3 python3-flask python3-gpiozero python3-lgpio python3-cryptography python3-cheroot
+```
+
+Clone the repository and run the installation script:
+
+```bash
+git clone https://github.com/mrchrisneal/generatorpi.git ~/generatorpi && ~/generatorpi/setup.sh install
+```
+
+The script copies the configuration template, opens the credential editor, and registers the background systemd service. Access the interface at `https://<pi-hostname>:9400`.
 
 ---
 
@@ -66,24 +83,6 @@ PM9400E generator — see [Hardware & Wiring](../../wiki/Hardware-&-Wiring).
 
 `setup.sh install` validates and installs these automatically. Versions are also pinned in
 `requirements.txt` (for CI/dev via pip); on the Pi they come from `apt`.
-
----
-
-## Quick Start
-
-SSH into the Pi and install the prerequisite system packages:
-
-```bash
-sudo apt update && sudo apt install -y git openssl python3 python3-flask python3-gpiozero python3-lgpio python3-cryptography python3-cheroot
-```
-
-Clone the repository and run the installation script:
-
-```bash
-git clone https://github.com/mrchrisneal/generatorpi.git ~/generatorpi && ~/generatorpi/setup.sh install
-```
-
-The script copies the configuration template, opens the credential editor, and registers the background systemd service. Access the interface at `https://<pi-hostname>:9400`.
 
 ---
 
