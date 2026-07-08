@@ -28,6 +28,11 @@ import ipaddress
 import secrets
 import socket
 import sqlite3
+import hashlib         # SHA-256 verification of downloaded release files (self-updater)
+import shutil          # staging dir management for the self-updater
+import shlex           # safe quoting when generating the swap/restart shell script
+import zipfile         # ZIP backup of the project root before a self-update (rollback)
+import tempfile        # the self-update swap script runs from /tmp (can replace every file)
 from functools import wraps
 from urllib.parse import urlparse
 import urllib.request  # server-side fetch of the repo's raw VERSION for update checks
@@ -2362,6 +2367,20 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .confirm-btns .btn3d:hover{transform:translateY(-1px);box-shadow:0 5px 10px rgba(0,0,0,.55),0 0 0 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.2)}
 .confirm-btns .btn3d:active{transform:translateY(1px);box-shadow:0 1px 3px rgba(0,0,0,.6),0 0 0 2px rgba(0,0,0,.6),inset 0 2px 4px rgba(0,0,0,.4)}
 
+/* ---- self-update dialog ---- */
+.upd-card{max-width:460px;text-align:left}
+.upd-card h2{text-align:center}
+/* Changelog / update-log scroller: monospace, bounded height, its own inset well. */
+.upd-scroll{max-height:230px;overflow-y:auto;margin:0 0 16px;padding:10px 12px;border-radius:8px;
+  background:#04120a;box-shadow:inset 0 2px 8px rgba(0,0,0,.7);border:1px solid #16321f;
+  font:500 12px/1.5 var(--mono);color:#8fe0a8;white-space:pre-wrap;word-break:break-word}
+.upd-scroll::-webkit-scrollbar{width:8px}.upd-scroll::-webkit-scrollbar-thumb{background:#1c4a30;border-radius:4px}
+/* Progress bar shown while the update runs. */
+.upd-bar{height:10px;border-radius:5px;background:#04120a;box-shadow:inset 0 1px 4px rgba(0,0,0,.8);overflow:hidden;margin-bottom:10px}
+.upd-bar-fill{height:100%;width:0;border-radius:5px;background:linear-gradient(90deg,#43b382,#7ce0b0);
+  box-shadow:0 0 8px rgba(124,224,176,.5);transition:width .35s ease}
+.upd-progress-msg{font:600 12px var(--mono);color:#9fdcec;text-align:center;margin-bottom:16px;min-height:16px}
+
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 
 /* ---- SYSTEM drawer + CRT charts (uniform 13px text, matching the event log .evt) ---- */
@@ -3443,16 +3462,90 @@ function checkUpdate(manual){
     }
   }).catch(function(){row.classList.remove('checking');_updSet('Update check failed','Check again','recheck');if(v)v.classList.remove('out-of-date');});
 }
-/* The action link re-checks (manual) in the failed state; in the update state it navigates
-   to releases via its href. */
+/* The action link opens the in-app UPDATE modal in the update state; re-checks otherwise. */
 $('updAction').addEventListener('click',function(e){
-  if(this.dataset.mode!=='update'){e.preventDefault();checkUpdate(true);}
+  e.preventDefault();
+  if(this.dataset.mode==='update'){openUpdateModal();}else{checkUpdate(true);}
 });
 /* Clicking the version (v1.0.0) runs a MANUAL check instead of navigating -- the title
    tooltip says so on hover. */
 (function(){var vl=$('verLink');if(!vl)return;
   vl.addEventListener('click',function(e){e.preventDefault();checkUpdate(true);});})();
 checkUpdate();
+
+/* ---------- self-update flow (changelog -> progress -> restart -> reload) ---------- */
+var _updPoll=null;
+function _ovShow(id){$(id).className='confirm-overlay show';setBackgroundInert(true);}
+function _ovHide(id){$(id).className='confirm-overlay';setBackgroundInert(false);}
+function openUpdateModal(){
+  var cl=$('updChangelog'),doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
+  cl.textContent='Loading changelog…';cl.style.display='';
+  $('updProgressWrap').style.display='none';$('updBarFill').style.width='0';
+  $('updBarFill').style.background='';
+  doBtn.classList.remove('loading');doBtn.disabled=false;doBtn.style.display='';
+  cancel.disabled=false;cancel.textContent='CANCEL';
+  _ovShow('updModal');doBtn.focus();
+  api('/api/update/changelog').then(function(d){
+    cl.textContent=(d&&d.changelog)?d.changelog:'(changelog unavailable)';
+  }).catch(function(){cl.textContent='(changelog unavailable)';});
+}
+$('updCancelBtn').addEventListener('click',function(){if(_updPoll)return;_ovHide('updModal');});
+$('updDoBtn').addEventListener('click',function(){
+  var b=$('updDoBtn');if(b.classList.contains('loading'))return;
+  b.classList.add('loading');$('updCancelBtn').disabled=true;
+  post('/api/update/start').then(function(){
+    $('updChangelog').style.display='none';
+    $('updProgressWrap').style.display='';
+    b.style.display='none';                              // update is now automatic
+    $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').disabled=true;  // no cancel mid-update
+    _pollUpdate();
+  }).catch(function(){
+    b.classList.remove('loading');$('updCancelBtn').disabled=false;
+    $('updProgressWrap').style.display='';$('updProgressMsg').textContent='Could not start the update.';
+  });
+});
+function _pollUpdate(){
+  if(_updPoll)clearTimeout(_updPoll);
+  api('/api/update/status').then(function(s){
+    if(!s){_updPoll=setTimeout(_pollUpdate,1200);return;}
+    $('updBarFill').style.width=Math.round((s.progress||0)*100)+'%';
+    $('updProgressMsg').textContent=s.message||s.phase||'';
+    if(s.phase==='failed'){
+      $('updBarFill').style.background='#ff5a4a';
+      $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').disabled=false;_updPoll=null;return;
+    }
+    if(s.phase==='restarting'){                          // server going down -> wait + reload
+      $('updProgressMsg').textContent='Restarting — reconnecting…';_updPoll=null;_waitBackAndReload();return;
+    }
+    _updPoll=setTimeout(_pollUpdate,1200);
+  }).catch(function(){_updPoll=setTimeout(_pollUpdate,1500);});
+}
+function _waitBackAndReload(){
+  // Ping the app until it answers again (new version up), then hard-reload so the fresh UI +
+  // the post-update result modal appear. The browser resends Basic auth on the same-origin GET.
+  (function ping(){
+    fetch('/?ts='+Date.now(),{cache:'no-store'}).then(function(r){
+      if(r&&r.ok){location.reload();}else{setTimeout(ping,2000);}
+    }).catch(function(){setTimeout(ping,2000);});
+  })();
+}
+/* Post-restart result modal: shown once after an update; DISMISS clears it server-side. */
+function checkUpdateResult(){
+  api('/api/update/result').then(function(d){
+    if(!d||!d.pending)return;
+    $('updResultTitle').textContent=(d.status==='success')?'UPDATE COMPLETE':'UPDATE FAILED';
+    $('updResultNote').textContent=d.note||'';
+    $('updResultLog').textContent=d.log||'(no log captured)';
+    _ovShow('updResultModal');
+  }).catch(function(){});
+}
+$('updResultDismiss').addEventListener('click',function(){
+  var b=$('updResultDismiss');if(b.classList.contains('loading'))return;
+  b.classList.add('loading');
+  post('/api/update/result/ack').catch(function(){}).then(function(){
+    b.classList.remove('loading');_ovHide('updResultModal');});
+});
+checkUpdateResult();
 setInterval(function(){tick();},1000);
 })();
 </script>{% endraw %}"""
@@ -3837,6 +3930,36 @@ HTML_TEMPLATE_BODY = """
       <div class="confirm-btns">
         <button type="button" class="btn3d steel" id="confirmCancel">CANCEL</button>
         <button type="button" class="btn3d red" id="confirmStart">START</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Self-update dialog: shows the changelog, then (on Update) a live progress bar while
+       the server downloads/verifies/swaps/restarts. Populated + driven by the updater JS. -->
+  <div class="confirm-overlay" id="updModal" role="dialog" aria-modal="true" aria-labelledby="updModalTitle">
+    <div class="confirm-card upd-card">
+      <h2 id="updModalTitle">UPDATE GENERATORPI</h2>
+      <div class="upd-scroll" id="updChangelog">Loading changelog…</div>
+      <div id="updProgressWrap" style="display:none">
+        <div class="upd-bar"><div class="upd-bar-fill" id="updBarFill"></div></div>
+        <div class="upd-progress-msg" id="updProgressMsg"></div>
+      </div>
+      <div class="confirm-btns">
+        <button type="button" class="btn3d steel" id="updCancelBtn">CANCEL</button>
+        <button type="button" class="btn3d danger" id="updDoBtn">UPDATE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post-restart result dialog: shown once on the first load after an update (success or
+       failure) with the captured log. Dismissing it clears the marker server-side for all. -->
+  <div class="confirm-overlay" id="updResultModal" role="dialog" aria-modal="true" aria-labelledby="updResultTitle">
+    <div class="confirm-card upd-card">
+      <h2 id="updResultTitle">UPDATE COMPLETE</h2>
+      <p id="updResultNote"></p>
+      <div class="upd-scroll" id="updResultLog"></div>
+      <div class="confirm-btns">
+        <button type="button" class="btn3d steel" id="updResultDismiss" style="width:100%">DISMISS</button>
       </div>
     </div>
   </div>
@@ -4360,9 +4483,12 @@ def api_factory_reset():
     return jsonify({"success": True, "message": "Factory reset complete."})
 
 
-# Raw plaintext VERSION on the release repo's default branch -- the update check compares
-# this against APP_VERSION. FIXED URL (never request-derived), so there is no SSRF surface.
-_LATEST_VERSION_URL = "https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/VERSION"
+# Base for all release fetches -- the repo's default branch over HTTPS. Every updater URL
+# is built from this FIXED base + a fixed suffix (never request-derived), so there is no
+# SSRF surface. TLS gives MITM protection; the manifest's per-file SHA-256 gives integrity.
+_RAW_BASE = "https://raw.githubusercontent.com/mrchrisneal/generatorpi/main"
+_LATEST_VERSION_URL = _RAW_BASE + "/VERSION"
+_MANIFEST_URL = _RAW_BASE + "/manifest.json"
 
 
 def _version_tuple(v):
@@ -4406,6 +4532,412 @@ def api_check_update():
         "latest": latest,
         "update_available": bool(available),
     })
+
+
+# ============================================================================
+# SELF-UPDATER (#8) -- download a release, verify EVERY file's SHA-256 against the
+# published manifest, full-backup, swap, then restart. TLS + hash (no signing); files
+# come from the repo raw base per the manifest. Verify-before-swap is mandatory; any
+# failure aborts and restores the backup (we keep running the old version).
+# ============================================================================
+_UPDATE_STAGING = SCRIPT_DIR / ".update_staging"   # downloaded (then verified) release files
+_BACKUP_DIR = SCRIPT_DIR / "backups"               # ZIP snapshots taken before each update
+# Result marker + log written by the swap step and READ on the next startup, so we can show
+# the user "the update just succeeded/failed" + the log in a modal even though the process
+# restarted in between. Cleared once the client acknowledges it.
+_UPDATE_RESULT = _BACKUP_DIR / "last_update.json"
+_UPDATE_LOG = _BACKUP_DIR / "last_update.log"
+# systemd unit written by setup.sh on a real install; absent in dev. Presence tells a
+# managed-service deploy (restart via systemctl) from a run-it-yourself one (re-exec).
+_SERVICE_UNIT = Path("/etc/systemd/system/generator_control.service")
+
+# Live progress the UI polls. phase: idle/checking/downloading/verifying/backing_up/
+# swapping/restarting/done/failed. Its own lock (touched from the worker thread).
+_update_state = {"phase": "idle", "message": "", "progress": 0.0, "error": None,
+                 "version": None, "systemd": None}
+_update_lock = threading.Lock()
+
+
+def _deployment_has_systemd():
+    """True on a systemd-managed install (unit file present AND systemctl available). False
+    in dev, where we still swap the files but re-exec this process instead of a service."""
+    return _SERVICE_UNIT.exists() and shutil.which("systemctl") is not None
+
+
+def _http_get_bytes(url, timeout=30, max_bytes=12_000_000):
+    """GET a URL, return the (bounded) body. Raises on any HTTP/size error -- the updater
+    treats every failure as 'abort + keep the old version'."""
+    req = urllib.request.Request(url, headers={"User-Agent": "GeneratorPi-updater"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError(f"response exceeds {max_bytes} bytes")
+    return data
+
+
+def _update_phase(name, msg, prog, error=None):
+    with _update_lock:
+        _update_state.update(phase=name, message=msg, progress=round(prog, 3), error=error)
+
+
+def _download_and_verify(manifest, base=None, staging=None):
+    """Download every manifest file to a FRESH staging dir and verify its SHA-256. Raises
+    on the FIRST mismatch/failure (nothing live is touched). Also compile-checks the staged
+    generator_control.py -- a file that hashes fine but won't compile would brick the swap.
+    `base`/`staging` are injectable for tests."""
+    base = base or _RAW_BASE
+    staging = staging or _UPDATE_STAGING
+    files = manifest.get("files") or []
+    if not files:
+        raise ValueError("manifest lists no files")
+    _validate_manifest_paths(manifest)                 # never write outside the project root
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    n = len(files)
+    for i, f in enumerate(files):
+        rel, want, size = f["path"], f["sha256"], int(f.get("bytes", 0))
+        _update_phase("downloading", f"Downloading {rel}…", 0.05 + 0.55 * (i / n))
+        data = _http_get_bytes(base + "/" + rel, max_bytes=max(size + 4096, 8192))
+        got = hashlib.sha256(data).hexdigest()
+        if got != want:
+            raise ValueError(f"hash mismatch for {rel}: expected {want[:12]}…, got {got[:12]}…")
+        dest = staging / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    _update_phase("verifying", "Re-verifying staged files…", 0.68)
+    for f in files:                                    # defense in depth: re-hash on disk
+        if hashlib.sha256((staging / f["path"]).read_bytes()).hexdigest() != f["sha256"]:
+            raise ValueError(f"post-stage hash mismatch for {f['path']}")
+    main_py = staging / "generator_control.py"
+    if main_py.exists():
+        import py_compile
+        try:
+            py_compile.compile(str(main_py), doraise=True)
+        except py_compile.PyCompileError as e:
+            raise ValueError(f"staged generator_control.py failed to compile: {e}")
+    return staging
+
+
+def _validate_manifest_paths(manifest):
+    """Reject a manifest whose file paths could escape the project root (absolute or
+    containing '..'). These paths drive downloads, staging, backup, swap AND zip extraction,
+    so this single gate is what stops a hostile/garbled manifest writing outside SCRIPT_DIR."""
+    for f in manifest.get("files") or []:
+        p = f.get("path", "")
+        if (not p) or p.startswith("/") or p.startswith("\\") or ".." in Path(p).parts:
+            raise ValueError(f"unsafe manifest path: {p!r}")
+
+
+def _ensure_backup_dir():
+    """Create backups/ and PROVE it's writable (write+delete a probe). Called at startup so a
+    permission problem is an immediate, loud failure -- we must never discover mid-update that
+    we can't take a backup. Raises on any failure (the caller fails the process fast)."""
+    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    probe = _BACKUP_DIR / ".write_probe"
+    probe.write_text("ok")
+    probe.unlink()
+
+
+def _preflight_check(manifest, dest_root=None):
+    """FINAL sanity check BEFORE any download/swap: prove we can actually write everywhere the
+    update will touch -- the backups dir, the staging area, the project root, and EVERY target
+    file's directory (and the file itself if it already exists). Raises with a clear message on
+    the first problem so we abort before changing anything, never half-applying an update we
+    can't finish. `dest_root` is injectable for tests."""
+    dest_root = dest_root or SCRIPT_DIR
+
+    def writable(p):
+        return os.access(str(p), os.W_OK)
+
+    _ensure_backup_dir()                                  # backups/ creatable + writable (rollback)
+    if not writable(dest_root):
+        raise PermissionError(f"project root is not writable: {dest_root}")
+    if not writable(_UPDATE_STAGING.parent):
+        raise PermissionError(f"cannot write the staging area under: {_UPDATE_STAGING.parent}")
+    for f in manifest.get("files") or []:
+        target = dest_root / f["path"]
+        d = target.parent
+        if d.exists() and not writable(d):
+            raise PermissionError(f"target directory is not writable: {d}")
+        if target.exists() and not writable(target):
+            raise PermissionError(f"target file is not writable: {target}")
+
+
+def _write_update_result(status, version, note="", log_text=None):
+    """Persist an update outcome ({status, version, note, ts}) + optional log to backups/ so
+    the NEXT startup can show the user how the update went (a restart happens in between).
+    Best-effort -- never raises into the update flow."""
+    try:
+        _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        _UPDATE_RESULT.write_text(json.dumps({
+            "status": status, "version": version, "note": note,
+            "ts": datetime.now().isoformat(timespec="seconds"),
+        }))
+        if log_text is not None:
+            _UPDATE_LOG.write_text(log_text)
+    except Exception as e:                               # noqa: BLE001 -- marker is best-effort
+        log.error(f"could not write update result marker: {e}")
+
+
+def _make_backup(manifest, dest_root=None, backup_dir=None):
+    """Snapshot the CURRENT state of every manifest file into a timestamped ZIP in backups/
+    (which is never itself in the manifest, so never backed up or swapped). Also record --
+    inside the zip -- the manifest files that DON'T yet exist ('added'), so a rollback can
+    DELETE them and land on the exact pre-update file set (presence/names/count, not just
+    contents). Returns (zip_path, added)."""
+    dest_root = dest_root or SCRIPT_DIR
+    backup_dir = backup_dir or _BACKUP_DIR
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    paths = [f["path"] for f in (manifest.get("files") or [])]
+    present = [p for p in paths if (dest_root / p).is_file()]
+    added = [p for p in paths if not (dest_root / p).exists()]
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    zpath = backup_dir / f"backup-{ts}-v{APP_VERSION}.zip"
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in present:
+            z.write(dest_root / p, p)                    # arcname = relative path
+        z.writestr("__added__.json", json.dumps(added))
+    return zpath, added
+
+
+def _swap(manifest, staging=None, dest_root=None):
+    """Copy verified staged files over the live ones (the DEV path; the systemd path swaps
+    from the /tmp bootstrap while the service is stopped)."""
+    staging = staging or _UPDATE_STAGING
+    dest_root = dest_root or SCRIPT_DIR
+    for f in manifest.get("files") or []:
+        live = dest_root / f["path"]
+        live.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(staging / f["path"], live)
+
+
+def _rollback(zip_path, dest_root=None):
+    """Restore the EXACT pre-update state from a backup zip: delete update-added files, then
+    extract the backed-up files over the live ones. Best-effort, never raises."""
+    dest_root = dest_root or SCRIPT_DIR
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            try:
+                added = json.loads(z.read("__added__.json").decode("utf-8"))
+            except Exception:
+                added = []
+            for p in added:
+                try:
+                    (dest_root / p).unlink()
+                except OSError:
+                    pass
+            for name in z.namelist():
+                if name != "__added__.json":
+                    z.extract(name, dest_root)
+    except Exception as e:                               # noqa: BLE001 -- rollback is best-effort
+        log.error(f"Rollback from {zip_path} failed: {e}")
+
+
+def _write_bootstrap_script(manifest, version, zip_path, staging):
+    """Write a STANDALONE swap+restart+rollback script to /tmp; return its path.
+
+    Running from /tmp -- OUTSIDE the project root -- is what lets us safely overwrite EVERY
+    project file, INCLUDING generator_control.py (the updater itself): the service is stopped
+    first, so no running code reads the files as they're replaced. After start it health-checks
+    (systemctl is-active); on failure it ROLLS BACK from the backup zip (delete-added + extract)
+    and restarts the old version -- so a bad update can never leave GeneratorPi unreachable."""
+    q = shlex.quote
+    paths = [f["path"] for f in (manifest.get("files") or [])]
+    copies = "\n".join(
+        f'mkdir -p "$ROOT/$(dirname {q(p)})" && cp -f {q(str(staging))}/{q(p)} "$ROOT"/{q(p)}'
+        for p in paths
+    )
+    # Rollback via system python3 (independent of the project files being swapped).
+    py_rollback = (
+        "python3 - " + q(str(zip_path)) + " \"$ROOT\" <<'PY'\n"
+        "import sys, zipfile, json, os\n"
+        "zp, root = sys.argv[1], sys.argv[2]\n"
+        "z = zipfile.ZipFile(zp)\n"
+        "try: added = json.loads(z.read('__added__.json'))\n"
+        "except Exception: added = []\n"
+        "for p in added:\n"
+        "    try: os.remove(os.path.join(root, p))\n"
+        "    except OSError: pass\n"
+        "for n in z.namelist():\n"
+        "    if n != '__added__.json': z.extract(n, root)\n"
+        "PY"
+    )
+    body = (
+        "#!/bin/bash\n"
+        "# GeneratorPi self-update bootstrap (generated). Runs from /tmp so it can replace\n"
+        "# EVERY project file, including the updater itself. Rolls back + restarts on failure.\n"
+        f"ROOT={q(str(SCRIPT_DIR))}\n"
+        f"VER={q(version)}\n"
+        "SVC=generator_control.service\n"
+        "mkdir -p \"$ROOT/backups\"\n"
+        "RESULT=\"$ROOT/backups/last_update.json\"\n"
+        # Capture EVERYTHING to the log the post-restart modal shows the user.
+        "exec > \"$ROOT/backups/last_update.log\" 2>&1\n"
+        "log() { echo \"[gp-update] $(date -Iseconds) $*\"; }\n"
+        # Write the outcome marker read on next startup ($1=status, $2=note; note has no quotes).
+        "write_result() { printf '{\"status\":\"%s\",\"version\":\"%s\",\"ts\":\"%s\",\"note\":\"%s\"}\\n'"
+        " \"$1\" \"$VER\" \"$(date -Iseconds)\" \"$2\" > \"$RESULT\"; }\n"
+        "rollback() {\n"
+        "  log 'ROLLBACK: restoring backup + restarting'\n"
+        f"  {py_rollback}\n"
+        "  sudo systemctl restart \"$SVC\" 2>/dev/null || true\n"
+        "  write_result failed 'Update failed - rolled back to the previous version.'\n"
+        "}\n"
+        "sleep 1\n"
+        "log 'stopping service'; sudo systemctl stop \"$SVC\" 2>/dev/null || true\n"
+        "log 'swapping files'\n"
+        f"if ! ( set -e\n{copies}\n); then rollback; exit 1; fi\n"
+        "log 'starting service'\n"
+        "if ! sudo systemctl start \"$SVC\" 2>/dev/null; then rollback; exit 1; fi\n"
+        "ok=0\n"
+        "for i in $(seq 1 10); do systemctl is-active --quiet \"$SVC\" && { ok=1; break; }; sleep 2; done\n"
+        "if [ \"$ok\" != 1 ]; then rollback; exit 1; fi\n"
+        "log 'update OK'\n"
+        f"write_result success 'Updated to v{version}.'\n"
+        f"rm -rf {q(str(staging))}; rm -f \"$0\"\n"
+    )
+    fd, tmp = tempfile.mkstemp(prefix="gp-update-", suffix=".sh")
+    os.close(fd)
+    Path(tmp).write_text(body)
+    os.chmod(tmp, 0o755)
+    return tmp
+
+
+def _run_update():
+    """Background worker. DEV (no systemd): download+verify+backup, swap in-process, then
+    re-exec -- safe because the running process holds the OLD code in memory until re-exec.
+    SYSTEMD: download+verify+backup, then hand swap+restart to a /tmp bootstrap that can
+    replace even generator_control.py and self-heals (rollback + restart) on failure. Errors
+    before any swap abort cleanly; a failed same-process swap rolls back from the backup zip."""
+    manifest = None
+    zpath = None
+    swapped = False
+    try:
+        _update_phase("checking", "Fetching release manifest…", 0.03)
+        manifest = json.loads(_http_get_bytes(_MANIFEST_URL, max_bytes=1_000_000).decode("utf-8"))
+        _validate_manifest_paths(manifest)
+        version = manifest.get("version") or "?"
+        with _update_lock:
+            _update_state["version"] = version
+        _update_phase("checking", "Checking permissions…", 0.04)
+        _preflight_check(manifest)                       # abort NOW if we can't write everywhere
+        staging = _download_and_verify(manifest)         # abort if any hash/compile fails
+        _update_phase("backing_up", "Backing up current files…", 0.8)
+        zpath, _added = _make_backup(manifest)
+        if _deployment_has_systemd():
+            with _update_lock:
+                _update_state["systemd"] = True
+            _update_phase("restarting", f"Applying v{version} + restarting service…", 0.92)
+            script = _write_bootstrap_script(manifest, version, zpath, staging)
+            subprocess.Popen(["setsid", "bash", script],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        else:
+            with _update_lock:
+                _update_state["systemd"] = False
+            _update_phase("swapping", "Applying update…", 0.86)
+            _swap(manifest)
+            swapped = True
+            # Leave a success marker for the post-restart modal, THEN re-exec.
+            _write_update_result(
+                "success", version,
+                note="Not a systemd service — files were swapped directly and the app "
+                     "process was restarted.",
+                log_text=f"Dev/non-systemd update to v{version}: "
+                         f"{len(manifest.get('files') or [])} files verified + swapped; re-exec.")
+            _update_phase("restarting",
+                          f"Updated to v{version}. Not running as a systemd service — files "
+                          f"were swapped directly; restarting the app process…", 0.95)
+            _schedule_process_restart(1.5)
+    except Exception as e:
+        log.error(f"Self-update failed: {e}")
+        if swapped and zpath is not None:                # same-process swap failed -> restore
+            _rollback(zpath)
+            _update_phase("failed", f"Update failed (rolled back): {e}", 0.0, error=str(e))
+        else:
+            _update_phase("failed", f"Update failed: {e}", 0.0, error=str(e))
+
+
+# FAIL FAST at startup: the updater must always be able to write a rollback backup, so a
+# missing/unwritable backups/ dir is a hard stop here rather than a nasty surprise mid-update.
+try:
+    _ensure_backup_dir()
+except OSError as _e:
+    log.critical(
+        f"Cannot create or write the backups directory ({_BACKUP_DIR}): {_e}. Fix the "
+        f"permissions and restart -- refusing to run without a working rollback path."
+    )
+    raise SystemExit(1)
+
+
+@app.route('/api/update/changelog', methods=['GET'])
+@auth_required
+def api_update_changelog():
+    """Fetch the release CHANGELOG for the update modal. Never errors hard -- returns
+    {changelog: null} if the repo is unreachable so the modal can still open."""
+    try:
+        text = _http_get_bytes(_RAW_BASE + "/CHANGELOG.md", max_bytes=200_000).decode("utf-8", "replace")
+        return jsonify({"changelog": text})
+    except Exception as e:                              # noqa: BLE001 -- non-fatal
+        return jsonify({"changelog": None, "error": str(e)})
+
+
+@app.route('/api/update/status', methods=['GET'])
+@auth_required
+def api_update_status():
+    """Current updater progress (polled by the UI during an update)."""
+    with _update_lock:
+        return jsonify(dict(_update_state))
+
+
+@app.route('/api/update/start', methods=['POST'])
+@auth_required
+def api_update_start():
+    """Kick off the self-update in a background thread. Admin surface: authed +
+    CSRF-guarded (every POST is). 409 if an update is already running."""
+    with _update_lock:
+        if _update_state["phase"] not in ("idle", "done", "failed"):
+            return jsonify({"success": False, "message": "An update is already in progress."}), 409
+        _update_state.update(phase="checking", message="Starting…", progress=0.0,
+                             error=None, systemd=_deployment_has_systemd())
+    log.warning(f"Self-update requested by {caller_identity()}@{request.remote_addr}")
+    threading.Thread(target=_run_update, daemon=True, name="self-update").start()
+    return jsonify({"success": True})
+
+
+@app.route('/api/update/result', methods=['GET'])
+@auth_required
+def api_update_result():
+    """After a restart triggered by an update, report how it went (+ the captured log) so the
+    UI can show a one-time success/failure modal. {pending:false} once acknowledged/cleared."""
+    if not _UPDATE_RESULT.exists():
+        return jsonify({"pending": False})
+    try:
+        res = json.loads(_UPDATE_RESULT.read_text())
+    except Exception:                                    # corrupt marker -> still surface it
+        res = {"status": "unknown", "version": None, "note": ""}
+    log_text = ""
+    try:
+        if _UPDATE_LOG.exists():
+            log_text = _UPDATE_LOG.read_text(errors="replace")[-20000:]   # tail, bounded
+    except Exception:
+        pass
+    res.update({"pending": True, "log": log_text})
+    return jsonify(res)
+
+
+@app.route('/api/update/result/ack', methods=['POST'])
+@auth_required
+def api_update_result_ack():
+    """Clear the update-result marker SERVER-SIDE, so once ANY client dismisses the modal it
+    never reappears (for anyone) until the next update writes a new marker."""
+    for p in (_UPDATE_RESULT, _UPDATE_LOG):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    return jsonify({"success": True})
 
 
 def update_check_loop():

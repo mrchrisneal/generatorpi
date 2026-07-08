@@ -12,3 +12,6 @@ ssl_key.pem
 generator_control.original.py
 CLAUDE.md
 scratchpads/
+# Self-updater runtime dirs (never committed): rollback backups + download staging.
+backups/
+.update_staging/
