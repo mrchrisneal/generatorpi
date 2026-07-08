@@ -11,7 +11,7 @@
 GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E generator. Driven by a Raspberry Pi and a relay, it exposes a responsive web UI and a REST API. Features include automated linear fuel tracking, Web Push notifications, auto-hashing user credentials, and an integrated self-updater.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/web-ui.png" alt="GeneratorPi web UI — industrial control panel with status annunciator, hero power switch, current-run readout, total-runtime odometer, event log, and collapsible Fuel Projection and Advanced drawers" width="640">
+  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/web-ui.png" alt="GeneratorPi web UI — industrial control panel showing RUNNING status, the hero power switch, a current-run timer and total-runtime odometer, system registers, a live event log, and collapsible Fuel Projection and System modules" width="640">
 </p>
 
 > [!CAUTION]
@@ -19,6 +19,25 @@ GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E ge
 
 > [!WARNING]
 > This software is provided **as-is**, with no warranty, and is under **active development** — expect changes, rough edges, and breaking updates. **Use caution**, test thoroughly on your own hardware, and never rely on it as your only safeguard around a running generator.
+
+<details>
+<summary><b>📸 More screenshots</b></summary>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/fuel-projection.png" alt="Fuel Projection module — tank gauge with level, drain rate, and time-to-empty projections" width="520"><br>
+  <em>Fuel Projection — live drain-rate model with time-to-empty estimates</em>
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/system-metrics.png" alt="System module — CPU/memory and load charts plus temperature and Wi-Fi link sensors" width="520"><br>
+  <em>System metrics — CPU/memory and load charts, temperature and Wi-Fi link</em>
+</p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/updater-staged.png" alt="Update modal — staged and verified, ready to apply" width="380">
+  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/updater-complete.png" alt="Update modal — update completed successfully" width="380"><br>
+  <em>One-click self-updater — verified against the manifest, then applied in place</em>
+</p>
+
+</details>
 
 ## Features
 
