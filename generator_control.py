@@ -2017,6 +2017,10 @@ button{font-family:inherit}
 .col{display:flex;flex-direction:column;gap:20px;min-width:0}
 .col-left{flex:1 1 262px}
 .col-right{flex:1.6 1 344px}
+/* Single column BELOW 768px; AT 768px and up keep the two-column tablet/desktop layout.
+   Forcing the flex children to a full-width basis makes the collapse land at EXACTLY 768 --
+   otherwise the natural 262+344 flex-basis wrap happened around ~723px. */
+@media (max-width:767px){.col-left,.col-right{flex-basis:100%}}
 .section-label{font:600 12px var(--mono);letter-spacing:.16em;color:#969085;margin-bottom:8px}
 
 /* ---- status annunciator ---- */
@@ -2044,6 +2048,17 @@ button{font-family:inherit}
   background:repeating-linear-gradient(0deg,rgba(0,0,0,.26) 0 1px,transparent 1px 3px);mix-blend-mode:multiply}
 .detail-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:#ffb347;box-shadow:0 0 8px 2px rgba(255,180,71,.6)}
 .detail span:last-child{font:600 14px var(--mono);color:#ffcf8a;text-shadow:0 0 6px rgba(255,180,71,.45)}
+/* CRT scanline overlay -- the same treatment as the DETAIL strip above, applied uniformly to
+   the other lit "displays" that were missing it: the status annunciator, the nixie run
+   readout, the fuel-level tank, and the fuel indicator cards (the system .reg cards already
+   carry it). The analog odometer is deliberately EXCLUDED -- it's a mechanical drum, not a
+   glowing display. border-radius:inherit rounds the overlay to each host's corners WITHOUT an
+   overflow:hidden that would clip the annunciator lamp's glow; pointer-events:none keeps it
+   purely cosmetic. (.tank/.detail/.reg already set position:relative themselves.) */
+.annunciator,.nixie,.fcard{position:relative}
+.annunciator::after,.nixie::after,.tank::after,.fcard::after{content:"";position:absolute;inset:0;
+  pointer-events:none;border-radius:inherit;mix-blend-mode:multiply;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.26) 0 1px,transparent 1px 3px)}
 
 /* ---- hero rocker switch -- CSS adapted from Uiverse.io "empty-snail-69" by Nawsome
    (MIT, (c) 2026 Nawsome; see THIRD-PARTY-NOTICES.md), keyboard-accessible variant ---- */
@@ -2287,7 +2302,12 @@ input[type=range].thresh::-moz-range-thumb{width:20px;height:20px;border:0;borde
 .iotoggle:focus-visible{outline:3px solid #ffca7a;outline-offset:3px}
 
 /* ---- tactile 3D buttons ---- */
-.btn3d{--b:#0b0b0d;min-height:48px;padding:0 16px;border-radius:9px;border:1px solid #000;cursor:pointer;
+/* --b = the extruded "ledge" colour under the button (the 0 4px 0 shadow that makes it look
+   popped-out). It was #0b0b0d -- nearly the panel background, so neutral/steel buttons looked
+   FLAT while only the .red/.danger variants (which set their own coloured --b) popped. #1a1a20
+   is a visible dark-steel side that reads as real depth against the near-black panels; the
+   hover-lift + active-depress both key off --b, so this fixes their motion depth too. */
+.btn3d{--b:#1a1a20;min-height:48px;padding:0 16px;border-radius:9px;border:1px solid #000;cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center;gap:8px;
   background:linear-gradient(180deg,#4c4c54 0%,#34343b 46%,#282830 100%);color:#e4e0d8;
   font:700 12px sans-serif;letter-spacing:.1em;white-space:nowrap;
@@ -2360,13 +2380,9 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .confirm-card h2{font:800 18px sans-serif;letter-spacing:.08em;color:#ffcf8a;margin-bottom:10px}
 .confirm-card p{font:600 13px var(--mono);color:#e0b090;line-height:1.6;margin-bottom:18px}
 .confirm-btns{display:flex;gap:12px}.confirm-btns .btn3d{flex:1 1 0}
-/* In the confirm dialog, drop the raised "0 4px 0 var(--b)" ledge so CANCEL and START
-   sit LEVEL with each other -- otherwise the red button's lighter base color reads as
-   raised while the steel button's near-black base is invisible on the dark card. Both
-   keep a soft shadow + press feedback, just no mismatched ledge. */
-.confirm-btns .btn3d{box-shadow:0 3px 8px rgba(0,0,0,.55),0 0 0 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.2)}
-.confirm-btns .btn3d:hover{transform:translateY(-1px);box-shadow:0 5px 10px rgba(0,0,0,.55),0 0 0 2px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.2)}
-.confirm-btns .btn3d:active{transform:translateY(1px);box-shadow:0 1px 3px rgba(0,0,0,.6),0 0 0 2px rgba(0,0,0,.6),inset 0 2px 4px rgba(0,0,0,.4)}
+/* Dialog buttons keep the STANDARD tactile ledge + hover-lift/active-depress from .btn3d --
+   now that the neutral --b (#1a1a20) is a visible ledge, CANCEL (steel) and START/UPDATE
+   (danger) both pop consistently, so no flat override is needed here anymore. */
 
 /* ---- self-update dialog ---- */
 /* Dark/neutral card (NOT the amber warning theme of the START dialog it borrows from). */
@@ -2397,10 +2413,22 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .sys-chip.clean{color:#7ce0b0;background:#0e1a14}
 .sys-chip.thr{color:#ffb347;background:#1a1509}
 .sys-chip.uv{color:#ff8a6a;background:#1c0f0d}
-.sys-win{display:flex;border:1px solid #14241d;border-radius:7px;overflow:hidden}
-.sys-win button{background:#0b1113;border:0;color:#6f8f7e;font:600 13px/1 var(--mono,monospace);padding:5px 10px;cursor:pointer;letter-spacing:.4px}
-.sys-win button+button{border-left:1px solid #14241d}
-.sys-win button.on{background:#0e1a14;color:#7ce0b0;text-shadow:0 0 6px rgba(124,224,176,.5)}
+/* Duration picker (5m/15m/60m) -- sized to MATCH the LOG SOURCE .logseg segmented control
+   exactly (34px tall, 2px inset well, 700/11px buttons w/ 0 14px padding, green-lit active
+   with an INSET glow so it never bleeds across the seam). Was ~23px tall (5px/13px) = visibly
+   smaller than the log picker; now identical. */
+.sys-win{display:inline-flex;height:34px;padding:2px;border-radius:6px;
+  background:#08080a;border:1px solid #000;box-shadow:inset 0 2px 5px rgba(0,0,0,.8);cursor:pointer}
+.sys-win button{appearance:none;margin:0;border:0;cursor:pointer;white-space:nowrap;position:relative;
+  display:flex;align-items:center;justify-content:center;padding:0 14px;
+  font:700 13px var(--mono,monospace);letter-spacing:.08em;background:#1a1a1e;color:#5a5650;
+  transition:color .15s,background .15s}
+.sys-win button:first-child{border-radius:4px 0 0 4px}
+.sys-win button:last-child{border-radius:0 4px 4px 0}
+.sys-win button+button{border-left:1px solid #000}
+.sys-win button.on{background:linear-gradient(180deg,#1a6040,#123f2a);color:#7effb0;
+  box-shadow:inset 0 0 7px rgba(87,224,138,.22);text-shadow:0 0 4px rgba(87,224,138,.5)}
+.sys-win button:focus-visible{outline:3px solid #ffca7a;outline-offset:3px}
 .sys-panel{border-radius:9px;overflow:hidden;background:linear-gradient(180deg,#0b1113,#070b0d);border:1px solid #000;margin-bottom:12px}
 .sys-panel-face{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;cursor:pointer;user-select:none}
 .sys-panel-title{font:700 13px/1 var(--mono,monospace);letter-spacing:1.2px;color:#9fb3ad}
@@ -3170,8 +3198,12 @@ var SYS=(function(){
     if(rangeOf([lk])){var l=scaleFor(def,lk);tl=axfmt(l[0]+l[1]);bl=axfmt(l[0]);}
     if(def.dual){var rk=def.series[1].k;
       if(rangeOf([rk])){var r=scaleFor(def,rk);tr=axfmt(r[0]+r[1]);br=axfmt(r[0]);}}
-    // Colour each axis to match its line: left = series[0], right = series[1] (dual).
-    setAx(chart,tl,bl,tr,br,def.series[0].c,def.dual?def.series[1].c:null);
+    // Colour axes by SCALE, not just by series: DUAL-scale charts (vitals/link) tint each
+    // axis to ITS own line (left=series[0], right=series[1]); SAME-scale charts (compute/load),
+    // where a SINGLE shared y-axis serves BOTH lines, use neutral WHITE so the axis isn't
+    // misread as belonging to only one of the two series.
+    var leftC=def.dual?def.series[0].c:"#e8e8ea";
+    setAx(chart,tl,bl,tr,br,leftC,def.dual?def.series[1].c:null);
   }
   function axfmt(v){return v===0?"0":(Math.abs(v)<10?v.toFixed(2):v.toFixed(0));}
   function setAx(chart,tl,bl,tr,br,lc,rc){
@@ -4634,14 +4666,25 @@ def _download_and_verify(manifest, base=None, staging=None):
     return staging
 
 
+# Files a manifest must NEVER be allowed to overwrite even with an otherwise-valid in-root path
+# -- operator secrets/config/certs. Clobbering these wouldn't leave the app unreachable, but it
+# would destroy credentials / lock users out, so we deny them as defense-in-depth (audit NEW-7).
+# No shipped file legitimately ends in any of these, so the denylist can never block a real release.
+_MANIFEST_DENY_SUFFIXES = (".env", ".pem", ".key")
+
+
 def _validate_manifest_paths(manifest):
     """Reject a manifest whose file paths could escape the project root (absolute or
-    containing '..'). These paths drive downloads, staging, backup, swap AND zip extraction,
-    so this single gate is what stops a hostile/garbled manifest writing outside SCRIPT_DIR."""
+    containing '..'), or that target operator secrets/certs. These paths drive downloads,
+    staging, backup, swap AND zip extraction, so this single gate is what stops a hostile/garbled
+    manifest writing outside SCRIPT_DIR or clobbering .env / TLS material."""
     for f in manifest.get("files") or []:
         p = f.get("path", "")
         if (not p) or p.startswith("/") or p.startswith("\\") or ".." in Path(p).parts:
             raise ValueError(f"unsafe manifest path: {p!r}")
+        low = p.lower()
+        if low.endswith(_MANIFEST_DENY_SUFFIXES) or low.endswith("generator_control.env"):
+            raise ValueError(f"manifest may not overwrite a secret/cert file: {p!r}")
 
 
 # Version strings are interpolated into the bootstrap shell script + JSON marker, so restrict
@@ -4748,13 +4791,17 @@ def _make_backup(manifest, dest_root=None, backup_dir=None):
 
 def _swap(manifest, staging=None, dest_root=None):
     """Copy verified staged files over the live ones (the DEV path; the systemd path swaps
-    from the /tmp bootstrap while the service is stopped)."""
+    from the /tmp bootstrap while the service is stopped). Each file is replaced ATOMICALLY --
+    copy to a sibling temp, then os.replace (rename) over the live file -- so an interruption
+    can never leave a half-written live file (mirrors the bootstrap's cp→mv, audit NEW-1)."""
     staging = staging or _UPDATE_STAGING
     dest_root = dest_root or SCRIPT_DIR
     for f in manifest.get("files") or []:
         live = dest_root / f["path"]
         live.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(staging / f["path"], live)
+        tmp = live.with_name(live.name + ".gpnew")       # sibling temp on the same filesystem
+        shutil.copy2(staging / f["path"], tmp)
+        os.replace(tmp, live)                            # atomic rename over the live file
 
 
 def _rollback(zip_path, dest_root=None):
@@ -4799,8 +4846,14 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
         shell var, never interpolated raw (audit H1)."""
     q = shlex.quote
     paths = [f["path"] for f in (manifest.get("files") or [])]
+    # ATOMIC per-file swap (audit NEW-1): copy the staged file to a sibling temp on the SAME
+    # filesystem, then `mv` (rename(2)) it over the live file. The live file is therefore only
+    # ever replaced all-at-once -- a power loss mid-copy leaves a harmless *.gpnew temp, never a
+    # truncated generator_control.py that would crash-loop the service on reboot.
     copies = "\n".join(
-        f'mkdir -p "$ROOT/$(dirname {q(p)})" && cp -f {q(str(staging))}/{q(p)} "$ROOT"/{q(p)}'
+        f'mkdir -p "$ROOT/$(dirname {q(p)})" && '
+        f'cp -f {q(str(staging))}/{q(p)} "$ROOT"/{q(p)}.gpnew && '
+        f'mv -f "$ROOT"/{q(p)}.gpnew "$ROOT"/{q(p)}'
         for p in paths
     )
     # Rollback via system python3 (independent of the project files being swapped).
@@ -4834,7 +4887,22 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
         "write_result() { printf '{\"status\":\"%s\",\"version\":\"%s\",\"ts\":\"%s\",\"note\":\"%s\"}\\n'"
         " \"$1\" \"$VER\" \"$(date -Iseconds)\" \"$2\" > \"$RESULT\"; }\n"
         # Any HTTP response (incl. a 401 challenge) proves the listener bound + is serving.
-        "health() { curl -k -sS -o /dev/null --max-time 3 \"$HEALTH_URL\"; }\n"
+        # Probe via python3 -- the app's OWN runtime, so it's guaranteed present (curl is not
+        # on every base image; a missing curl would fail every health check and needlessly roll
+        # back good updates -- audit NEW-2). TLS verification is intentionally DISABLED here and
+        # ONLY here: this is a 127.0.0.1 liveness probe against the app's OWN self-signed cert,
+        # where we care whether it ANSWERS, not its identity (same reason the old curl used -k).
+        # It is NOT a data fetch -- the actual manifest/file downloads use full TLS verification.
+        "health() { python3 - \"$HEALTH_URL\" <<'PY'\n"
+        "import sys, urllib.request, urllib.error, ssl\n"
+        "try:\n"
+        "    urllib.request.urlopen(sys.argv[1], timeout=3, context=ssl._create_unverified_context())\n"
+        "except urllib.error.HTTPError:\n"
+        "    pass          # any HTTP status (401 etc.) means the server is up + serving\n"
+        "except Exception:\n"
+        "    sys.exit(1)   # connection refused / timeout -> not serving yet\n"
+        "PY\n"
+        "}\n"
         "wait_healthy() { local c=0 i; for i in $(seq 1 30); do if health; then c=$((c+1)); "
         "[ $c -ge 3 ] && return 0; else c=0; fi; sleep 2; done; return 1; }\n"
         "rollback() {\n"
@@ -4899,7 +4967,11 @@ def _run_update():
             scheme = "https" if CONFIG.get("SSL_ENABLED") else "http"
             health_url = f"{scheme}://127.0.0.1:{CONFIG['PORT']}/"
             script = _write_bootstrap_script(manifest, version, zpath, staging, health_url)
-            subprocess.Popen(["setsid", "bash", script],
+            # Detach the bootstrap into its own session so it outlives this process. Use ONLY
+            # start_new_session=True (it calls setsid(2) directly) -- no "setsid" argv, which
+            # would add a needless binary dependency whose absence fails the launch (audit NEW-6).
+            # KillMode=process spares the child regardless of session anyway.
+            subprocess.Popen(["bash", script],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
         else:

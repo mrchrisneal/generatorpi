@@ -4,6 +4,7 @@
 # and the authed update endpoints. Network is always mocked; file ops use tmp dirs.
 import hashlib
 import json
+import os
 import zipfile
 
 import pytest
@@ -255,3 +256,106 @@ class TestResultEndpoints:
         monkeypatch.setattr(module, "_UPDATE_LOG", lg)
         assert client.post(_q("/api/update/result/ack")).status_code == 200
         assert not r.exists() and not lg.exists()          # gone for everyone
+
+
+# ---------------------------------------------------------------------------
+# Post-audit hardening (2nd Opus review): version charset, secret-file denylist,
+# free-disk preflight, atomic swap, and the GENERATED bootstrap script's content.
+# These lock in the fixes so a future edit can't silently reintroduce a brick/RCE.
+# ---------------------------------------------------------------------------
+class TestVersionValidation:
+    @pytest.mark.parametrize("bad", ["1.0; rm -rf /", "1.0'`x", "a" * 65, "", "1 2", "v!", "$(x)"])
+    def test_rejects_unsafe_version(self, module, bad):
+        with pytest.raises(ValueError):
+            module._validate_version(bad)
+
+    @pytest.mark.parametrize("ok", ["1.0.0", "1.2.3-rc1", "v1.0+build.2", "0.0.1_beta"])
+    def test_accepts_safe_version(self, module, ok):
+        module._validate_version(ok)                       # no raise
+
+
+class TestManifestDenylist:
+    @pytest.mark.parametrize("bad", ["generator_control.env", ".env", "ssl_key.pem",
+                                     "certs/server.pem", "a.key", "sub/secret.ENV"])
+    def test_rejects_secret_targets(self, module, bad):
+        with pytest.raises(ValueError, match="secret/cert"):
+            module._validate_manifest_paths({"files": [{"path": bad}]})
+
+
+class TestDiskPreflight:
+    def test_raises_when_free_space_too_low(self, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("x")
+
+        class _DU:                                          # fake shutil.disk_usage result
+            free = 10                                       # far below need (bytes*3 + 5MB)
+        monkeypatch.setattr(module.shutil, "disk_usage", lambda p: _DU)
+        with pytest.raises(OSError, match="disk space"):
+            module._preflight_check({"files": [{"path": "a.py", "bytes": 1000}]}, dest_root=root)
+
+
+class TestAtomicSwap:
+    def test_swap_replaces_and_leaves_no_temp(self, module, tmp_path):
+        staging = tmp_path / "stg"
+        staging.mkdir()
+        (staging / "a.py").write_text("NEW")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("OLD")
+        module._swap({"files": [{"path": "a.py"}]}, staging=staging, dest_root=root)
+        assert (root / "a.py").read_text() == "NEW"
+        assert not (root / "a.py.gpnew").exists()          # temp renamed away, none left behind
+
+
+class TestBackupIntegrity:
+    def test_fresh_backup_passes_internal_verification(self, module, tmp_path):
+        # _make_backup now runs testzip() + per-file re-hash before returning; a good backup
+        # must pass without raising and the archive must read back byte-identical.
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("DATA A")
+        (root / "b.txt").write_text("DATA B")
+        manifest = {"version": "2", "files": [{"path": "a.py"}, {"path": "b.txt"}]}
+        zpath, _ = module._make_backup(manifest, dest_root=root, backup_dir=tmp_path / "bk")
+        with zipfile.ZipFile(zpath) as z:
+            assert z.testzip() is None
+            assert z.read("a.py") == b"DATA A"
+            assert z.read("b.txt") == b"DATA B"
+
+
+class TestBootstrapScriptHardening:
+    def test_generated_script_is_hardened(self, module, tmp_path):
+        manifest = {"version": "1.2.3",
+                    "files": [{"path": "generator_control.py"}, {"path": "VERSION"}]}
+        script = module._write_bootstrap_script(
+            manifest, "1.2.3", tmp_path / "b.zip", tmp_path / "stg", "https://127.0.0.1:9400/")
+        try:
+            with open(script) as fh:
+                body = fh.read()
+            assert "VER=1.2.3" in body                      # version reaches shell only as VER
+            assert 'write_result success "Updated to v$VER."' in body   # used only via "$VER"
+            assert "SVC=generator_control.service" in body
+            assert 'sudo systemctl restart "$SVC"' in body  # matches the NOPASSWD sudoers rule
+            assert "mv -f" in body                           # atomic per-file swap (NEW-1)
+            assert 'python3 - "$HEALTH_URL"' in body         # python3 health probe (NEW-2)
+            assert "curl" not in body                        # curl dependency removed
+            assert "trap on_exit EXIT" in body               # roll back on any non-success exit
+            assert "setsid" not in body                      # no setsid argv dependency (NEW-6)
+        finally:
+            os.remove(script)
+
+    def test_version_is_shell_quoted_when_unsafe_chars_slip_through(self, module, tmp_path):
+        # Defense in depth: even if a caller bypassed _validate_version, shlex.quote must keep
+        # a metacharacter-laden version from breaking out of the VER= assignment.
+        manifest = {"version": "x", "files": [{"path": "VERSION"}]}
+        script = module._write_bootstrap_script(
+            manifest, "1.0; rm -rf /", tmp_path / "b.zip", tmp_path / "stg", "https://127.0.0.1/")
+        try:
+            with open(script) as fh:
+                body = fh.read()
+            assert "rm -rf /" in body                        # present...
+            assert "VER=1.0; rm -rf /" not in body           # ...but NOT as a bare command
+        finally:
+            os.remove(script)
