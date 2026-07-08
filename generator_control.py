@@ -2420,7 +2420,10 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .upd-scroll{max-height:230px;overflow-y:auto;margin:0 0 16px;padding:10px 12px;border-radius:8px;
   background:#04120a;box-shadow:inset 0 2px 8px rgba(0,0,0,.7);border:1px solid #16321f;
   font:500 12px/1.5 var(--mono);color:#8fe0a8;white-space:pre-wrap;word-break:break-word}
-.upd-scroll::-webkit-scrollbar{width:8px}.upd-scroll::-webkit-scrollbar-thumb{background:#1c4a30;border-radius:4px}
+/* Match the event-log window's scrollbar exactly (thin, dark track, green thumb) incl. Firefox. */
+.upd-scroll::-webkit-scrollbar{width:8px}.upd-scroll::-webkit-scrollbar-track{background:#020604}
+.upd-scroll::-webkit-scrollbar-thumb{background:#1c4a30;border-radius:4px}
+.upd-scroll{scrollbar-color:#1c4a30 #020604;scrollbar-width:thin}
 /* Progress bar shown while the update runs. */
 .upd-bar{height:10px;border-radius:5px;background:#04120a;box-shadow:inset 0 1px 4px rgba(0,0,0,.8);overflow:hidden;margin-bottom:10px}
 .upd-bar-fill{height:100%;width:0;border-radius:5px;background:linear-gradient(90deg,#43b382,#7ce0b0);
@@ -2441,7 +2444,7 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .log-copy{position:absolute;top:10px;right:10px;z-index:3;appearance:none;cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;
   border:1px solid #2d4a3a;background:rgba(8,18,12,.9);color:#8fe0a8;border-radius:6px;
-  opacity:.72;transition:opacity .15s,color .15s,border-color .15s}
+  opacity:.33;transition:opacity .15s,color .15s,border-color .15s}
 .log-copy svg{width:15px;height:15px;display:block}
 .log-wrap:hover .log-copy{opacity:1}
 .log-copy:hover{color:#eafff5;border-color:#3a7a54}
