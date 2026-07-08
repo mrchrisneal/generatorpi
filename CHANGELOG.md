@@ -3,6 +3,14 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.1.2
+
+- **Force update (dev/testing)**: when already up-to-date, the footer now offers a "Force update"
+  link, and the browser console exposes `gpForceUpdate()` — both re-run the full update flow against
+  the current release without needing a version bump, which makes exercising the update UX easy.
+- Footer polish: the update status text ("Version up-to-date") is dimmed to match the rest of the
+  footer, so only actual links stand out.
+
 ## 1.1.1
 
 - **Update restart UX**: while the app restarts, the log is hidden in favor of a large rotating

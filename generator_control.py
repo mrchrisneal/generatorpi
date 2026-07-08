@@ -2395,6 +2395,10 @@ footer{border-top:1px solid rgba(255,255,255,.06);padding-top:16px;
   display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center}
 footer .frow{font:500 12px var(--mono);color:#a6a094}
 footer a{color:rgba(255,255,255,.9);text-decoration:none}
+/* The update status text is an <a> but is usually a plain (hrefless) LABEL -- only real links
+   should be bright, so dim a hrefless status text to the normal footer colour ("Version up-to-date"
+   etc. must match the footer, not stand out like a link). */
+footer #updText:not([href]){color:#a6a094}
 footer a:hover{text-decoration:underline}
 /* Contextual update-status line inherits the normal footer .frow size + colour. The
    version link pulses yellow when out of date; the action link highlights; a small
@@ -3630,7 +3634,10 @@ function checkUpdate(manual,passive){
       if(v)v.classList.remove('out-of-date');
     }else{                                                    // up to date
       if(v)v.classList.remove('out-of-date');
-      if(manual){_updSet('Version up-to-date');}             // feedback for a manual check
+      // Up-to-date: show the status + a "Force update" action (dev/power feature) that re-runs the
+      // full update flow against the CURRENT release without needing a version bump -- handy for
+      // testing. The status text is a dim label; only "Force update" is a bright link.
+      if(manual){_updSet('Version up-to-date','Force update','forceupdate');}
       else{row.style.display='none';}                        // silent on a normal load
     }
   }).catch(function(){row.classList.remove('checking');_updSet('Update check failed','Check again','recheck');if(v)v.classList.remove('out-of-date');});
@@ -3638,7 +3645,8 @@ function checkUpdate(manual,passive){
 /* The action link opens the in-app UPDATE modal in the update state; re-checks otherwise. */
 $('updAction').addEventListener('click',function(e){
   e.preventDefault();
-  if(this.dataset.mode==='update'){openUpdateModal();}else{checkUpdate(true);}
+  var m=this.dataset.mode;
+  if(m==='update'||m==='forceupdate'){openUpdateModal();}else{checkUpdate(true);}
 });
 /* Clicking the version (v1.0.0) runs a MANUAL check instead of navigating -- the title
    tooltip says so on hover. */
@@ -3712,6 +3720,13 @@ document.addEventListener('click',function(e){
 });
 function openUpdateModal(){
   var cl=$('updChangelog'),doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
+  // Reset any leftover restart state: a prior run hides the log box + shows the "Restarting"
+  // spinner panel, so restore them (and clear the _waiting guard) so a re-opened / FORCED update
+  // starts clean. This is what makes "Force update" / gpForceUpdate() re-runnable without a reload.
+  _waiting=false;
+  var _w=$('updWaiting'); if(_w)_w.style.display='none';
+  if(cl.parentElement)cl.parentElement.style.display='';
+  var _cb=$('updCard').querySelector('.confirm-btns'); if(_cb)_cb.style.display='';
   cl.textContent='Loading changelog…';cl.style.display='';
   var note=$('updBackupNote');note.textContent='';note.style.display='';
   $('updProgressWrap').style.display='none';
@@ -3725,6 +3740,10 @@ function openUpdateModal(){
     note.textContent='All files are backed up to '+((d&&d.backup_dir)||'backups/')+' before updating.';
   }).catch(function(e){cl.textContent='Changelog unavailable — request failed'+(e?(' ('+e+')'):'')+'.';});
 }
+// Dev/testing convenience: force the update flow from the browser console at any time (even when
+// up-to-date) via gpForceUpdate() -- re-runs the whole update against the current release, so we
+// don't have to bump/cut a version just to exercise the flow. Same as clicking "Force update".
+window.gpForceUpdate=openUpdateModal;
 // CANCEL doubles as REVERT while the run is parked on a decision; else it only closes when idle.
 $('updCancelBtn').addEventListener('click',function(){
   var b=$('updCancelBtn');
