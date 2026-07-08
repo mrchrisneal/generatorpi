@@ -30,6 +30,11 @@ WorkingDirectory=${SCRIPT_DIR}
 ExecStart=/usr/bin/python3 ${SCRIPT_DIR}/generator_control.py
 Restart=always
 RestartSec=10
+# KillMode=process: on stop/restart, kill ONLY the main app process, not the whole cgroup.
+# This is what lets the in-app self-updater's detached /tmp bootstrap survive the restart it
+# triggers (default control-group killing would SIGTERM the bootstrap mid-swap and brick the
+# service). Do NOT change without revisiting the updater's restart/rollback flow.
+KillMode=process
 StandardOutput=journal
 StandardError=journal
 
@@ -107,6 +112,25 @@ do_install() {
     generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null
     sudo systemctl daemon-reload
 
+    # Install a SCOPED, passwordless sudoers rule so the in-app self-updater's detached bootstrap
+    # can restart the service without a TTY/password prompt (it would otherwise hang: "no tty").
+    # Limited to EXACTLY the three systemctl verbs on THIS unit -- no general sudo is granted.
+    SUDOERS_FILE="/etc/sudoers.d/generatorpi-updater"
+    SYSTEMCTL_BIN="$(command -v systemctl || echo /usr/bin/systemctl)"
+    printf '%s ALL=(root) NOPASSWD: %s restart %s, %s start %s, %s stop %s\n' \
+        "${CURRENT_USER}" \
+        "${SYSTEMCTL_BIN}" "${SERVICE_NAME}.service" \
+        "${SYSTEMCTL_BIN}" "${SERVICE_NAME}.service" \
+        "${SYSTEMCTL_BIN}" "${SERVICE_NAME}.service" \
+        | sudo tee "${SUDOERS_FILE}" > /dev/null
+    sudo chmod 0440 "${SUDOERS_FILE}"
+    # Validate; a malformed sudoers file is dangerous, so remove it if visudo rejects it.
+    if ! sudo visudo -cf "${SUDOERS_FILE}" > /dev/null 2>&1; then
+        echo "WARNING: sudoers rule failed validation; removing it. In-app updates will need"
+        echo "         passwordless 'systemctl restart ${SERVICE_NAME}.service' configured manually."
+        sudo rm -f "${SUDOERS_FILE}"
+    fi
+
     # Enable (start on boot) and start/restart now
     sudo systemctl enable "${SERVICE_NAME}.service"
     sudo systemctl restart "${SERVICE_NAME}.service"
@@ -134,8 +158,9 @@ case "${1}" in
         sudo systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
         sudo systemctl disable "${SERVICE_NAME}.service" 2>/dev/null || true
 
-        # Remove service file and reload
+        # Remove service file, the updater sudoers rule, and reload
         sudo rm -f "${SERVICE_FILE}"
+        sudo rm -f "/etc/sudoers.d/generatorpi-updater"
         sudo systemctl daemon-reload
 
         echo "Service stopped, disabled, and removed."

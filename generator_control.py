@@ -28,6 +28,7 @@ import ipaddress
 import secrets
 import socket
 import sqlite3
+import re              # manifest version charset validation (self-updater)
 import hashlib         # SHA-256 verification of downloaded release files (self-updater)
 import shutil          # staging dir management for the self-updater
 import shlex           # safe quoting when generating the swap/restart shell script
@@ -3527,11 +3528,19 @@ function _pollUpdate(){
 }
 function _waitBackAndReload(){
   // Ping the app until it answers again (new version up), then hard-reload so the fresh UI +
-  // the post-update result modal appear. The browser resends Basic auth on the same-origin GET.
+  // the post-update result modal appear. Capped (~2min) so a bricked device surfaces guidance
+  // instead of spinning forever (audit M6). The browser resends Basic auth on same-origin GETs.
+  var tries=0;
   (function ping(){
+    tries++;
     fetch('/?ts='+Date.now(),{cache:'no-store'}).then(function(r){
-      if(r&&r.ok){location.reload();}else{setTimeout(ping,2000);}
-    }).catch(function(){setTimeout(ping,2000);});
+      if(r&&r.ok){location.reload();}
+      else if(tries<60){setTimeout(ping,2000);}
+      else{$('updProgressMsg').textContent='The app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';}
+    }).catch(function(){
+      if(tries<60){setTimeout(ping,2000);}
+      else{$('updProgressMsg').textContent='The app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';}
+    });
   })();
 }
 /* Post-restart result modal: shown once after an update; DISMISS clears it server-side. */
@@ -4635,6 +4644,17 @@ def _validate_manifest_paths(manifest):
             raise ValueError(f"unsafe manifest path: {p!r}")
 
 
+# Version strings are interpolated into the bootstrap shell script + JSON marker, so restrict
+# them to an obviously-safe charset (defends against shell/JSON injection from a hostile or
+# garbled manifest -- audit H1).
+_VERSION_RE = re.compile(r"^[A-Za-z0-9.+_-]{1,64}$")
+
+
+def _validate_version(version):
+    if not (version and _VERSION_RE.match(str(version))):
+        raise ValueError(f"unsafe manifest version: {version!r}")
+
+
 def _ensure_backup_dir():
     """Create backups/ and PROVE it's writable (write+delete a probe). Called at startup so a
     permission problem is an immediate, loud failure -- we must never discover mid-update that
@@ -4668,6 +4688,15 @@ def _preflight_check(manifest, dest_root=None):
             raise PermissionError(f"target directory is not writable: {d}")
         if target.exists() and not writable(target):
             raise PermissionError(f"target file is not writable: {target}")
+    # Free space: we need room for the download staging + the backup zip + the swap. Require the
+    # summed file sizes with generous headroom so we never run out mid-swap (audit H2).
+    need = sum(int(f.get("bytes", 0)) for f in (manifest.get("files") or [])) * 3 + 5_000_000
+    try:
+        free = shutil.disk_usage(str(dest_root)).free
+    except OSError:
+        free = None
+    if free is not None and free < need:
+        raise OSError(f"insufficient free disk space for update: need ~{need}, have {free}")
 
 
 def _write_update_result(status, version, note="", log_text=None):
@@ -4704,6 +4733,16 @@ def _make_backup(manifest, dest_root=None, backup_dir=None):
         for p in present:
             z.write(dest_root / p, p)                    # arcname = relative path
         z.writestr("__added__.json", json.dumps(added))
+    # VERIFY the backup before anyone relies on it for rollback (audit H3): a corrupt/truncated
+    # zip must be caught NOW, while the old files are still live, not discovered mid-rollback.
+    with zipfile.ZipFile(zpath) as z:
+        if z.testzip() is not None:
+            raise OSError(f"backup archive failed integrity check: {zpath}")
+        names = set(z.namelist())
+        for p in present:                                # every backed-up file must read back
+            if p not in names or hashlib.sha256(z.read(p)).hexdigest() != \
+                    hashlib.sha256((dest_root / p).read_bytes()).hexdigest():
+                raise OSError(f"backup archive is missing/corrupt for {p}")
     return zpath, added
 
 
@@ -4740,14 +4779,24 @@ def _rollback(zip_path, dest_root=None):
         log.error(f"Rollback from {zip_path} failed: {e}")
 
 
-def _write_bootstrap_script(manifest, version, zip_path, staging):
+def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
     """Write a STANDALONE swap+restart+rollback script to /tmp; return its path.
 
-    Running from /tmp -- OUTSIDE the project root -- is what lets us safely overwrite EVERY
-    project file, INCLUDING generator_control.py (the updater itself): the service is stopped
-    first, so no running code reads the files as they're replaced. After start it health-checks
-    (systemctl is-active); on failure it ROLLS BACK from the backup zip (delete-added + extract)
-    and restarts the old version -- so a bad update can never leave GeneratorPi unreachable."""
+    Runs from /tmp -- OUTSIDE the project root -- so it can replace EVERY project file,
+    including generator_control.py (the updater itself). Robustness (post-audit):
+      * The unit is installed with KillMode=process (setup.sh), so a `systemctl restart`
+        kills only the OLD main process, NOT this detached child -- fixing the cgroup
+        self-kill that previously bricked every update (audit C1).
+      * HEALTH = an actual HTTP request to the listener (any response, even a 401 auth
+        challenge, proves it bound + is serving), required 3 times consecutively -- NOT
+        `systemctl is-active`, which reports active the instant a Type=simple process forks
+        and would pass a broken build (audit C2).
+      * An EXIT trap rolls back on ANY non-success exit -- swap error, failed restart, failed
+        health check, or an unexpected death mid-run (audit M2). Rollback restores the backup
+        zip (delete-added + extract), restarts the OLD version, and re-verifies it is healthy,
+        recording whether recovery itself succeeded (audit H5).
+      * `version` is validated (charset) upstream and referenced only via the quoted $VER
+        shell var, never interpolated raw (audit H1)."""
     q = shlex.quote
     paths = [f["path"] for f in (manifest.get("files") or [])]
     copies = "\n".join(
@@ -4771,36 +4820,46 @@ def _write_bootstrap_script(manifest, version, zip_path, staging):
     )
     body = (
         "#!/bin/bash\n"
-        "# GeneratorPi self-update bootstrap (generated). Runs from /tmp so it can replace\n"
-        "# EVERY project file, including the updater itself. Rolls back + restarts on failure.\n"
+        "# GeneratorPi self-update bootstrap (generated). Detached + KillMode=process, so a\n"
+        "# service restart can't kill it; replaces every file incl. the updater; HTTP health-\n"
+        "# checks the new version; EXIT-trap rolls back to the backup on ANY failure.\n"
         f"ROOT={q(str(SCRIPT_DIR))}\n"
         f"VER={q(version)}\n"
+        f"HEALTH_URL={q(health_url)}\n"
         "SVC=generator_control.service\n"
         "mkdir -p \"$ROOT/backups\"\n"
         "RESULT=\"$ROOT/backups/last_update.json\"\n"
-        # Capture EVERYTHING to the log the post-restart modal shows the user.
-        "exec > \"$ROOT/backups/last_update.log\" 2>&1\n"
+        "exec > \"$ROOT/backups/last_update.log\" 2>&1\n"           # capture the log for the modal
         "log() { echo \"[gp-update] $(date -Iseconds) $*\"; }\n"
-        # Write the outcome marker read on next startup ($1=status, $2=note; note has no quotes).
         "write_result() { printf '{\"status\":\"%s\",\"version\":\"%s\",\"ts\":\"%s\",\"note\":\"%s\"}\\n'"
         " \"$1\" \"$VER\" \"$(date -Iseconds)\" \"$2\" > \"$RESULT\"; }\n"
+        # Any HTTP response (incl. a 401 challenge) proves the listener bound + is serving.
+        "health() { curl -k -sS -o /dev/null --max-time 3 \"$HEALTH_URL\"; }\n"
+        "wait_healthy() { local c=0 i; for i in $(seq 1 30); do if health; then c=$((c+1)); "
+        "[ $c -ge 3 ] && return 0; else c=0; fi; sleep 2; done; return 1; }\n"
         "rollback() {\n"
-        "  log 'ROLLBACK: restoring backup + restarting'\n"
+        "  log 'ROLLBACK: restoring backup + restarting the previous version'\n"
         f"  {py_rollback}\n"
         "  sudo systemctl restart \"$SVC\" 2>/dev/null || true\n"
-        "  write_result failed 'Update failed - rolled back to the previous version.'\n"
+        "  if wait_healthy; then write_result failed 'Update failed - rolled back to the previous version.';\n"
+        "  else write_result failed 'Update failed AND rollback did not become healthy - manual check needed.'; fi\n"
         "}\n"
+        # Roll back on ANY exit that didn't reach SUCCEEDED=1 (covers unexpected deaths too).
+        "SUCCEEDED=0\n"
+        "on_exit() { [ \"$SUCCEEDED\" = 1 ] && return; log 'update did not complete - rolling back'; rollback; }\n"
+        "trap on_exit EXIT\n"
         "sleep 1\n"
-        "log 'stopping service'; sudo systemctl stop \"$SVC\" 2>/dev/null || true\n"
+        # Swap while the OLD process is still running its in-memory code (safe for a python app),
+        # then restart -- KillMode=process spares this detached bootstrap.
         "log 'swapping files'\n"
-        f"if ! ( set -e\n{copies}\n); then rollback; exit 1; fi\n"
-        "log 'starting service'\n"
-        "if ! sudo systemctl start \"$SVC\" 2>/dev/null; then rollback; exit 1; fi\n"
-        "ok=0\n"
-        "for i in $(seq 1 10); do systemctl is-active --quiet \"$SVC\" && { ok=1; break; }; sleep 2; done\n"
-        "if [ \"$ok\" != 1 ]; then rollback; exit 1; fi\n"
+        f"( set -e\n{copies}\n) || exit 1\n"
+        "log 'restarting service'\n"
+        "sudo systemctl restart \"$SVC\" 2>/dev/null || exit 1\n"
+        "log 'waiting for the new version to serve'\n"
+        "wait_healthy || exit 1\n"
         "log 'update OK'\n"
-        f"write_result success 'Updated to v{version}.'\n"
+        "SUCCEEDED=1\n"
+        "write_result success \"Updated to v$VER.\"\n"
         f"rm -rf {q(str(staging))}; rm -f \"$0\"\n"
     )
     fd, tmp = tempfile.mkstemp(prefix="gp-update-", suffix=".sh")
@@ -4824,6 +4883,7 @@ def _run_update():
         manifest = json.loads(_http_get_bytes(_MANIFEST_URL, max_bytes=1_000_000).decode("utf-8"))
         _validate_manifest_paths(manifest)
         version = manifest.get("version") or "?"
+        _validate_version(version)                       # charset-safe before it hits shell/JSON
         with _update_lock:
             _update_state["version"] = version
         _update_phase("checking", "Checking permissions…", 0.04)
@@ -4835,7 +4895,10 @@ def _run_update():
             with _update_lock:
                 _update_state["systemd"] = True
             _update_phase("restarting", f"Applying v{version} + restarting service…", 0.92)
-            script = _write_bootstrap_script(manifest, version, zpath, staging)
+            # Health URL the bootstrap probes to confirm the NEW version actually serves.
+            scheme = "https" if CONFIG.get("SSL_ENABLED") else "http"
+            health_url = f"{scheme}://127.0.0.1:{CONFIG['PORT']}/"
+            script = _write_bootstrap_script(manifest, version, zpath, staging, health_url)
             subprocess.Popen(["setsid", "bash", script],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
@@ -4845,11 +4908,12 @@ def _run_update():
             _update_phase("swapping", "Applying update…", 0.86)
             _swap(manifest)
             swapped = True
-            # Leave a success marker for the post-restart modal, THEN re-exec.
+            # Mark 'restarting' (NOT success) BEFORE re-exec; the freshly-started process flips
+            # it to success at startup, so an import failure in the new code can't masquerade as
+            # a successful update (audit M1).
             _write_update_result(
-                "success", version,
-                note="Not a systemd service — files were swapped directly and the app "
-                     "process was restarted.",
+                "restarting", version,
+                note="Not a systemd service — files were swapped directly; restarting the app.",
                 log_text=f"Dev/non-systemd update to v{version}: "
                          f"{len(manifest.get('files') or [])} files verified + swapped; re-exec.")
             _update_phase("restarting",
@@ -4875,6 +4939,21 @@ except OSError as _e:
         f"permissions and restart -- refusing to run without a working rollback path."
     )
     raise SystemExit(1)
+
+
+# If the DEV (re-exec) update path left a 'restarting' marker, reaching HERE proves the new
+# code imported + started cleanly, so promote it to 'success'. If the new code had failed to
+# import we'd never get here and the marker would stay 'restarting' (honest -- not a false
+# success). The systemd path writes its own result from the bootstrap, so leave those alone.
+try:
+    if _UPDATE_RESULT.exists():
+        _r = json.loads(_UPDATE_RESULT.read_text())
+        if _r.get("status") == "restarting":
+            _r["status"] = "success"
+            _r["note"] = "Update applied; the app restarted successfully."
+            _UPDATE_RESULT.write_text(json.dumps(_r))
+except Exception as _e:                                    # noqa: BLE001 -- non-fatal
+    log.warning(f"could not promote update result marker: {_e}")
 
 
 @app.route('/api/update/changelog', methods=['GET'])
