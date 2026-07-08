@@ -2368,8 +2368,9 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .confirm-btns .btn3d:active{transform:translateY(1px);box-shadow:0 1px 3px rgba(0,0,0,.6),0 0 0 2px rgba(0,0,0,.6),inset 0 2px 4px rgba(0,0,0,.4)}
 
 /* ---- self-update dialog ---- */
-.upd-card{max-width:460px;text-align:left}
-.upd-card h2{text-align:center}
+/* Dark/neutral card (NOT the amber warning theme of the START dialog it borrows from). */
+.upd-card{max-width:460px;text-align:left;background:linear-gradient(160deg,#1c1c20,#0e0e10);border:1px solid #2d2d33}
+.upd-card h2{text-align:center;color:#e4e0d8}
 /* Changelog / update-log scroller: monospace, bounded height, its own inset well. */
 .upd-scroll{max-height:230px;overflow-y:auto;margin:0 0 16px;padding:10px 12px;border-radius:8px;
   background:#04120a;box-shadow:inset 0 2px 8px rgba(0,0,0,.7);border:1px solid #16321f;
@@ -2380,6 +2381,7 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .upd-bar-fill{height:100%;width:0;border-radius:5px;background:linear-gradient(90deg,#43b382,#7ce0b0);
   box-shadow:0 0 8px rgba(124,224,176,.5);transition:width .35s ease}
 .upd-progress-msg{font:600 12px var(--mono);color:#9fdcec;text-align:center;margin-bottom:16px;min-height:16px}
+.upd-backup-note{font:500 12px/1.5 var(--mono);color:#c0bab0;margin:-6px 0 14px;word-break:break-word}
 
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 
@@ -3480,6 +3482,7 @@ function _ovHide(id){$(id).className='confirm-overlay';setBackgroundInert(false)
 function openUpdateModal(){
   var cl=$('updChangelog'),doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   cl.textContent='Loading changelog…';cl.style.display='';
+  var note=$('updBackupNote');note.textContent='';note.style.display='';
   $('updProgressWrap').style.display='none';$('updBarFill').style.width='0';
   $('updBarFill').style.background='';
   doBtn.classList.remove('loading');doBtn.disabled=false;doBtn.style.display='';
@@ -3488,6 +3491,7 @@ function openUpdateModal(){
   api('/api/update/changelog').then(function(d){
     if(d&&d.changelog){cl.textContent=d.changelog;}
     else{cl.textContent='Changelog unavailable'+((d&&d.error)?(' — '+d.error):'')+'.';}
+    note.textContent='All files are backed up to '+((d&&d.backup_dir)||'backups/')+' before updating.';
   }).catch(function(e){cl.textContent='Changelog unavailable — request failed'+(e?(' ('+e+')'):'')+'.';});
 }
 $('updCancelBtn').addEventListener('click',function(){if(_updPoll)return;_ovHide('updModal');});
@@ -3495,7 +3499,7 @@ $('updDoBtn').addEventListener('click',function(){
   var b=$('updDoBtn');if(b.classList.contains('loading'))return;
   b.classList.add('loading');$('updCancelBtn').disabled=true;
   post('/api/update/start').then(function(){
-    $('updChangelog').style.display='none';
+    $('updChangelog').style.display='none';$('updBackupNote').style.display='none';
     $('updProgressWrap').style.display='';
     b.style.display='none';                              // update is now automatic
     $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').disabled=true;  // no cancel mid-update
@@ -3941,6 +3945,7 @@ HTML_TEMPLATE_BODY = """
     <div class="confirm-card upd-card">
       <h2 id="updModalTitle">UPDATE GENERATORPI</h2>
       <div class="upd-scroll" id="updChangelog">Loading changelog…</div>
+      <div class="upd-backup-note" id="updBackupNote"></div>
       <div id="updProgressWrap" style="display:none">
         <div class="upd-bar"><div class="upd-bar-fill" id="updBarFill"></div></div>
         <div class="upd-progress-msg" id="updProgressMsg"></div>
@@ -4879,9 +4884,9 @@ def api_update_changelog():
     {changelog: null} if the repo is unreachable so the modal can still open."""
     try:
         text = _http_get_bytes(_RAW_BASE + "/CHANGELOG.md", max_bytes=200_000).decode("utf-8", "replace")
-        return jsonify({"changelog": text})
+        return jsonify({"changelog": text, "backup_dir": str(_BACKUP_DIR)})
     except Exception as e:                              # noqa: BLE001 -- non-fatal
-        return jsonify({"changelog": None, "error": str(e)})
+        return jsonify({"changelog": None, "error": str(e), "backup_dir": str(_BACKUP_DIR)})
 
 
 @app.route('/api/update/status', methods=['GET'])
