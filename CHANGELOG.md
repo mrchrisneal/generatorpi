@@ -3,6 +3,14 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.1.3
+
+- **UI polish**: the RESTART APP button is now amber (red is reserved for Factory Reset), and in
+  the update banner only the version string links to the GitHub releases page — the surrounding
+  status text is a plain label and "Update now" opens the in-app updater.
+- **Quality**: test coverage raised to 98% (575 tests) with broad new coverage of the self-updater
+  flow, the restart/serve paths, and error branches.
+
 ## 1.1.2
 
 - **Force update (dev/testing)**: when already up-to-date, the footer now offers a "Force update"

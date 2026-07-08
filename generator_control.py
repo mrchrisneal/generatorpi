@@ -3594,18 +3594,17 @@ setInterval(function(){if(!busy)refresh();},refreshMs);
    checks hourly and pushes a notification (once per run) when no browser is open. */
 /* Populate the contextual update line. text = the status; actionLabel/actionMode/href set
    the trailing " · <link>" (omitted when actionLabel is falsy). Always reveals the row. */
-function _updSet(text,actionLabel,actionMode,href){
+function _updSet(text,actionLabel,actionMode,textHtml){
   var row=$('updRow'),a=$('updAction'),sep=$('updSep'),tx=$('updText');
-  tx.textContent=text;
-  // Generic: if a caller passes an href the status text becomes a link -- but no caller does
-  // anymore (the update affordance is the in-app modal, never a GitHub link), so it stays a
-  // plain, non-linked label. href kept only as a harmless generic capability of this setter.
-  if(href){tx.href=href;tx.target='_blank';tx.rel='noopener';}
-  else{tx.removeAttribute('href');tx.removeAttribute('target');}
+  // #updText is a plain <span> LABEL (dim, footer colour). The optional textHtml lets a caller
+  // embed ONE link inside it (e.g. the version string "v1.1.0" linking to GitHub releases) while
+  // the rest of the status text stays a plain dim label; otherwise the escaped text is used.
+  if(textHtml!=null){tx.innerHTML=textHtml;}else{tx.textContent=text;}
   if(actionLabel){
-    a.textContent=actionLabel;a.dataset.mode=actionMode||'';
-    if(href){a.href=href;a.target='_blank';a.rel='noopener';}else{a.href='#';a.removeAttribute('target');}
-    // Arrow separator points toward the "Update Now" action; a dot for other actions.
+    // The ACTION is never a GitHub link -- it only opens the in-app modal (update/forceupdate) or
+    // re-checks (recheck). href='#' + the click handler preventDefaults and routes by dataset.mode.
+    a.textContent=actionLabel;a.dataset.mode=actionMode||'';a.href='#';a.removeAttribute('target');
+    // Arrow separator points toward the "Update now" action; a dot for other actions.
     sep.textContent=(actionMode==='update')?' \\u2192 ':' \\u00b7 ';
     a.style.display='';sep.style.display='';
   }else{a.style.display='none';sep.style.display='none';}
@@ -3624,10 +3623,10 @@ function checkUpdate(manual,passive){
   api('/api/check-update'+(passive?'':'?fresh=1')).then(function(d){
     row.classList.remove('checking');
     if(d&&d.update_available&&d.latest){                      // update available
-      // NO GitHub href -- the update affordance is the in-app modal ONLY. Passing a href here
-      // would turn both the status text and "Update now" into target=_blank links to GitHub
-      // releases (leaking through on middle/cmd-click). The changelog lives in the modal itself.
-      _updSet('v'+d.latest+' available!','Update now','update');
+      // Only the VERSION STRING links to GitHub releases (target=_blank); " available!" stays a
+      // plain dim label, and the "Update now" action opens the in-app modal (never a GitHub link).
+      _updSet('','Update now','update',
+        '<a href="https://github.com/mrchrisneal/generatorpi/releases" target="_blank" rel="noopener">v'+d.latest+'</a> available!');
       if(v)v.classList.add('out-of-date');
     }else if(!d||d.latest==null){                             // couldn't reach the repo
       _updSet('Update check failed','Check again','recheck');
@@ -4064,7 +4063,7 @@ HTML_TEMPLATE_BODY = """
               <button type="button" class="btn3d steel" id="resetPrefsBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESET PREFS</button>
               <div class="drawer-divider"></div>
               <div class="helper">Restarts the GeneratorPi service on the server. The page reconnects after a few seconds; the generator and relay are unaffected.</div>
-              <button type="button" class="btn3d danger" id="restartBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESTART APP</button>
+              <button type="button" class="btn3d red" id="restartBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESTART APP</button>
               <div class="drawer-divider"></div>
               <div class="helper">Wipes the app's memory — event log, application logs, lifetime run-hours, and fuel/alert settings — back to factory defaults. Your login &amp; server config are <strong>not</strong> touched. Your .env file should remain mostly unchanged. This <strong>cannot be undone</strong>.</div>
               <button type="button" class="btn3d danger" id="factoryBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>FACTORY RESET</button>
@@ -4278,7 +4277,7 @@ HTML_TEMPLATE_BODY = """
          "vX.Y.Z available · Update", or "Update check failed · Check again". Hidden on a
          normal load when up to date. Server-checked against the repo's raw VERSION; when
          out of date #verLink above also pulses yellow. Driven by checkUpdate() in JS. -->
-    <div class="frow upd" id="updRow" style="display:none"><span class="upd-spin" aria-hidden="true"></span><a id="updText"></a><span id="updSep"> · </span><a href="#" id="updAction"></a></div>
+    <div class="frow upd" id="updRow" style="display:none"><span class="upd-spin" aria-hidden="true"></span><span id="updText"></span><span id="updSep"> · </span><a href="#" id="updAction"></a></div>
   </footer>
 
   <!-- Start confirmation dialog -->

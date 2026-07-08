@@ -1,0 +1,582 @@
+# test_run_update_flow.py -- end-to-end orchestration of the self-updater's background
+# worker `_run_update()` plus the surrounding decision/service/log helpers that the
+# lower-level test_updater.py doesn't drive as a whole flow. Every network call, file
+# swap, restart, and subprocess launch is mocked, so nothing binds, downloads, execs,
+# or touches the real project tree. These lock in the STAGE-1 (download/verify/backup) ->
+# decision gate -> STAGE-2 (systemd bootstrap OR in-process re-exec) control flow, and the
+# error path that rolls back a partially-applied same-process swap.
+import errno
+import json
+import hashlib
+import zipfile
+from unittest import mock
+
+import pytest
+
+
+API_KEY = "run-update-test-key"
+
+
+def _sha(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _key(module):
+    """The update endpoints exercised here are @auth_required."""
+    module.CONFIG["API_KEY"] = API_KEY
+
+
+@pytest.fixture(autouse=True)
+def _reset_update_state(module):
+    """`_update_state` is a module global not reset by conftest; _run_update mutates it.
+    Restore it (and the decision gate) after every test so nothing leaks between tests."""
+    yield
+    with module._update_lock:
+        module._update_state.update(phase="idle", message="", progress=0.0, error=None,
+                                    version=None, systemd=None, log=[], decide=None)
+    module._update_decision_event.clear()
+    module._update_decision_choice["choice"] = None
+
+
+def _q(path):
+    sep = "&" if "?" in path else "?"
+    return f"{path}{sep}key={API_KEY}"
+
+
+def _prime_state(module):
+    """Put the updater into the state api_update_start would leave it in before the worker runs."""
+    with module._update_lock:
+        module._update_state.update(phase="checking", message="", progress=0.0, error=None,
+                                    version=None, systemd=None, log=[], decide=None)
+
+
+def _wire_stage1(module, monkeypatch, tmp_path, manifest, live_files):
+    """Stub STAGE 1 (network + preflight + download/verify + backup) so _run_update reaches the
+    decision gate deterministically. `live_files` is {relpath: bytes} written under a tmp
+    SCRIPT_DIR so the non-systemd post-swap re-hash can read them. Returns the backup zip path."""
+    monkeypatch.setattr(module, "SCRIPT_DIR", tmp_path)
+    backups = tmp_path / "backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(module, "_BACKUP_DIR", backups)
+    monkeypatch.setattr(module, "_UPDATE_RESULT", backups / "last_update.json")
+    monkeypatch.setattr(module, "_UPDATE_LOG", backups / "last_update.log")
+    monkeypatch.setattr(module, "_UPDATE_STAGING", tmp_path / ".update_staging")
+    for rel, data in live_files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(data)
+    # The ONLY network call the worker itself makes is the manifest fetch.
+    monkeypatch.setattr(module, "_http_get_bytes",
+                        lambda url, **k: json.dumps(manifest).encode("utf-8"))
+    monkeypatch.setattr(module, "_preflight_check", lambda *a, **k: None)
+    staging = tmp_path / "stg"
+    staging.mkdir(exist_ok=True)
+    monkeypatch.setattr(module, "_download_and_verify", lambda m, **k: staging)
+    zpath = backups / "backup-test.zip"
+    zpath.write_text("zip")
+    monkeypatch.setattr(module, "_make_backup", lambda m, **k: (zpath, []))
+    return zpath
+
+
+class TestRunUpdateSystemd:
+    def test_systemd_path_launches_bootstrap(self, module, monkeypatch, tmp_path):
+        # A managed (systemd) deployment hands the swap+restart to a detached /tmp bootstrap.
+        manifest = {"version": "2.0.0",
+                    "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: None)   # -> use the service
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "proceed")
+        monkeypatch.setattr(module, "_write_bootstrap_script",
+                            lambda *a, **k: str(tmp_path / "boot.sh"))
+        popen = mock.Mock()
+        monkeypatch.setattr(module.subprocess, "Popen", popen)
+        _prime_state(module)
+
+        module._run_update()
+
+        popen.assert_called_once()                        # bootstrap detached
+        assert popen.call_args[0][0][0] == "bash"         # invoked as `bash <script>`
+        assert module._update_state["systemd"] is True
+        assert module._update_state["phase"] == "restarting"
+        # The pre-restart log was seeded to the shared log file for the post-restart modal.
+        assert module._UPDATE_LOG.exists()
+
+    def test_systemd_reason_logged_only_for_skip(self, module, monkeypatch, tmp_path):
+        # When the service IS used, the plan line must NOT carry a skip reason.
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: None)
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "proceed")
+        monkeypatch.setattr(module, "_write_bootstrap_script", lambda *a, **k: str(tmp_path / "b.sh"))
+        monkeypatch.setattr(module.subprocess, "Popen", mock.Mock())
+        _prime_state(module)
+        module._run_update()
+        joined = "\n".join(module._update_state["log"])
+        assert "systemd service" in joined
+        assert "reason:" not in joined
+
+
+class TestRunUpdateDev:
+    def test_dev_path_swaps_and_reexecs(self, module, monkeypatch, tmp_path):
+        # A non-systemd (dev) host swaps in-process then re-execs. The live file content must
+        # hash to the manifest value so the post-swap on-disk verification passes.
+        content = b"print('v2')\n"
+        manifest = {"version": "2.0.0",
+                    "files": [{"path": "a.py", "sha256": _sha(content), "bytes": len(content)}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": content})
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: "no systemd (dev host)")
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "proceed")
+        monkeypatch.setattr(module, "_swap", lambda m, **k: None)   # live file already = content
+        restart = mock.Mock()
+        monkeypatch.setattr(module, "_schedule_process_restart", restart)
+        _prime_state(module)
+
+        module._run_update()
+
+        restart.assert_called_once()
+        assert module._update_state["systemd"] is False
+        assert module._update_state["phase"] == "restarting"
+        # A 'restarting' marker (NOT success) is written BEFORE re-exec -- the fresh process
+        # promotes it at import, so a broken new build can't masquerade as success.
+        marker = json.loads(module._UPDATE_RESULT.read_text())
+        assert marker["status"] == "restarting" and marker["version"] == "2.0.0"
+        joined = "\n".join(module._update_state["log"])
+        assert "[SWAPPING]" in joined and "[VERIFYING SWAP]" in joined
+
+    def test_dev_post_swap_hash_mismatch_rolls_back(self, module, monkeypatch, tmp_path):
+        # If the on-disk file after the swap doesn't match the manifest hash, the run must roll
+        # back from the backup zip (the process still holds the OLD code, so we stay reachable).
+        live = b"actually-old\n"
+        manifest = {"version": "2.0.0",
+                    "files": [{"path": "a.py", "sha256": _sha(b"expected-new"), "bytes": 12}]}
+        zpath = _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": live})
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: "dev host")
+        # PROCEED past the staged gate, then REVERT when the post-swap failure parks the run.
+        decisions = iter(["proceed", "revert"])
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: next(decisions))
+        monkeypatch.setattr(module, "_swap", lambda m, **k: None)
+        rollback = mock.Mock()
+        monkeypatch.setattr(module, "_rollback", rollback)
+        restart = mock.Mock()
+        monkeypatch.setattr(module, "_schedule_process_restart", restart)
+        _prime_state(module)
+
+        module._run_update()
+
+        rollback.assert_called_once_with(zpath)            # armed rollback fired
+        restart.assert_not_called()                        # never re-exec a bad swap
+        assert module._update_state["phase"] == "failed"
+        assert module._update_state["error"] is not None
+        assert "[ROLLBACK]" in "\n".join(module._update_state["log"])
+
+
+class TestRunUpdateDecisionAndErrors:
+    def test_revert_at_staged_gate_applies_nothing(self, module, monkeypatch, tmp_path):
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        module._UPDATE_STAGING.mkdir()                     # exists -> revert must clean it up
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: "dev host")
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "revert")
+        swap = mock.Mock()
+        monkeypatch.setattr(module, "_swap", swap)
+        restart = mock.Mock()
+        monkeypatch.setattr(module, "_schedule_process_restart", restart)
+        _prime_state(module)
+
+        module._run_update()
+
+        swap.assert_not_called()                           # cancelled before applying
+        restart.assert_not_called()
+        assert module._update_state["phase"] == "failed"
+        assert "[REVERTED]" in "\n".join(module._update_state["log"])
+        assert not module._UPDATE_STAGING.exists()         # staged download discarded
+
+    def test_error_before_swap_parks_and_does_not_rollback(self, module, monkeypatch, tmp_path):
+        # A failure BEFORE any swap (here: backup raises) parks for the user, then reverts with
+        # NO rollback (nothing was swapped) and leaves the old version running.
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        module._UPDATE_STAGING.mkdir()                     # exists -> the error path cleans it up
+
+        def boom(*a, **k):
+            raise RuntimeError("backup device full")
+        monkeypatch.setattr(module, "_make_backup", boom)
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: "dev host")
+        decided = []
+        monkeypatch.setattr(module, "_await_decision",
+                            lambda *a, **k: decided.append(k.get("allow_proceed")) or "revert")
+        rollback = mock.Mock()
+        monkeypatch.setattr(module, "_rollback", rollback)
+        _prime_state(module)
+
+        module._run_update()
+
+        rollback.assert_not_called()                       # no swap happened -> nothing to roll back
+        assert module._update_state["phase"] == "failed"
+        assert decided == [False]                          # a hard error offers REVERT only
+        assert "backup device full" in module._update_state["error"]
+        assert not module._UPDATE_STAGING.exists()         # staged download discarded on abort
+
+
+class TestServiceSkipReason:
+    def test_service_disabled_in_config(self, module, monkeypatch):
+        monkeypatch.setitem(module.CONFIG, "SERVICE_ENABLED", "false")
+        assert "service disabled" in module._service_skip_reason()
+
+    def test_autostart_disabled_in_config(self, module, monkeypatch):
+        module.CONFIG.pop("SERVICE_ENABLED", None)          # don't trip the first check
+        monkeypatch.setitem(module.CONFIG, "AUTOSTART", "off")
+        assert "autostart disabled" in module._service_skip_reason()
+
+    def test_no_service_unit(self, module, monkeypatch, tmp_path):
+        module.CONFIG.pop("SERVICE_ENABLED", None)
+        module.CONFIG.pop("AUTOSTART", None)
+        monkeypatch.setattr(module, "_SERVICE_UNIT", tmp_path / "absent.service")
+        monkeypatch.setattr(module.shutil, "which", lambda n: "/bin/systemctl")
+        assert "no systemd service unit" in module._service_skip_reason()
+
+    def test_no_systemctl(self, module, monkeypatch, tmp_path):
+        module.CONFIG.pop("SERVICE_ENABLED", None)
+        module.CONFIG.pop("AUTOSTART", None)
+        unit = tmp_path / "u.service"
+        unit.write_text("x")
+        monkeypatch.setattr(module, "_SERVICE_UNIT", unit)
+        monkeypatch.setattr(module.shutil, "which", lambda n: None)
+        assert "systemctl not available" in module._service_skip_reason()
+
+    def test_returns_none_when_managed(self, module, monkeypatch, tmp_path):
+        module.CONFIG.pop("SERVICE_ENABLED", None)
+        module.CONFIG.pop("AUTOSTART", None)
+        unit = tmp_path / "u.service"
+        unit.write_text("x")
+        monkeypatch.setattr(module, "_SERVICE_UNIT", unit)
+        monkeypatch.setattr(module.shutil, "which", lambda n: "/bin/systemctl")
+        assert module._service_skip_reason() is None
+
+
+class TestDeploymentHasSystemd:
+    def test_true_when_unit_and_systemctl(self, module, monkeypatch, tmp_path):
+        unit = tmp_path / "u.service"
+        unit.write_text("x")
+        monkeypatch.setattr(module, "_SERVICE_UNIT", unit)
+        monkeypatch.setattr(module.shutil, "which", lambda n: "/bin/systemctl")
+        assert module._deployment_has_systemd() is True
+
+    def test_false_when_no_unit(self, module, monkeypatch, tmp_path):
+        monkeypatch.setattr(module, "_SERVICE_UNIT", tmp_path / "absent.service")
+        assert module._deployment_has_systemd() is False
+
+
+class TestAwaitDecision:
+    def test_timeout_defaults_to_revert(self, module, monkeypatch):
+        # No decision arrives (wait times out) -> the SAFE default is revert.
+        monkeypatch.setattr(module._update_decision_event, "wait", lambda t: False)
+        assert module._await_decision("msg", allow_proceed=True) == "revert"
+
+    def test_proceed_is_honored(self, module, monkeypatch):
+        def wait(t):
+            module._update_decision_choice["choice"] = "proceed"
+            return True
+        monkeypatch.setattr(module._update_decision_event, "wait", wait)
+        assert module._await_decision("msg", allow_proceed=True) == "proceed"
+
+    def test_unknown_choice_normalizes_to_revert(self, module, monkeypatch):
+        def wait(t):
+            module._update_decision_choice["choice"] = "banana"
+            return True
+        monkeypatch.setattr(module._update_decision_event, "wait", wait)
+        assert module._await_decision("msg", allow_proceed=True) == "revert"
+
+
+class TestUpdateLogAppend:
+    def test_appends_to_last_line(self, module):
+        with module._update_lock:
+            module._update_state["log"] = ["[SECTION]"]
+        module._update_log_append(" ok")
+        assert module._update_state["log"][-1] == "[SECTION] ok"
+
+    def test_starts_a_line_when_log_empty(self, module):
+        with module._update_lock:
+            module._update_state["log"] = []
+        module._update_log_append("first")
+        assert module._update_state["log"] == ["first"]
+
+
+class TestPruneBackups:
+    def test_keeps_only_newest(self, module, tmp_path):
+        import os
+        # Create 5 backups with strictly increasing mtimes so "newest" is deterministic.
+        for i in range(5):
+            z = tmp_path / f"backup-{i}.zip"
+            z.write_text("z")
+            os.utime(z, (1_000_000 + i, 1_000_000 + i))
+        module._prune_backups(keep=2, backup_dir=tmp_path)
+        remaining = sorted(p.name for p in tmp_path.glob("backup-*.zip"))
+        assert remaining == ["backup-3.zip", "backup-4.zip"]   # the 2 newest survive
+
+    def test_unlink_error_on_one_file_is_swallowed(self, module, tmp_path, monkeypatch):
+        import os
+        for i in range(3):
+            z = tmp_path / f"backup-{i}.zip"
+            z.write_text("z")
+            os.utime(z, (1_000 + i, 1_000 + i))
+        # An unlink failure on an over-cap file must not abort pruning (best-effort).
+        monkeypatch.setattr(module.Path, "unlink",
+                            lambda self, *a, **k: (_ for _ in ()).throw(OSError("busy")))
+        module._prune_backups(keep=1, backup_dir=tmp_path)     # must not raise
+
+    def test_glob_error_is_swallowed(self, module, tmp_path, monkeypatch):
+        # A failure enumerating the backups dir is swallowed (pruning is never fatal).
+        bad = mock.Mock()
+        bad.glob.side_effect = OSError("dir vanished")
+        module._prune_backups(keep=2, backup_dir=bad)          # must not raise
+
+
+class TestWriteUpdateResult:
+    def test_writes_marker_and_log(self, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path)
+        monkeypatch.setattr(module, "_UPDATE_RESULT", tmp_path / "r.json")
+        monkeypatch.setattr(module, "_UPDATE_LOG", tmp_path / "r.log")
+        module._write_update_result("success", "2.0.0", note="done", log_text="hello world")
+        r = json.loads((tmp_path / "r.json").read_text())
+        assert r["status"] == "success" and r["version"] == "2.0.0" and r["note"] == "done"
+        assert (tmp_path / "r.log").read_text() == "hello world"
+
+    def test_soft_fails_on_write_error(self, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path)
+
+        class _Bad:
+            def write_text(self, *a, **k):
+                raise OSError("read-only fs")
+        monkeypatch.setattr(module, "_UPDATE_RESULT", _Bad())
+        module._write_update_result("success", "1.0.0")    # must not raise
+
+
+class TestSwapLogging:
+    def test_swap_reports_new_and_replaced_files(self, module, tmp_path):
+        staging = tmp_path / "stg"
+        staging.mkdir()
+        (staging / "a.py").write_text("NEWDATA")
+        (staging / "b.py").write_text("BB")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("OLD")                  # existing -> "<old> →" form
+        lines = []
+        module._swap({"files": [{"path": "a.py"}, {"path": "b.py"}]},
+                     staging=staging, dest_root=root, log_fn=lines.append)
+        assert (root / "a.py").read_text() == "NEWDATA"
+        assert (root / "b.py").read_text() == "BB"
+        assert any("→" in ln for ln in lines)              # replaced-file report
+        assert any(" new " in ln for ln in lines)          # added-file report
+
+
+class TestBackupIntegrityGuards:
+    """_make_backup re-opens the freshly-written zip and PROVES it is usable for rollback
+    BEFORE returning -- a corrupt/truncated archive must be caught now, while the old files
+    are still live, not discovered mid-rollback."""
+
+    def test_raises_on_failed_testzip(self, module, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("DATA")
+        manifest = {"version": "2", "files": [{"path": "a.py"}]}
+        # Simulate CRC failure on read-back: testzip() names a bad member (non-None).
+        monkeypatch.setattr(module.zipfile.ZipFile, "testzip", lambda self: "a.py")
+        with pytest.raises(OSError, match="integrity check"):
+            module._make_backup(manifest, dest_root=root, backup_dir=tmp_path / "bk")
+
+    def test_raises_when_archived_bytes_dont_match(self, module, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("DATA")
+        manifest = {"version": "2", "files": [{"path": "a.py"}]}
+        # testzip passes, but a re-read yields different bytes than the live file -> reject.
+        monkeypatch.setattr(module.zipfile.ZipFile, "read",
+                            lambda self, name: b"tampered-on-readback")
+        with pytest.raises(OSError, match="missing/corrupt"):
+            module._make_backup(manifest, dest_root=root, backup_dir=tmp_path / "bk")
+
+
+class TestRollbackEdges:
+    def test_missing_added_json_defaults_empty(self, module, tmp_path):
+        # A zip with no __added__.json still restores its files (added defaults to []).
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("NEW")
+        z = tmp_path / "b.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("a.py", "OLD")
+        module._rollback(z, dest_root=root)
+        assert (root / "a.py").read_text() == "OLD"
+
+    def test_added_file_absent_unlink_is_swallowed(self, module, tmp_path):
+        # An 'added' file already gone -> unlink OSError is swallowed (best-effort rollback).
+        root = tmp_path / "root"
+        root.mkdir()
+        z = tmp_path / "b.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("__added__.json", json.dumps(["ghost.txt"]))
+        module._rollback(z, dest_root=root)                # must not raise
+
+
+class TestDownloadAndVerifyExtra:
+    def test_wipes_stale_staging_and_compile_checks_main(self, module, tmp_path, monkeypatch):
+        code = b"x = 1\n"
+        monkeypatch.setattr(module, "_http_get_bytes", lambda url, **k: code)
+        staging = tmp_path / "stg"
+        staging.mkdir()
+        (staging / "stale.txt").write_text("leftover from a prior run")
+        manifest = {"version": "2", "files": [
+            {"path": "generator_control.py", "sha256": _sha(code), "bytes": len(code)}]}
+        module._download_and_verify(manifest, base="http://x", staging=staging)
+        assert not (staging / "stale.txt").exists()        # stale staging wiped first
+        assert (staging / "generator_control.py").read_bytes() == code   # compiled OK, staged
+
+
+class TestHttpGetBytes:
+    def test_returns_body(self, module, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return b"hello"
+        monkeypatch.setattr(module.urllib.request, "urlopen", lambda req, timeout=30: _Resp())
+        assert module._http_get_bytes("http://x") == b"hello"
+
+    def test_rejects_oversized_body(self, module, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return b"x" * n                            # n == max_bytes+1 -> over the cap
+        monkeypatch.setattr(module.urllib.request, "urlopen", lambda req, timeout=30: _Resp())
+        with pytest.raises(ValueError, match="exceeds"):
+            module._http_get_bytes("http://x", max_bytes=16)
+
+
+class TestPreflightExtra:
+    def test_logs_each_check_and_survives_disk_usage_error(self, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        monkeypatch.setattr(module, "_UPDATE_STAGING", tmp_path / ".stg")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("x")
+
+        def raise_os(_p):
+            raise OSError("statvfs failed")
+        monkeypatch.setattr(module.shutil, "disk_usage", raise_os)
+        lines = []
+        module._preflight_check({"files": [{"path": "a.py", "bytes": 1}]},
+                                dest_root=root, log=lines.append)
+        # The per-check terminal lines were emitted...
+        assert any("writable" in ln for ln in lines)
+        # ...and a disk_usage failure degrades to "free unknown" (no raise, no disk line).
+        assert not any("free disk" in ln for ln in lines)
+
+    def test_raises_when_project_root_unwritable(self, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("x")
+        real = module.os.access
+
+        def fake_access(p, mode):
+            if str(p) == str(root):
+                return False                               # only the project root is read-only
+            return real(p, mode)
+        monkeypatch.setattr(module.os, "access", fake_access)
+        with pytest.raises(PermissionError, match="project root"):
+            module._preflight_check({"files": [{"path": "a.py"}]}, dest_root=root)
+
+    def test_raises_when_staging_unwritable(self, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        staging = tmp_path / "stagingroot" / ".update_staging"
+        monkeypatch.setattr(module, "_UPDATE_STAGING", staging)
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.py").write_text("x")
+        real = module.os.access
+
+        def fake_access(p, mode):
+            if str(p) == str(staging.parent):
+                return False
+            return real(p, mode)
+        monkeypatch.setattr(module.os, "access", fake_access)
+        with pytest.raises(PermissionError, match="staging"):
+            module._preflight_check({"files": [{"path": "a.py"}]}, dest_root=root)
+
+    def test_raises_when_target_directory_unwritable(self, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        monkeypatch.setattr(module, "_UPDATE_STAGING", tmp_path / ".stg")
+        root = tmp_path / "root"
+        sub = root / "sub"
+        sub.mkdir(parents=True)                             # the target file's parent dir
+        real = module.os.access
+
+        def fake_access(p, mode):
+            if str(p) == str(sub):
+                return False                               # only the target's dir is read-only
+            return real(p, mode)
+        monkeypatch.setattr(module.os, "access", fake_access)
+        with pytest.raises(PermissionError, match="target directory"):
+            module._preflight_check({"files": [{"path": "sub/a.py"}]}, dest_root=root)
+
+
+class TestUpdateResultEndpointEdges:
+    def test_corrupt_marker_surfaces_unknown(self, client, module, tmp_path, monkeypatch):
+        r = tmp_path / "r.json"
+        r.write_text("{ this is not json")
+        monkeypatch.setattr(module, "_UPDATE_RESULT", r)
+        monkeypatch.setattr(module, "_UPDATE_LOG", tmp_path / "absent.log")
+        d = client.get(_q("/api/update/result")).get_json()
+        assert d["pending"] is True and d["status"] == "unknown"
+
+    def test_log_read_error_is_swallowed(self, client, module, tmp_path, monkeypatch):
+        r = tmp_path / "r.json"
+        r.write_text(json.dumps({"status": "success", "version": "2"}))
+        a_dir = tmp_path / "logdir"
+        a_dir.mkdir()                                      # read_text on a directory raises
+        monkeypatch.setattr(module, "_UPDATE_RESULT", r)
+        monkeypatch.setattr(module, "_UPDATE_LOG", a_dir)
+        d = client.get(_q("/api/update/result")).get_json()
+        assert d["pending"] is True and d["log"] == ""
+
+    def test_ack_swallows_missing_files(self, client, module, tmp_path, monkeypatch):
+        monkeypatch.setattr(module, "_UPDATE_RESULT", tmp_path / "gone.json")
+        monkeypatch.setattr(module, "_UPDATE_LOG", tmp_path / "gone.log")
+        assert client.post(_q("/api/update/result/ack")).status_code == 200
+
+
+class TestUpdateCheckLoop:
+    def test_pushes_once_when_update_appears(self, module, monkeypatch):
+        waits = []
+
+        def fake_wait(t):
+            waits.append(t)
+            return len(waits) >= 2                         # False (30s), then True (3600s) -> stop
+        monkeypatch.setattr(module._monitor_stop, "wait", fake_wait)
+        monkeypatch.setattr(module, "_run_update_check",
+                            lambda: {"latest": "9.9.9", "update_available": True})
+        events = []
+        monkeypatch.setattr(module, "record_event", lambda *a, **k: events.append(a))
+        pushes = []
+        monkeypatch.setattr(module, "send_push_async", lambda *a, **k: pushes.append(a))
+        module.update_check_loop()
+        assert waits == [30, 3600]                         # 30s warm-up, then hourly
+        assert len(pushes) == 1 and len(events) == 1       # exactly one announcement
+
+    def test_stops_before_first_check(self, module, monkeypatch):
+        monkeypatch.setattr(module._monitor_stop, "wait", lambda t: True)
+        checked = []
+        monkeypatch.setattr(module, "_run_update_check", lambda: checked.append(1))
+        module.update_check_loop()                         # returns immediately
+        assert checked == []

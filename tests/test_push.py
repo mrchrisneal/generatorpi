@@ -139,6 +139,31 @@ class TestVapidAutoGeneration:
         assert priv_lines == [f"VAPID_PRIVATE_KEY={priv}"]
         assert pub_lines == [f"VAPID_PUBLIC_KEY={pub}"]
 
+    def test_upsert_appends_missing_key_line(self, module, env_paths):
+        # Only the PUBLIC line pre-exists (private value absent) -> generation fires and
+        # UPSERT replaces the public line in place BUT appends a fresh PRIVATE line (the
+        # append branch of the in-place _upsert helper).
+        env_paths.write_text("VAPID_PUBLIC_KEY=stalepub\n")
+        module.parse_env_file()
+        lines = env_paths.read_text().splitlines()
+        priv = module.CONFIG["VAPID_PRIVATE_KEY"]
+        pub = module.CONFIG["VAPID_PUBLIC_KEY"]
+        assert priv and pub
+        # Public replaced in place (single line, new value); private appended (now present).
+        assert [ln for ln in lines if ln.startswith("VAPID_PUBLIC_KEY=")] == \
+            [f"VAPID_PUBLIC_KEY={pub}"]
+        assert f"VAPID_PRIVATE_KEY={priv}" in lines
+
+    def test_generation_failure_is_swallowed(self, module, env_paths, monkeypatch):
+        # If the VAPID keypair generation raises, parse_env_file must NOT crash startup --
+        # it logs a warning and leaves push unavailable (keys stay empty).
+        def boom(*a, **k):
+            raise RuntimeError("crypto backend unavailable")
+        monkeypatch.setattr(module, "Vapid", boom)
+        env_paths.write_text("")
+        module.parse_env_file()                            # must not raise
+        assert module.CONFIG["VAPID_PRIVATE_KEY"] == ""    # generation aborted cleanly
+
     def test_existing_keys_are_not_regenerated(self, module, env_paths):
         # Idempotency: when both VAPID keys are already present, the generation guard
         # (`not CONFIG["VAPID_PRIVATE_KEY"]`) is False, so the existing values must be
@@ -389,6 +414,21 @@ class TestSendPush:
         module.add_subscription("ep-1", "p", "a")
         # Must not raise into the caller.
         module.send_push("t", "b")
+        assert module.subscription_count() == 1
+
+    def test_generic_send_error_is_swallowed_and_not_pruned(
+        self, module, tmp_store, vapid_key, monkeypatch
+    ):
+        # A non-WebPushException failure (e.g. a bug or a transport error surfacing as a plain
+        # Exception) must be swallowed per-subscription -- send_push is fired from state-transition
+        # paths + a monitor thread and MUST NOT raise. The subscription is NOT pruned (only a
+        # 404/410 from the push service means the browser is gone).
+        def fake_webpush(**kw):
+            raise ValueError("unexpected transport failure")
+
+        monkeypatch.setattr(module, "webpush", fake_webpush)
+        module.add_subscription("ep-1", "p", "a")
+        module.send_push("t", "b")   # must not raise
         assert module.subscription_count() == 1
 
     def test_noop_when_push_unavailable(self, module, tmp_store, monkeypatch):
