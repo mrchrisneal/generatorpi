@@ -2616,12 +2616,13 @@ var _pollQ=[], _pollActive=false;
 // preempt a request already IN FLIGHT (that's the one-at-a-time contract), it just loses
 // its place in line. Unknown keys default to lowest priority.
 var _pollPrio={state:0,events:1,logs:1,sys:2};
-// While an update is running we PAUSE every routine poll (state/events/logs/sys) so the ONLY
-// traffic to the Pi is the update's own /api/update/status poll -- no overhead, all sequential.
+// While an update is running we pause the HEAVY routine polls (events / logs / system history) so
+// the Pi isn't hammered -- but we KEEP the lightweight 'state' poll so the header bar (ONLINE +
+// latency) stays live even with the modal open / parked at the go/no-go. Only 'state' gets through.
 var updateActive=false;
 function pollFetch(key,path,ms){
   return new Promise(function(resolve){
-    if(updateActive){resolve(null);return;}   // routine polling is paused during an update
+    if(updateActive&&key!=='state'){resolve(null);return;}   // during an update, only 'state' polls
     for(var i=0;i<_pollQ.length;i++){          // coalesce a still-queued same-key job
       if(_pollQ[i].key===key){_pollQ[i].resolve(null);_pollQ[i].path=path;_pollQ[i].ms=ms;_pollQ[i].resolve=resolve;return;}
     }
@@ -2630,7 +2631,10 @@ function pollFetch(key,path,ms){
   });
 }
 function _drainPollQ(){
-  if(_pollActive||!_pollQ.length||updateActive)return;
+  // No updateActive gate here: pollFetch already blocks every key EXCEPT 'state' during an
+  // update, so the only jobs that reach the queue are the state polls we WANT to keep draining
+  // (they keep the header's ONLINE + latency live while the modal is open / parked).
+  if(_pollActive||!_pollQ.length)return;
   _pollActive=true;
   // Pick the highest-priority queued job (FIFO among equal priority).
   var bi=0;
@@ -3692,7 +3696,9 @@ function _pollUpdate(){
     var working=['checking','downloading','verifying','backing_up','swapping','restarting'].indexOf(s.phase)>=0;
     _updWorking(working);
     if(working){_updWarn(false);_updOk(false);}         // no banners while actively working
-    if(s.phase==='awaiting'){_showDecision(s);_updPoll=setTimeout(_pollUpdate,1200);return;}
+    // Parked on a decision -> STOP polling entirely (zero network traffic while we wait on the
+    // human). The REVERT/UPDATE click (_decide) resumes _pollUpdate; nothing changes until then.
+    if(s.phase==='awaiting'){_showDecision(s);_updPoll=null;return;}
     if(s.phase==='failed'){                              // reverted / failed -> allow closing
       updateActive=false;                               // resume routine polling (old version runs)
       _updWorking(false);_updOk(false);
@@ -5314,13 +5320,21 @@ def _run_update():
             scheme = "https" if CONFIG.get("SSL_ENABLED") else "http"
             health_url = f"{scheme}://127.0.0.1:{CONFIG['PORT']}/"
             script = _write_bootstrap_script(manifest, version, zpath, staging, health_url)
+            # Run the bootstrap at a gentle (mild) CPU niceness so it never starves the generator
+            # controller / other work while it swaps + restarts. os.nice() in preexec_fn keeps it
+            # dependency-free (no `nice` binary needed); +5 is polite but still prompt for the swap.
+            def _be_nice():
+                try:
+                    os.nice(5)
+                except OSError:
+                    pass
             # Detach the bootstrap into its own session so it outlives this process. Use ONLY
             # start_new_session=True (it calls setsid(2) directly) -- no "setsid" argv, which
             # would add a needless binary dependency whose absence fails the launch (audit NEW-6).
             # KillMode=process spares the child regardless of session anyway.
             subprocess.Popen(["bash", script],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+                             start_new_session=True, preexec_fn=_be_nice)
         else:
             with _update_lock:
                 _update_state["systemd"] = False
