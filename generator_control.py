@@ -2438,7 +2438,7 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .tl-sub{color:#6fbf90}
 /* Copy-to-clipboard button floating at the top-right of any log/terminal window. */
 .log-wrap{position:relative}
-.log-copy{position:absolute;top:6px;right:6px;z-index:3;appearance:none;cursor:pointer;
+.log-copy{position:absolute;top:10px;right:10px;z-index:3;appearance:none;cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;
   border:1px solid #2d4a3a;background:rgba(8,18,12,.9);color:#8fe0a8;border-radius:6px;
   opacity:.72;transition:opacity .15s,color .15s,border-color .15s}
@@ -2909,7 +2909,7 @@ function setLogView(v){logView=(v==='log')?'log':'events';
   if(actBtn){if(p&&p.then){p.then(function(){actBtn.classList.remove('loading');});}else{actBtn.classList.remove('loading');}}}
 
 /* ---------- actions ---------- */
-function refresh(){fetchState(function(s){if(s)applyState(s);});loadLogFeed();setTimeout(_placeCopyBtns,60);}
+function refresh(){fetchState(function(s){if(s)applyState(s);});loadLogFeed();}
 function settle(target){var n=0;(function step(){setTimeout(function(){fetchState(function(s){if(s)applyState(s);if((s&&s.running===target)||++n>20){busy=false;sw.disabled=false;if(s)applyState(s);loadLogFeed();}else step();});},600);})();}
 var sw=$('powerSwitch');
 var confirmOverlayEl=$('confirmOverlay');
@@ -3637,7 +3637,6 @@ function _renderTerm(el,logArr){
   var prev=el.scrollTop;
   el.innerHTML=(logArr&&logArr.length)?_termHTML(logArr):'';
   el.scrollTop=_termFollow?el.scrollHeight:prev;   // follow only while pinned to the bottom
-  _placeCopyBtns();                                // reposition COPY clear of any scrollbar
 }
 // Any scroll away from the bottom stops the auto-follow; returning to the bottom resumes it.
 $('updChangelog').addEventListener('scroll',function(){
@@ -3666,17 +3665,6 @@ document.addEventListener('click',function(e){
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,fb);}
   else{fb();}
 });
-// Keep each COPY button clear of the scrollbar: nudge it left by the scroll box's scrollbar
-// width (0 when none) so it's equidistant from the top/right when there's no bar, and never
-// overlaps the bar when there is one.
-function _placeCopyBtns(){
-  var wraps=document.querySelectorAll('.log-wrap');
-  for(var i=0;i<wraps.length;i++){
-    var box=wraps[i].querySelector('.upd-scroll,.log'),btn=wraps[i].querySelector('.log-copy');
-    if(box&&btn){var sb=box.offsetWidth-box.clientWidth;btn.style.right=(6+(sb>0?sb:0))+'px';}
-  }
-}
-window.addEventListener('resize',_placeCopyBtns);
 function openUpdateModal(){
   var cl=$('updChangelog'),doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   cl.textContent='Loading changelog…';cl.style.display='';
@@ -3690,7 +3678,6 @@ function openUpdateModal(){
     if(d&&d.changelog){cl.textContent=d.changelog;}
     else{cl.textContent='Changelog unavailable'+((d&&d.error)?(' — '+d.error):'')+'.';}
     note.textContent='All files are backed up to '+((d&&d.backup_dir)||'backups/')+' before updating.';
-    _placeCopyBtns();
   }).catch(function(e){cl.textContent='Changelog unavailable — request failed'+(e?(' ('+e+')'):'')+'.';});
 }
 // CANCEL doubles as REVERT while the run is parked on a decision; else it only closes when idle.
@@ -3794,7 +3781,7 @@ function checkUpdateResult(){
     // Same colourised terminal as the live view, showing the FULL captured log; start at the
     // TOP so the reader can follow it from the beginning.
     var lg=$('updResultLog');lg.innerHTML=_termHTML(String(d.log||'(no log captured)').split('\\n'));lg.scrollTop=0;
-    _ovShow('updResultModal');_placeCopyBtns();
+    _ovShow('updResultModal');
   }).catch(function(){});
 }
 $('updResultDismiss').addEventListener('click',function(){
