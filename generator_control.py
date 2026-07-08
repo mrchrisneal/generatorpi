@@ -1972,10 +1972,38 @@ button{font-family:inherit}
 .rivet.bl{bottom:11px;left:11px}.rivet.br{bottom:11px;right:11px}
 
 /* ---- header placard ---- */
-.placard{padding:16px 18px;border-radius:11px;
+.placard{padding:16px 18px;border-radius:11px;position:relative;overflow:hidden;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
   background:linear-gradient(180deg,#2f2f34,#1c1c1f);border:1px solid #0a0a0b;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.06),inset 0 -2px 4px rgba(0,0,0,.5),0 1px 2px rgba(0,0,0,.6)}
 .placard h1{font:700 19px sans-serif;letter-spacing:.16em;color:#e8e4dc;text-shadow:0 1px 0 #000}
+/* Placard net indicator -- same colours/layout as the sticky header's .sh-net (state stacked
+   over the latency ms + pending spinner, right-aligned), so the top of the page mirrors it. */
+/* FIXED 32px height reserves the full two-line area (state 14 + gap 3 + ms 14) so the placard
+   can NEVER change height when the ms line is blank (e.g. RECONNECTING) -- the state text stays
+   put and the bottom line's space is always held. A hard height (not min-height) rules out any
+   sub-pixel jump. */
+.ph-net{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex:0 0 auto;height:32px;
+  color:#8aa;font:600 14px/1 var(--mono,monospace);letter-spacing:.5px}
+.ph-net.ok{color:#7ce0b0}.ph-net.slow{color:#ffdd55}.ph-net.vslow{color:#ffa347}.ph-net.bad{color:#ff8a6a}
+/* Pending spinner group: reuses the sticky header's nb-pend/nb-ico/nb-ms; fades in only while
+   requests are in flight (gated by .placard.syncing, mirroring .stickyhdr.syncing). */
+.ph-net .nb-pend{display:inline-flex;align-items:center;gap:4px;color:#b8b4ac;font-weight:700;
+  opacity:0;transition:opacity .28s ease}
+.placard.syncing .nb-pend{opacity:1}
+.ph-net .nb-ico{width:13px;height:13px;display:block}
+.placard.syncing .nb-ico{animation:nbspin .9s linear infinite}
+.ph-net .nb-ms{color:#b8b4ac;font-weight:600}
+.ph-net.bad #nbStateTop{animation:nbpulse 1s infinite}
+/* Last-ditch loading bar at the BOTTOM of the placard -- same sliding shimmer + timing as the
+   sticky header's .sh-prog (revealed only when a request has been in flight >=1s). The track
+   is horizontally masked so the bar FADES OUT as it nears the left/right edges of the header. */
+.ph-prog{position:absolute;left:0;right:0;bottom:0;height:2px;pointer-events:none;overflow:hidden;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 18%,#000 82%,transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 18%,#000 82%,transparent)}
+.ph-prog-bar{position:absolute;bottom:0;left:-30%;height:2px;width:30%;
+  background:linear-gradient(90deg,transparent,#7ce0b0,transparent);opacity:0}
+.placard.slow .ph-prog-bar{opacity:.9;animation:shslide 1.15s linear infinite}
 
 /* ---- compact sticky header (slides in past the placard) ---- brushed-metal to match .panel */
 .stickyhdr{position:fixed;top:0;left:0;right:0;z-index:60;display:flex;align-items:center;
@@ -2525,7 +2553,8 @@ function netFetch(path,opts){
   if(NET.pending===0){                     // first request in flight -> arm the slow-line timer
     clearTimeout(NET._slowTimer);
     NET._slowTimer=setTimeout(function(){  // still pending after 1s -> reveal the last-ditch line
-      if(NET.pending>0){var h=$('stickyHdr');if(h)h.classList.add('slow');}
+      if(NET.pending>0){var h=$('stickyHdr');if(h)h.classList.add('slow');
+        var p=$('placard');if(p)p.classList.add('slow');}   // same line on the top placard
     },1000);
   }
   NET.pending++;netRender();
@@ -2535,6 +2564,7 @@ function netFetch(path,opts){
     if(NET.pending===0){                   // nothing in flight -> disarm timer + hide the line
       clearTimeout(NET._slowTimer);
       var h=$('stickyHdr');if(h)h.classList.remove('slow');
+      var p=$('placard');if(p)p.classList.remove('slow');   // clear the placard line too
     }
     netRender();
   }
@@ -3276,6 +3306,13 @@ function netRender(){
   var hdr=$('stickyHdr');if(hdr)hdr.classList.toggle('syncing',NET.pending>0);
   $('nbState').textContent=state;
   $('nbMs').textContent=(ms!=null&&!reconnecting)?(ms+' ms'):'';
+  // Mirror the same state onto the top placard indicator so the top-of-page header shows
+  // ONLINE + ms + the pending spinner too (kept in sync from the one NET source).
+  var indTop=$('netIndTop');
+  if(indTop){indTop.className='ph-net '+cls;
+    $('nbStateTop').textContent=state;
+    $('nbMsTop').textContent=(ms!=null&&!reconnecting)?(ms+' ms'):'';}
+  var pc=$('placard');if(pc)pc.classList.toggle('syncing',NET.pending>0);
 }
 // Reveal the sticky header once scrolled past the placard.
 (function(){var hdr=$('stickyHdr');if(!hdr)return;
@@ -3618,8 +3655,17 @@ HTML_TEMPLATE_BODY = """
   <span class="rivet tl"></span><span class="rivet tr"></span>
   <span class="rivet bl"></span><span class="rivet br"></span>
 
-  <!-- Header placard -->
-  <div class="placard"><h1>GeneratorPi</h1></div>
+  <!-- Header placard: brand left, live connection/latency indicator right (mirrors the
+       sticky header's net readout so the top of the page shows ONLINE + ms + the pending
+       spinner + the >1s loading bar; the Generator ON/OFF subtitle is omitted here). -->
+  <div class="placard" id="placard">
+    <span class="ph-prog"><span class="ph-prog-bar"></span></span>
+    <h1>GeneratorPi</h1>
+    <span class="ph-net ok" id="netIndTop">
+      <span id="nbStateTop">&mdash;</span>
+      <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></span><span class="nb-ms" id="nbMsTop"></span></span>
+    </span>
+  </div>
 
   <div class="body">
     <!-- ===== LEFT COLUMN ===== -->
