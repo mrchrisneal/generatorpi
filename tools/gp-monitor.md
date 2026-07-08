@@ -25,22 +25,29 @@ cat /home/pi/gp-monitor.log
 
 ## What each column means
 
+The samples print as a table — a header row, a `---` divider, then one row per tick:
+
 ```
-clock t=<sec> L=<load> f=<freeMB> gw=<ping>ms 110+=<n> sig=<dBm> rate=<Mbit>
-      rtry+=<n> fail+=<n> bcn=<n> thr=<hex> v=<volts> T=<tempC>  <top-2 CPU procs>  <<<flags
+clock     t(s)   load  freeMB  gw(ms)  110+   sig    rate  rtry+  fail+    bcn      thr   volt   temp  top-2 CPU
 ```
 
-| Field | Meaning |
+| Column | Meaning |
 |---|---|
-| `gw` | ping to the default gateway from the Pi (`LOSS` = timed out) — the Pi's own link health |
+| `clock` / `t(s)` | wall-clock time · seconds since the run started |
+| `load` / `freeMB` | 1-minute load average · `MemAvailable` in MB |
+| `gw(ms)` | ping to the default gateway from the Pi (`LOSS` = timed out) — the Pi's own link health |
 | `110+` | new `brcmfmac` `-110` control-channel timeouts since last sample (driver/firmware jam) |
 | `sig` | Wi-Fi signal, dBm (`-1` = the query itself couldn't get through = link fully dead now) |
 | `rate` | TX data rate, Mbit/s — **collapsing rate at good signal = airtime congestion** |
-| `rtry+/fail+` | TX retries / failed frames since last sample |
+| `rtry+` / `fail+` | TX retries / failed frames since last sample |
+| `bcn` | beacon-loss counter |
 | `thr` | `vcgencmd` throttle flag — **`0x0` = healthy**, anything else = under-voltage/thermal |
-| `v`,`T` | core voltage / SoC temperature |
+| `volt` / `temp` | core voltage · SoC temperature (°C) |
+| `top-2 CPU` | the two busiest processes this tick, then any flags |
 
-Flags: `<<<STALL` (ping >1 s or lost) · `<<<THROTTLE/UV!` (power/thermal!) · `<<<-110storm`.
+Flags (appended to a row): `<<<STALL` (ping >1 s or lost) · `<<<THROTTLE/UV!` (power/thermal!) · `<<<-110storm` (≥3 driver timeouts this tick).
+
+The START/END **context** blocks print as tables too: a **link** summary (SSID with its **channel**, frequency, BSSID, signal, rate) and a **neighbour scan sorted by channel** so co-channel congestion is obvious at a glance.
 
 ## How to read it (rule things out with the data)
 
@@ -108,56 +115,104 @@ same tool, apples-to-apples.
 
 ---
 
-## Example run (verbatim)
+## Example run
 
-A real 90-second capture from a Pi Zero W in a congested 2.4 GHz environment
-(`sudo python3 gp-monitor.py 90`). This is exactly what the tool prints — nothing edited.
+A representative 60-second capture (`sudo python3 gp-monitor.py 60`). This is the tool's real output —
+**network identifiers (SSIDs, BSSID) have been replaced with placeholders** (`MyNetwork`,
+`MyNetwork-IoT`, `Neighbor-A`…`Neighbor-H`, `AA:BB:CC:DD:EE:FF`); nothing else is edited.
 
-Read the story in the columns: `thr=0x0` and `v=1.35` never move (**power is fine**), `sig` holds at
-~-62/-63 dBm (**signal is fine**), CPU load is low, and there are no deauth events — yet `gw` swings from
-single-digit milliseconds to `LOSS`. That combination is the fingerprint of **2.4 GHz airtime congestion**,
-corroborated by the START/END neighbour scans showing the AP (`ASQUARED`) sharing channel 1 with other
-strong networks.
+The link was healthy across this window — `gw(ms)` stays in the single digits, `thr=0x0` and `volt=1.35`
+never move (**power is fine**), and `sig` holds at ~-60 dBm (**signal is fine**). The story here is in
+the **neighbour scan**: the Pi is on **channel 11**, which it shares with two other strong networks — a
+classic setup for intermittent **2.4 GHz airtime congestion** under load. When a stall *does* hit you'd
+see `gw(ms)` jump to `LOSS` / four digits with a `<<<STALL` flag while `sig`/`thr`/`volt` hold steady —
+the fingerprint that rules out power, range, and compute in one glance.
 
 ```text
-# gp-monitor start 2026-07-07 03:47:15  iface=wlan0 gw=192.168.1.1 HZ=100 dur=90s step=5s
+# gp-monitor start 2026-07-08 17:15:04  iface=wlan0 gw=192.168.1.1 HZ=100 dur=60s step=5s
 # ---- START CONTEXT ----
-# iw link: Connected to 22:0b:8b:50:54:55 (on wlan0) SSID: ASQUARED freq: 2412.0 signal: -63 dBm rx bitrate: 43.3 MBit/s tx bitrate: 43.3 MBit/s dtim period: 1 beacon int: 100
-# nmcli: connected:full
-# 2.4GHz neighbours (CHAN SIGNAL SSID) -- co-channel congestion check:
-#   1     62      ASQUARED
-#   1     67      ASIOT
-#   6     69      --
-#   6     70      --
-#   8     69      WTC#E_6C
-#   9     80      WTC#E_2.4GEXT
-#   11    69      --
-#   11    72      ASIOT
-#   ...(15+ networks across the band)...
+# LINK          VALUE
+# ------------  -----------------
+# SSID          MyNetwork
+# Channel       11
+# Frequency     2462.0 MHz
+# BSSID (AP)    AA:BB:CC:DD:EE:FF
+# Signal        -60 dBm
+# RX / TX rate  19.5 / 57.7 Mbit
+# NM state      connected:full
+# neighbours (sorted by channel) -- co-channel congestion check:
+#   CHAN  SIGNAL  SSID
+#   ----  ------  -------------
+#      1      60  --
+#      1      59  MyNetwork
+#      1      15  --
+#      1      14  --
+#      6      65  --
+#      6      65  --
+#      6      47  Neighbor-A
+#      6      24  --
+#      7      40  Neighbor-D
+#      8      77  Neighbor-C
+#      8      59  Neighbor-D
+#      9      85  Neighbor-B
+#     11      70  MyNetwork
+#     11      67  MyNetwork-IoT
+#     11      14  Neighbor-H
 # recent deauth/disconnect (journal, confounder check):
 # recent -110 (dmesg):
-#   [ 7102.735121] ieee80211 phy0: brcmf_proto_bcdc_query_dcmd: brcmf_proto_bcdc_msg failed w/status -110
-# cols: clock t load free(MB) gwPing 110+ sig rate rtry+ fail+ bcn THROTTLE volt temp  top2cpu
-03:47:23 t=   5 L=0.59 f=273 gw=    68ms 110+= 0 sig= -63 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  tailscaled:4% python3:3%
-03:47:28 t=  10 L=0.54 f=273 gw=     6ms 110+= 0 sig= -63 rate= 43.3 rtry+= -1 fail+=  1 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:3% tailscaled:2%
-03:47:36 t=  15 L=0.53 f=273 gw=LOSS ms 110+= 0 sig= -64 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.1  python3:3% tailscaled:3% <<<STALL
-03:47:41 t=  23 L=0.65 f=273 gw=    95ms 110+= 0 sig= -62 rate= 52.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:2% tailscaled:1%
-03:47:47 t=  28 L=0.60 f=273 gw=    99ms 110+= 0 sig= -63 rate= 39.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:3% tailscaled:2%
-03:47:52 t=  33 L=0.55 f=273 gw=    67ms 110+= 0 sig= -63 rate= 28.8 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.6  python3:3% tailscaled:2%
-03:47:58 t=  39 L=0.59 f=273 gw=   372ms 110+= 0 sig= -63 rate= 26.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:3% tailscaled:2%
-03:48:04 t=  45 L=0.54 f=273 gw=  1262ms 110+= 0 sig= -63 rate= 28.8 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:3% python3:3% <<<STALL
-03:48:12 t=  51 L=0.45 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 28.8 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:2% avahi-daemon:2% <<<STALL
-03:48:17 t=  59 L=0.42 f=273 gw=    90ms 110+= 0 sig= -62 rate= 39.0 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:2% tailscaled:1%
-03:48:25 t=  64 L=0.38 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:4% python3:3% <<<STALL
-03:48:31 t=  71 L=0.33 f=273 gw=  1340ms 110+= 2 sig= -63 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=33.1  tailscaled:4% python3:2% <<<STALL
-03:48:37 t=  78 L=0.30 f=273 gw=    31ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  python3:2% tailscaled:1%
-03:48:45 t=  83 L=0.27 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:11% python3:3% <<<STALL
-03:48:53 t=  92 L=0.23 f=273 gw=LOSS ms 110+= 0 sig= -62 rate= 43.3 rtry+= -1 fail+=  0 bcn=-1 thr=0x0 v=1.35 T=32.6  tailscaled:4% python3:2% <<<STALL
+clock      t(s)   load  freeMB  gw(ms)  110+   sig    rate  rtry+  fail+    bcn      thr   volt   temp  top-2 CPU
+--------  -----  -----  ------  ------  ----  ----  ------  -----  -----  -----  -------  -----  -----  ---------
+17:15:11      5   0.62     264      21     0   -60    57.7     -1      0     -1      0x0   1.35   39.0  avahi-daemon:4% python3:3%
+17:15:17     10   0.65     264       8     0   -61    57.7     -1      0     -1      0x0   1.35   38.5  python3:3% avahi-daemon:1%
+17:15:22     15   0.60     264      10     0   -60    57.7     -1      0     -1      0x0   1.35   39.0  python3:3% avahi-daemon:2%
+17:15:27     20   0.55     264       7     0   -60    52.0     -1      0     -1      0x0   1.35   39.0  python3:3% python3:2%
+17:15:33     26   0.51     264       5     0   -60    57.7     -1      0     -1      0x0   1.35   39.0  python3:3% tailscaled:2%
+17:15:38     31   0.47     264       6     0   -61    57.7     -1      0     -1      0x0   1.35   39.0  python3:3% tailscaled:2%
+17:15:43     36   0.43     264       8     0   -60    58.5     -1      0     -1      0x0   1.35   38.5  python3:3% tailscaled:2%
+17:15:49     42   0.39     264      14     0   -60    65.0     -1      0     -1      0x0   1.35   39.0  python3:3% tailscaled:1%
+17:15:54     47   0.36     264       6     0   -60    65.0     -1      0     -1      0x0   1.35   39.0  python3:3% avahi-daemon:2%
+17:15:59     52   0.33     264       6     0   -60    65.0     -1      0     -1      0x0   1.35   39.0  python3:3% tailscaled:2%
+17:16:05     58   0.31     264       5     0   -61    65.0     -1      0     -1      0x0   1.35   39.0  python3:3% avahi-daemon:2%
+17:16:10     63   0.36     264      20     0   -60    65.0     -1      0     -1      0x0   1.35   39.0  avahi-daemon:4% python3:3%
 # ---- END CONTEXT ----
-# 2.4GHz neighbours: channel 1 still shared by ASQUARED(64) + ASIOT(55); band packed 6/7/8/9/11
-# recent deauth/disconnect (journal, confounder check):    <-- none (client stayed associated)
-# gp-monitor done 2026-07-07 03:48:57
+# LINK          VALUE
+# ------------  -----------------
+# SSID          MyNetwork
+# Channel       11
+# Frequency     2462.0 MHz
+# BSSID (AP)    AA:BB:CC:DD:EE:FF
+# Signal        -60 dBm
+# RX / TX rate  13.0 / 65.0 Mbit
+# NM state      connected:full
+# neighbours (sorted by channel) -- co-channel congestion check:
+#   CHAN  SIGNAL  SSID
+#   ----  ------  -------------
+#      1      59  --
+#      1      49  MyNetwork
+#      1      25  Neighbor-G
+#      1      15  --
+#      1      14  --
+#      6      65  --
+#      6      65  --
+#      6      47  Neighbor-A
+#      6      25  Neighbor-E
+#      6      24  --
+#      7      37  Neighbor-D
+#      8      74  Neighbor-C
+#      8      60  Neighbor-D
+#      9      85  Neighbor-B
+#     11      70  MyNetwork
+#     11      67  MyNetwork-IoT
+#     11      14  Neighbor-H
+# recent deauth/disconnect (journal, confounder check):
+# recent -110 (dmesg):
+# gp-monitor done 2026-07-08 17:16:12
 ```
 
-*(`rtry+`/`fail+`/`bcn` show `-1` when the station-stats query itself is momentarily blocked by the stall —
+Every column holds its width, so the header, the `---` divider, and every row line up — including `LOSS`
+rows, and on larger Pis where free-MB is four digits or Wi-Fi rates exceed 1000. The context blocks
+render as tables too: the **link** table shows the SSID *with its channel*, and the **neighbours** table
+is **sorted by channel** so co-channel congestion jumps out.
+
+*(`rtry+`/`fail+`/`bcn` show `-1` when the station-stats query itself is momentarily blocked by a stall —
 itself a signal that the link is jammed at that instant.)*

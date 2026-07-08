@@ -57,13 +57,18 @@
 #
 #  READING THE OUTPUT
 #  ------------------
-#    Each line: clock t=<sec> L=<load> f=<freeMB> gw=<ping>ms 110+=<n> sig=<dBm>
-#               rate=<Mbit> rtry+=<n> fail+=<n> bcn=<n> thr=<hex> v=<volts>
-#               T=<tempC>  <top-2 CPU procs>   [<<<flags>>>]
+#    After the START context, the samples print as a TABLE: a header row, a '-' divider, then one
+#    row per tick. Columns (left to right):
+#      clock  wall time          t(s)   seconds since start     load    1-min loadavg
+#      freeMB MemAvailable (MB)   gw(ms) gateway ping (LOSS=lost)  110+   new -110 driver timeouts
+#      sig    signal (dBm)        rate   TX rate (Mbit)          rtry+/fail+  TX retries/failed / tick
+#      bcn    beacon loss         thr    throttle flag (0x0=ok)  volt    core volts   temp SoC degC
+#    then top-2 CPU (the two busiest processes this tick) and any flags.
 #    Flags: <<<STALL (ping >1s or lost) · <<<THROTTLE/UV! (voltage/thermal!) ·
 #           <<<-110storm (>=3 driver timeouts this tick).
-#    A row of sig=-1/rate=-1 means the stall was so complete the stats query
-#    itself couldn't get through -- itself a strong "link is dead right now" signal.
+#    A sig=-1/rate=-1 row means the stall was so complete the stats query itself couldn't get
+#    through -- itself a strong "link is dead right now" signal. The START/END context blocks show
+#    the current link (SSID + its channel) and a neighbour scan SORTED BY CHANNEL for congestion.
 #
 #  See gp-monitor.md (next to this file) for a checklist of the Pi + AP config
 #  knobs that actually move Wi-Fi reliability.
@@ -166,14 +171,78 @@ def comm(pid):
     except Exception:
         return pid
 
+def freq_to_chan(mhz):
+    """Wi-Fi centre frequency (MHz) -> channel number, or '?' if it can't be mapped."""
+    try:
+        f = int(round(float(mhz)))
+    except Exception:
+        return '?'
+    if f == 2484:            return 14                  # 2.4 GHz ch 14 (Japan)
+    if 2412 <= f <= 2472:    return (f - 2412) // 5 + 1  # 2.4 GHz ch 1-13
+    if 5160 <= f <= 5885:    return (f - 5000) // 5      # 5 GHz
+    if 5955 <= f <= 7115:    return (f - 5950) // 5       # 6 GHz (Wi-Fi 6E)
+    return '?'
+
+def render_table(headers, rows, aligns=None, prefix="", sep="  "):
+    """Render an aligned text table -- header row, a '-' divider sized to the columns, then the data
+    rows -- and return the list of lines. Each column's width is the widest of its header and its
+    cells, so a header ALWAYS fits its column. `aligns` is a per-column '<'/'>' list (default: first
+    column left, the rest right). `prefix` is prepended to every line (e.g. '# ' inside a comment)."""
+    n = len(headers)
+    aligns = aligns or (['<'] + ['>'] * (n - 1))
+    w = [len(str(headers[i])) for i in range(n)]
+    for r in rows:                                        # widen each column to fit its widest cell
+        for i in range(n):
+            w[i] = max(w[i], len(str(r[i])))
+    def fmt(cells):
+        return prefix + sep.join(f"{str(cells[i]):{aligns[i]}{w[i]}}" for i in range(n))
+    lines = [fmt(headers), prefix + sep.join("-" * w[i] for i in range(n))]
+    lines += [fmt(r) for r in rows]
+    return lines
+
 def context(tag):
     print(f"# ---- {tag} CONTEXT ----", flush=True)
-    print("# iw link:", " ".join(sh(['iw', 'dev', IFACE, 'link']).split()), flush=True)
-    print("# nmcli:", sh(['nmcli', '-t', '-f', 'STATE,CONNECTIVITY', 'general']).strip(), flush=True)
-    print("# 2.4GHz neighbours (CHAN SIGNAL SSID) -- co-channel congestion check:", flush=True)
+    # --- link summary as a label/value table; the CHANNEL is shown right next to the SSID ---
+    raw = " ".join(sh(['iw', 'dev', IFACE, 'link']).split())
+    nm = sh(['nmcli', '-t', '-f', 'STATE,CONNECTIVITY', 'general']).strip()
+    if 'Connected to' in raw:
+        def g(pat, d='?'):
+            m = re.search(pat, raw)
+            return m.group(1) if m else d
+        bssid = g(r'Connected to ([0-9a-fA-F:]{17})')
+        ssid  = g(r'SSID:\s*(.+?)\s+freq:')
+        freq  = g(r'freq:\s*([\d.]+)')
+        sig   = g(r'signal:\s*(-?\d+)')                     # pulled out: no backslashes inside f-strings
+        rxr   = g(r'rx bitrate:\s*([\d.]+)')
+        txr   = g(r'tx bitrate:\s*([\d.]+)')
+        link_rows = [
+            ["SSID",         ssid],
+            ["Channel",      freq_to_chan(freq)],           # <-- channel next to the network name
+            ["Frequency",    f"{freq} MHz"],
+            ["BSSID (AP)",   bssid],
+            ["Signal",       f"{sig} dBm"],
+            ["RX / TX rate", f"{rxr} / {txr} Mbit"],
+            ["NM state",     nm or '?'],
+        ]
+    else:
+        link_rows = [["Link", "not connected"], ["NM state", nm or '?']]
+    for l in render_table(["LINK", "VALUE"], link_rows, aligns=['<', '<'], prefix="# "):
+        print(l, flush=True)
+    # --- neighbouring APs, SORTED BY CHANNEL (numeric), as a headed table ---
+    print("# neighbours (sorted by channel) -- co-channel congestion check:", flush=True)
     scan = sh(['nmcli', '-f', 'CHAN,SIGNAL,SSID', 'dev', 'wifi', 'list'], t=8)
-    for l in sorted(scan.splitlines()[1:])[:22]:
-        print("#   " + l.rstrip(), flush=True)
+    nb = []
+    for l in scan.splitlines()[1:]:                       # skip nmcli's own header row
+        parts = l.strip().split(None, 2)                  # CHAN, SIGNAL, rest=SSID (may hold spaces)
+        if len(parts) < 2:
+            continue
+        nb.append((parts[0], parts[1], parts[2] if len(parts) > 2 else '--'))
+    def _num(v, d=9999):                                  # numeric sort key ('--'/junk sorts last)
+        try:    return int(v)
+        except Exception: return d
+    nb.sort(key=lambda r: (_num(r[0]), -_num(r[1], -1)))  # by channel, then strongest signal first
+    for l in render_table(["CHAN", "SIGNAL", "SSID"], nb[:22], aligns=['>', '>', '<'], prefix="#   "):
+        print(l, flush=True)
     print("# recent deauth/disconnect (journal, confounder check):", flush=True)
     j = sh(['journalctl', '-u', 'NetworkManager', '-u', 'wpa_supplicant', '--since', '-8 min', '--no-pager'], t=8)
     for l in [x for x in j.splitlines() if re.search(r'deauth|disassoc|disconn|CTRL-EVENT-DISCON', x, re.I)][-5:]:
@@ -182,10 +251,23 @@ def context(tag):
     for l in [x for x in sh(['dmesg']).splitlines() if '-110' in x][-3:]:
         print("#   " + l, flush=True)
 
+# Per-tick telemetry table. The header, divider and every data row are built from this ONE column
+# spec (label, fixed width, alignment), so they can never drift out of alignment. Widths hold
+# realistic maxima; the free-form top-2-CPU/flags text is the last, unbounded column.
+TICK_COLS = [("clock", 8, '<'), ("t(s)", 5, '>'), ("load", 5, '>'), ("freeMB", 6, '>'),
+             ("gw(ms)", 6, '>'), ("110+", 4, '>'), ("sig", 4, '>'), ("rate", 6, '>'),
+             ("rtry+", 5, '>'), ("fail+", 5, '>'), ("bcn", 5, '>'), ("thr", 7, '>'),
+             ("volt", 5, '>'), ("temp", 5, '>')]
+def tick_line(vals):
+    return "  ".join(f"{str(vals[i]):{TICK_COLS[i][2]}{TICK_COLS[i][1]}}" for i in range(len(TICK_COLS)))
+TICK_HEADER = tick_line([c[0] for c in TICK_COLS]) + "  top-2 CPU"
+TICK_DIVIDER = "  ".join("-" * c[1] for c in TICK_COLS) + "  ---------"
+
 GW = default_gw()
 print(f"# gp-monitor start {time.strftime('%Y-%m-%d %H:%M:%S')}  iface={IFACE} gw={GW} HZ={HZ} dur={DURATION}s step={STEP}s", flush=True)
 context("START")
-print("# cols: clock t load free(MB) gwPing 110+ sig rate rtry+ fail+ bcn THROTTLE volt temp  top2cpu", flush=True)
+print(TICK_HEADER, flush=True)
+print(TICK_DIVIDER, flush=True)
 
 prev110 = dmesg_110()
 prevtx = wlan_tx_err()
@@ -227,7 +309,8 @@ while time.time() - t0 < DURATION:
     prevcpu = cur
     deltas.sort(reverse=True)
     top = " ".join(f"{comm(pid)}:{pct:.0f}%" for pct, pid in deltas[:2])
-    pstr = "LOSS " if (p is None or p < 0) else f"{p:6.0f}"
+    # Gateway ping cell: "LOSS" on timeout, else integer ms (the table renderer right-aligns it).
+    gwcell = "LOSS" if (p is None or p < 0) else f"{p:.0f}"
     flags = ""
     if p is not None and (p < 0 or p > 1000):
         flags += " <<<STALL"
@@ -235,9 +318,10 @@ while time.time() - t0 < DURATION:
         flags += " <<<THROTTLE/UV!"
     if d110 >= 3:
         flags += " <<<-110storm"
-    print(f"{time.strftime('%H:%M:%S')} t={int(now-t0):>4} L={load1:>4} f={fm:>3} gw={pstr}ms 110+={d110:>2} "
-          f"sig={rf['sig']:>4} rate={rf['rate']:>5} rtry+={drtry:>3} fail+={dfail:>3} bcn={rf['bcn']:>2} "
-          f"thr={thr} v={volt} T={temp}  {top}{flags}", flush=True)
+    # Build the row from the SAME TICK_COLS spec as the header/divider, so columns always line up.
+    vals = [time.strftime('%H:%M:%S'), int(now - t0), load1, fm, gwcell, d110,
+            rf['sig'], rf['rate'], drtry, dfail, rf['bcn'], thr, volt, temp]
+    print(f"{tick_line(vals)}  {top}{flags}", flush=True)
 
 context("END")
 print(f"# gp-monitor done {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
