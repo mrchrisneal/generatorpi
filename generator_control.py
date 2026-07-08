@@ -897,8 +897,13 @@ def _generate_self_signed():
     import subprocess
 
     cert_days = CONFIG["SSL_CERT_DAYS"]
+    # ECDSA P-256 (prime256v1) key, NOT RSA-2048: on a weak ARM core (Pi Zero 2 W) the server's
+    # per-handshake private-key operation and the overall TLS handshake are dramatically cheaper
+    # with an EC key, which matters because every un-kept-alive HTTPS poll pays a handshake. P-256
+    # is universally supported by browsers and gives ~128-bit security. -nodes = unencrypted key.
     base = [
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
+        "openssl", "req", "-x509",
+        "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
         "-keyout", str(SSL_KEY_PATH),
         "-out", str(SSL_CERT_PATH),
         "-days", str(cert_days),
@@ -2695,7 +2700,7 @@ function pollFetch(key,path,ms){
     for(var i=0;i<_pollQ.length;i++){          // coalesce a still-queued same-key job
       if(_pollQ[i].key===key){_pollQ[i].resolve(null);_pollQ[i].path=path;_pollQ[i].ms=ms;_pollQ[i].resolve=resolve;return;}
     }
-    _pollQ.push({key:key,path:path,ms:ms,resolve:resolve});
+    _pollQ.push({key:key,path:path,ms:ms,resolve:resolve,t:Date.now()});
     _drainPollQ();
   });
 }
@@ -2705,12 +2710,18 @@ function _drainPollQ(){
   // (they keep the header's ONLINE + latency live while the modal is open / parked).
   if(_pollActive||!_pollQ.length)return;
   _pollActive=true;
-  // Pick the highest-priority queued job (FIFO among equal priority).
-  var bi=0;
-  for(var i=1;i<_pollQ.length;i++){
-    var pi=(_pollPrio[_pollQ[i].key]==null?9:_pollPrio[_pollQ[i].key]);
-    var pb=(_pollPrio[_pollQ[bi].key]==null?9:_pollPrio[_pollQ[bi].key]);
-    if(pi<pb)bi=i;
+  // Pick the most-urgent job by EFFECTIVE priority, with anti-starvation aging. A job's effective
+  // priority improves (its number drops) by one level for each full refresh interval it has waited,
+  // so a constantly re-fired high-prio 'state' can NEVER perpetually starve 'events'/'logs'/'sys':
+  // whatever has waited long enough ages to the front and gets its turn. Ties break FIFO (earliest
+  // enqueued). When the link is fast (nothing waits long) this behaves exactly like strict priority.
+  var _now=Date.now(), _age=Math.max(1000,refreshMs);
+  var bi=0,_beff=null,_bt=null;
+  for(var i=0;i<_pollQ.length;i++){
+    var _base=(_pollPrio[_pollQ[i].key]==null?9:_pollPrio[_pollQ[i].key]);
+    var _t=_pollQ[i].t||_now;
+    var _eff=_base-Math.floor((_now-_t)/_age);   // one priority level gained per interval waited
+    if(_beff===null||_eff<_beff||(_eff===_beff&&_t<_bt)){_beff=_eff;_bt=_t;bi=i;}
   }
   var job=_pollQ.splice(bi,1)[0];
   var ctrl=('AbortController' in window)?new AbortController():null;
@@ -4818,6 +4829,12 @@ def _serve(host, port, ssl_context=None, threaded=False):
     entry point and the dev harness. `threaded` matches each caller's prior behavior."""
     global _WSGI_SERVER
     from werkzeug.serving import make_server            # local import: only needed here to serve
+    # NOTE: werkzeug's dev server does NOT keep HTTP connections alive (it sends Connection: close
+    # even at HTTP/1.1 with a Content-Length), so every HTTPS poll pays a fresh TLS handshake -- the
+    # dominant cost on the Pi Zero 2 W. threaded=True (below, from the caller) still helps a lot: it
+    # lets concurrent handshakes/requests overlap their network round-trips instead of serializing,
+    # so one slow handshake no longer blocks everyone. TRUE keep-alive needs a real WSGI server
+    # (waitress) + reworking the restart socket-release below -- tracked as a follow-up (see #51).
     last_err = None
     for attempt in range(10):                           # ~5s total: ride out a draining old port
         try:
@@ -6088,13 +6105,18 @@ def main():
 
     try:
         # Serve via _serve (not app.run) so the restart path can release the listening socket
-        # before re-exec (see _serve / _schedule_process_restart). threaded=False preserves the
-        # prior single-threaded serving behavior of app.run(); SSL is passed through unchanged.
+        # before re-exec (see _serve / _schedule_process_restart). threaded=True lets the server
+        # handle connections concurrently AND keep HTTP connections alive (werkzeug refuses
+        # keep-alive when single-threaded) -- essential on the Pi Zero 2 W, where a fresh TLS
+        # handshake every poll costs seconds under load. The app is built for concurrency (relay
+        # worker + request threads sharing lock-guarded state: _event_lock/state_lock/relay_lock/
+        # _sys_hist_lock), and the relay path rejects overlapping fires, so concurrent requests are
+        # safe. SSL is passed through unchanged. (os.execv on restart nukes all worker threads.)
         _serve(
             host=CONFIG["HOST"],
             port=CONFIG["PORT"],
             ssl_context=ssl_context,
-            threaded=False,
+            threaded=True,
         )
     except KeyboardInterrupt:
         log.info("Shutting down...")

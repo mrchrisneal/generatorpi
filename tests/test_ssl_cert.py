@@ -176,3 +176,19 @@ class TestGenerateSelfSignedReal:
         assert "gen.home" in out.stdout
         assert "192.168.1.50" in out.stdout
         assert "127.0.0.1" in out.stdout
+
+    def test_cert_key_is_ecdsa_p256_not_rsa(self, module, ssl_paths):
+        # The self-signed cert must use an ECDSA P-256 key, NOT RSA. EC handshakes are far cheaper
+        # on the weak single ARM core (Pi Zero 2 W) -- a fresh RSA handshake per un-kept-alive poll
+        # cost seconds under load; switching to P-256 is what makes HTTPS usable there. Guard against
+        # a silent regression back to RSA.
+        cert, key = ssl_paths
+        module._generate_self_signed()
+        out = subprocess.run(
+            ["openssl", "x509", "-in", str(cert), "-noout", "-text"],
+            capture_output=True, text=True,
+        )
+        # EC public key (id-ecPublicKey), curve P-256 (prime256v1 / 256 bit) -- and definitely not RSA.
+        assert "ecPublicKey" in out.stdout, out.stdout
+        assert ("256 bit" in out.stdout) or ("prime256v1" in out.stdout), out.stdout
+        assert "rsaEncryption" not in out.stdout

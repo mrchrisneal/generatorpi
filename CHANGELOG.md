@@ -3,6 +3,17 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.2.2
+
+- **Much faster HTTPS on the Pi**: three changes cut per-request time on a Raspberry Pi Zero 2 W from
+  seconds to well under a second under load. (1) The self-signed certificate now uses an **ECDSA
+  P-256** key instead of RSA-2048 — the TLS handshake is far cheaper on a weak ARM core. (2) The
+  server now handles requests **concurrently** (threaded) instead of one at a time, so a slow
+  handshake no longer blocks every other request. (3) The frontend poll queue now **ages** waiting
+  requests so a constantly-refreshing `state` poll can no longer starve `events`/`system` — every
+  endpoint gets its turn. Existing installs regenerate the cert as ECDSA on next start (browsers
+  will prompt once to trust the new self-signed certificate).
+
 ## 1.2.1
 
 - **Update timing**: the update log now reports how long the apply took — e.g. "Update finished in
