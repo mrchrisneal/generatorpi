@@ -5103,6 +5103,24 @@ def _run_update():
         _update_phase("backing_up", "Backing up current files…", 0.8)
         zpath, _added = _make_backup(manifest)
         _update_log(f"  backup written + integrity-verified: {zpath.name}")
+        # ── END OF STAGE 1 ── everything is downloaded, hash-verified, and backed up, but NOTHING
+        # live has changed yet. Park for the user's go/no-go before STAGE 2 (the swap + restart):
+        # PROCEED applies it, REVERT cancels cleanly (this is the last point a cancel is free).
+        _update_log(f"> Staged + verified v{version} — ready to apply. Nothing changed yet.")
+        _update_phase("staged", f"Ready to apply v{version}.", 0.85)
+        choice = _await_decision(
+            f"Ready to apply v{version}. PROCEED to swap files + restart, or REVERT to cancel "
+            f"— nothing has changed yet.", allow_proceed=True)
+        if choice == "revert":
+            try:
+                if _UPDATE_STAGING.exists():
+                    shutil.rmtree(_UPDATE_STAGING, ignore_errors=True)
+            except Exception:                            # noqa: BLE001 -- cleanup is best-effort
+                pass
+            _update_log(f"Reverted before applying — no changes made. Still on v{APP_VERSION}.")
+            _update_phase("failed", "Update canceled before applying.", 0.0)
+            return
+        _update_log("> PROCEED — applying update (stage 2)…")
         if _deployment_has_systemd():
             with _update_lock:
                 _update_state["systemd"] = True
