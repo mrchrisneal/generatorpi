@@ -3,6 +3,12 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.0.3
+
+- **Footer "Update now" opens the in-app updater directly**: the update banner no longer
+  links out to the GitHub releases page — clicking "Update now" (or the banner) spawns the
+  in-app update modal, where the changelog and the guided update flow live.
+
 ## 1.0.2
 
 - **In-app self-updater hardening**: two-stage go/no-go update with a live progress

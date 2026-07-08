@@ -13,9 +13,9 @@
 # Distributed WITHOUT ANY WARRANTY. See the GNU AGPL v3 (the LICENSE file, or
 # https://www.gnu.org/licenses/agpl-3.0.html) for full terms.
 #
-# [v1.0.2 update-swap verification marker | 2026-07-07] This comment ships ONLY in the v1.0.2
-# release. If it is present on disk after an in-app update, the updater successfully downloaded
-# and swapped this file from GitHub. Harmless; may be kept or dropped in a later release.
+# [update-swap verification marker | 2026-07-07] This comment is present in the released copy on
+# GitHub. If it appears on disk after an in-app update, the updater successfully downloaded and
+# swapped this file from GitHub. Harmless; may be kept or dropped in a later release.
 from gpiozero import OutputDevice
 import logging
 import logging.handlers
@@ -3568,8 +3568,9 @@ setInterval(function(){if(!busy)refresh();},refreshMs);
 function _updSet(text,actionLabel,actionMode,href){
   var row=$('updRow'),a=$('updAction'),sep=$('updSep'),tx=$('updText');
   tx.textContent=text;
-  // The status text itself links to releases whenever an update href is provided (the
-  // "available" state); otherwise it's a plain, non-linked label.
+  // Generic: if a caller passes an href the status text becomes a link -- but no caller does
+  // anymore (the update affordance is the in-app modal, never a GitHub link), so it stays a
+  // plain, non-linked label. href kept only as a harmless generic capability of this setter.
   if(href){tx.href=href;tx.target='_blank';tx.rel='noopener';}
   else{tx.removeAttribute('href');tx.removeAttribute('target');}
   if(actionLabel){
@@ -3594,7 +3595,10 @@ function checkUpdate(manual,passive){
   api('/api/check-update'+(passive?'':'?fresh=1')).then(function(d){
     row.classList.remove('checking');
     if(d&&d.update_available&&d.latest){                      // update available
-      _updSet('v'+d.latest+' available!','Update now','update','https://github.com/mrchrisneal/generatorpi/releases');
+      // NO GitHub href -- the update affordance is the in-app modal ONLY. Passing a href here
+      // would turn both the status text and "Update now" into target=_blank links to GitHub
+      // releases (leaking through on middle/cmd-click). The changelog lives in the modal itself.
+      _updSet('v'+d.latest+' available!','Update now','update');
       if(v)v.classList.add('out-of-date');
     }else if(!d||d.latest==null){                             // couldn't reach the repo
       _updSet('Update check failed','Check again','recheck');
