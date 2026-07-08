@@ -2427,6 +2427,33 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
   box-shadow:0 0 8px rgba(124,224,176,.5);transition:width .35s ease}
 .upd-progress-msg{font:600 12px var(--mono);color:#9fdcec;text-align:center;margin-bottom:16px;min-height:16px}
 .upd-backup-note{font:500 12px/1.5 var(--mono);color:#c0bab0;margin:-6px 0 14px;word-break:break-word}
+/* Terminal log line colouring: bright bracketed [SECTION] headers, green ok, red errors,
+   amber warnings/reverts, dim indented child lines. pre-wrap preserves the 2-space indents. */
+.upd-scroll .tl{white-space:pre-wrap;word-break:break-word}
+.tl-hdr{color:#eafff5;font-weight:700}
+.tl-ok{color:#7effb0}
+.tl-err{color:#ff8a6a;font-weight:700}
+.tl-warn{color:#ffb347;font-weight:700}
+.tl-msg{color:#bfe6cf}
+.tl-sub{color:#6fbf90}
+/* Spinner shown to the LEFT of the modal title while the update is actively working. */
+.upd-title-spin{display:none;width:15px;height:15px;margin-right:9px;vertical-align:-2px;
+  border:2px solid rgba(180,230,200,.3);border-top-color:#8fe0a8;border-radius:50%;
+  animation:btnspin .8s linear infinite}
+.upd-card.working .upd-title-spin{display:inline-block}
+/* Attention banner beneath the log when the run hit an error/warning -- same shape as the
+   in-page "cannot auto-detect" .note (amber, eye icon), telling the user to read the log. */
+.upd-warn{display:none;align-items:center;gap:10px;margin:-6px 0 14px;padding:10px 13px;
+  border-radius:9px;background:linear-gradient(180deg,#2a1a0c,#1a1206);border:1px solid #6a4a1a;
+  font:600 12px/1.4 var(--mono);color:#ffcf8a}
+.upd-warn.show{display:flex}
+.upd-warn svg{flex:0 0 auto;width:18px;height:18px;color:#ffb347}
+/* Success/ready banner (green, checkmark) shown at a clean staged go/no-go. */
+.upd-ok{display:none;align-items:center;gap:10px;margin:-6px 0 14px;padding:10px 13px;
+  border-radius:9px;background:linear-gradient(180deg,#0e2216,#08160e);border:1px solid #1c5a34;
+  font:600 12px/1.4 var(--mono);color:#a6f0c4}
+.upd-ok.show{display:flex}
+.upd-ok svg{flex:0 0 auto;width:18px;height:18px;color:#7effb0}
 
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 
@@ -3558,15 +3585,50 @@ setInterval(function(){checkUpdate(false,true);},300000);
 var _updPoll=null;
 function _ovShow(id){$(id).className='confirm-overlay show';setBackgroundInert(true);}
 function _ovHide(id){$(id).className='confirm-overlay';setBackgroundInert(false);}
-// Render an array of log lines into a scroll box as a terminal, pinned to the bottom.
-function _renderTerm(el,logArr){el.textContent=(logArr&&logArr.length)?logArr.join('\\n'):'';el.scrollTop=el.scrollHeight;}
+// Colour + structure the terminal: bright [SECTION] headers, green "ok", red [ERROR], amber
+// [WARNING]/[REVERTED]/[ROLLBACK], dim indented child lines. Text is escaped first (log content
+// includes exception messages), so building innerHTML from it is XSS-safe.
+var _termFollow=true;
+function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function _fmtLogLine(line){
+  var m=line.match(/^\\[([^\\]]+)\\]\\s?(.*)$/);           // [SECTION] optional-rest
+  if(m){
+    var tag=m[1],rest=m[2]||'',tu=tag.toUpperCase(),cls='tl-hdr';
+    if(tu==='ERROR')cls='tl-err';
+    else if(tu==='WARNING'||tu==='REVERTED'||tu==='ROLLBACK')cls='tl-warn';
+    var out='<span class="'+cls+'">['+_esc(tag)+']</span>';
+    if(rest){var rc=/^ok\\b/i.test(rest)?'tl-ok':(cls==='tl-err'?'tl-err':'tl-msg');
+      out+=' <span class="'+rc+'">'+_esc(rest)+'</span>';}
+    return out;
+  }
+  if(/^\\s/.test(line))return '<span class="tl-sub">'+_esc(line)+'</span>';   // indented child
+  return '<span class="tl-msg">'+_esc(line)+'</span>';                        // plain line
+}
+function _termHTML(lines){return lines.map(function(l){return '<div class="tl">'+_fmtLogLine(l)+'</div>';}).join('');}
+function _renderTerm(el,logArr){
+  var prev=el.scrollTop;
+  el.innerHTML=(logArr&&logArr.length)?_termHTML(logArr):'';
+  el.scrollTop=_termFollow?el.scrollHeight:prev;   // follow only while pinned to the bottom
+}
+// Any scroll away from the bottom stops the auto-follow; returning to the bottom resumes it.
+$('updChangelog').addEventListener('scroll',function(){
+  var el=this;_termFollow=(el.scrollHeight-el.scrollTop-el.clientHeight)<6;
+});
+// Title spinner while actively working; caution banner (error/abort) or success banner (staged
+// ok) beneath the log. Only one banner shows at a time.
+function _updWorking(on){var c=$('updCard');if(c)c.classList.toggle('working',!!on);}
+function _updWarn(on,text){var w=$('updWarn');if(w)w.classList.toggle('show',!!on);
+  if(on&&text){var t=$('updWarnText');if(t)t.textContent=text;}
+  if(on){_updOk(false);}}
+function _updOk(on){var o=$('updOk');if(o)o.classList.toggle('show',!!on);if(on){var w=$('updWarn');if(w)w.classList.remove('show');}}
 function openUpdateModal(){
   var cl=$('updChangelog'),doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   cl.textContent='Loading changelog…';cl.style.display='';
   var note=$('updBackupNote');note.textContent='';note.style.display='';
   $('updProgressWrap').style.display='none';
-  doBtn.className='btn3d danger';doBtn.textContent='UPDATE';doBtn.dataset.role='';doBtn.disabled=false;doBtn.style.display='';
+  doBtn.className='btn3d danger';doBtn.textContent='PROCEED';doBtn.dataset.role='';doBtn.disabled=false;doBtn.style.display='';
   cancel.className='btn3d steel';cancel.textContent='CANCEL';cancel.dataset.role='';cancel.disabled=false;cancel.style.display='';
+  _updWorking(false);_updWarn(false);_updOk(false);
   _ovShow('updModal');doBtn.focus();
   api('/api/update/changelog').then(function(d){
     if(d&&d.changelog){cl.textContent=d.changelog;}
@@ -3588,6 +3650,8 @@ $('updDoBtn').addEventListener('click',function(){
   b.classList.add('loading');$('updCancelBtn').disabled=true;
   post('/api/update/start').then(function(){
     updateActive=true;                                   // PAUSE all routine polling now
+    _termFollow=true;                                    // follow the terminal until the user scrolls
+    _updWorking(true);_updWarn(false);_updOk(false);     // spinner on, no banners yet
     var cl=$('updChangelog');cl.style.display='';cl.textContent='Starting…';
     $('updBackupNote').style.display='none';
     b.classList.remove('loading');b.style.display='none';   // progress is automatic
@@ -3603,25 +3667,38 @@ function _decide(choice){
   var doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   doBtn.style.display='none';doBtn.dataset.role='';
   cancel.dataset.role='';cancel.textContent='CLOSE';cancel.disabled=true;cancel.className='btn3d steel';
+  _updWorking(true);_updWarn(false);_updOk(false);      // resuming work after the decision
   post('/api/update/decide',{choice:choice}).catch(function(){});
   _pollUpdate();
 }
-// Parked on an error/warning: offer REVERT (always) + PROCEED (only when the step allows it).
+// Parked on a go/no-go (stage gate) OR an error/warning: offer REVERT (always) + PROCEED (only
+// when the step allows it). A NON-proceedable park = a real error/warning -> show the banner.
 function _showDecision(s){
   var doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
+  var allow=s.decide&&s.decide.allow_proceed;
   cancel.className='btn3d steel';cancel.textContent='REVERT';cancel.dataset.role='revert';cancel.disabled=false;cancel.style.display='';
-  if(s.decide&&s.decide.allow_proceed){
-    doBtn.className='btn3d danger';doBtn.textContent='PROCEED';doBtn.dataset.role='proceed';doBtn.disabled=false;doBtn.style.display='';
+  if(allow){
+    doBtn.className='btn3d danger';doBtn.textContent=(s.decide.proceed_label)||'PROCEED';doBtn.dataset.role='proceed';doBtn.disabled=false;doBtn.style.display='';
   }else{doBtn.style.display='none';}
+  _updWorking(false);                                   // not actively working while parked
+  if(allow){_updOk(true);}                              // clean staged go/no-go -> green ready banner
+  else{_updWarn(true,'A warning or error occurred during the update — review the log above before proceeding.');}
 }
 function _pollUpdate(){
   if(_updPoll)clearTimeout(_updPoll);
   api('/api/update/status').then(function(s){
     if(!s){_updPoll=setTimeout(_pollUpdate,1200);return;}
     var cl=$('updChangelog');cl.style.display='';_renderTerm(cl,s.log);
+    var working=['checking','downloading','verifying','backing_up','swapping','restarting'].indexOf(s.phase)>=0;
+    _updWorking(working);
+    if(working){_updWarn(false);_updOk(false);}         // no banners while actively working
     if(s.phase==='awaiting'){_showDecision(s);_updPoll=setTimeout(_pollUpdate,1200);return;}
     if(s.phase==='failed'){                              // reverted / failed -> allow closing
       updateActive=false;                               // resume routine polling (old version runs)
+      _updWorking(false);_updOk(false);
+      // Contextual banner: a real error vs. a user-initiated revert of a clean staged update.
+      if(s.error){_updWarn(true,'A warning or error occurred during the update — review the log above before proceeding.');}
+      else{_updWarn(true,'Update aborted by user.');}
       $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').dataset.role='';$('updCancelBtn').disabled=false;
       $('updDoBtn').style.display='none';_updPoll=null;return;
     }
@@ -3633,17 +3710,18 @@ function _waitBackAndReload(){
   // Keep checking until the app answers again, then FORCE a cache-bust reload of the whole page
   // so the new version's UI loads fresh. Capped (~3min) so a bricked device surfaces guidance.
   var cl=$('updChangelog');
-  cl.textContent+='\\n\\n> waiting for the app to come back up…';cl.scrollTop=cl.scrollHeight;
+  function _add(html){cl.insertAdjacentHTML('beforeend','<div class="tl">'+html+'</div>');if(_termFollow)cl.scrollTop=cl.scrollHeight;}
+  _add('<span class="tl-hdr">[WAITING]</span> <span class="tl-msg">for the app to come back up…</span>');
   var tries=0;
   (function ping(){
     tries++;
     fetch('/?ts='+Date.now(),{cache:'no-store'}).then(function(r){
       if(r&&r.ok){location.replace(location.pathname+'?u='+Date.now());}   // cache-bust fresh load
       else if(tries<90){setTimeout(ping,2000);}
-      else{cl.textContent+='\\nThe app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';cl.scrollTop=cl.scrollHeight;}
+      else{_updWarn(true);_add('<span class="tl-warn">[NO RESPONSE]</span> <span class="tl-msg">the app has not come back — it may be rolling back or need a manual restart. Try reloading shortly.</span>');}
     }).catch(function(){
       if(tries<90){setTimeout(ping,2000);}
-      else{cl.textContent+='\\nThe app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';cl.scrollTop=cl.scrollHeight;}
+      else{_updWarn(true);_add('<span class="tl-warn">[NO RESPONSE]</span> <span class="tl-msg">the app has not come back — it may be rolling back or need a manual restart. Try reloading shortly.</span>');}
     });
   })();
 }
@@ -3654,7 +3732,9 @@ function checkUpdateResult(){
     if(!d||!d.pending)return;
     $('updResultTitle').textContent=(d.status==='success')?'UPDATE COMPLETE':'UPDATE FAILED';
     $('updResultNote').textContent=d.note||'';
-    var lg=$('updResultLog');lg.textContent=d.log||'(no log captured)';lg.scrollTop=lg.scrollHeight;
+    // Same colourised terminal as the live view, showing the FULL captured log; start at the
+    // TOP so the reader can follow it from the beginning.
+    var lg=$('updResultLog');lg.innerHTML=_termHTML(String(d.log||'(no log captured)').split('\\n'));lg.scrollTop=0;
     _ovShow('updResultModal');
   }).catch(function(){});
 }
@@ -4065,10 +4145,18 @@ HTML_TEMPLATE_BODY = """
   <!-- Self-update dialog: shows the changelog, then (on Update) a live progress bar while
        the server downloads/verifies/swaps/restarts. Populated + driven by the updater JS. -->
   <div class="confirm-overlay" id="updModal" role="dialog" aria-modal="true" aria-labelledby="updModalTitle">
-    <div class="confirm-card upd-card">
-      <h2 id="updModalTitle">UPDATE GENERATORPI</h2>
+    <div class="confirm-card upd-card" id="updCard">
+      <h2 id="updModalTitle"><span class="upd-title-spin" aria-hidden="true"></span>UPDATE GENERATORPI</h2>
       <div class="upd-scroll" id="updChangelog">Loading changelog…</div>
       <div class="upd-backup-note" id="updBackupNote"></div>
+      <div class="upd-warn" id="updWarn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>
+        <span id="updWarnText">A warning or error occurred during the update — review the log above before proceeding.</span>
+      </div>
+      <div class="upd-ok" id="updOk">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span>Staged and verified — ready to apply. Nothing has changed yet.</span>
+      </div>
       <div id="updProgressWrap" style="display:none">
         <div class="upd-bar"><div class="upd-bar-fill" id="updBarFill"></div></div>
         <div class="upd-progress-msg" id="updProgressMsg"></div>
@@ -4716,15 +4804,27 @@ def _update_log(line):
         _update_state["log"].append(line)
 
 
-def _await_decision(message, allow_proceed):
-    """Park the run: show `message`, offer REVERT (+ PROCEED iff allow_proceed), and BLOCK until
-    the user decides. Returns 'proceed' or 'revert' (defaults to the SAFE 'revert' on timeout so
-    an unattended browser can never leave the updater hung mid-run). Requests to the Pi stay
-    sequential -- the worker simply waits; only the status poll continues."""
-    _update_log(message)
+def _update_log_append(text):
+    """Append `text` to the CURRENT last log line (e.g. tack ' ok' onto a '[SECTION]' header
+    once its step finishes, so it renders as '[SECTION] ok' on one line)."""
+    with _update_lock:
+        if _update_state["log"]:
+            _update_state["log"][-1] += text
+        else:
+            _update_state["log"].append(text)
+
+
+def _await_decision(message, allow_proceed, proceed_label="PROCEED"):
+    """Park the run: show `message`, offer REVERT (+ a proceed button labelled `proceed_label`
+    iff allow_proceed), and BLOCK until the user decides. Returns 'proceed' or 'revert' (defaults
+    to the SAFE 'revert' on timeout so an unattended browser can never leave the updater hung
+    mid-run). Requests to the Pi stay sequential -- the worker just waits; only the status poll
+    continues. The caller already logs a terminal line for the situation, so we do NOT re-log
+    `message` here (that would duplicate the line); it's kept only as the phase message."""
     with _update_lock:
         _update_state.update(phase="awaiting", message=message,
-                             decide={"allow_proceed": bool(allow_proceed)})
+                             decide={"allow_proceed": bool(allow_proceed),
+                                     "proceed_label": proceed_label})
         _update_decision_choice["choice"] = None
     _update_decision_event.clear()
     got = _update_decision_event.wait(600)               # up to 10 min for a human decision
@@ -4741,6 +4841,27 @@ def _deployment_has_systemd():
     """True on a systemd-managed install (unit file present AND systemctl available). False
     in dev, where we still swap the files but re-exec this process instead of a service."""
     return _SERVICE_UNIT.exists() and shutil.which("systemctl") is not None
+
+
+def _service_skip_reason():
+    """Decide whether the update restarts via the systemd SERVICE or swaps in-process, and say
+    WHY. Returns None to use the service; otherwise a human-readable reason for skipping ALL
+    service/systemd steps (swap in-process + re-exec instead). Honors the operator's env/config
+    (a disabled service or autostart) BEFORE falling back to host detection, so the updater obeys
+    the same preferences the rest of the app does."""
+    def _off(v):
+        return str(v).strip().lower() in ("false", "0", "no", "off", "disabled")
+    # 1) Explicit operator opt-out in the env/config wins (obey preferences).
+    if "SERVICE_ENABLED" in CONFIG and _off(CONFIG.get("SERVICE_ENABLED")):
+        return "service disabled in config (SERVICE_ENABLED is off)"
+    if "AUTOSTART" in CONFIG and _off(CONFIG.get("AUTOSTART")):
+        return "autostart disabled in config (AUTOSTART is off)"
+    # 2) Otherwise detect a non-systemd host / uninstalled unit.
+    if not _SERVICE_UNIT.exists():
+        return "no systemd service unit installed (not a service-managed install)"
+    if shutil.which("systemctl") is None:
+        return "systemctl not available (not a systemd / Raspberry Pi OS host)"
+    return None
 
 
 def _http_get_bytes(url, timeout=30, max_bytes=12_000_000):
@@ -4774,21 +4895,26 @@ def _download_and_verify(manifest, base=None, staging=None):
         shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True, exist_ok=True)
     n = len(files)
+    # STAGE 'DOWNLOADING': fetch every file into staging (nothing live is touched). The caller
+    # logs the [DOWNLOADING] header; we log one child line per file as it lands.
     for i, f in enumerate(files):
-        rel, want, size = f["path"], f["sha256"], int(f.get("bytes", 0))
-        _update_phase("downloading", f"Downloading {rel}…", 0.05 + 0.55 * (i / n))
+        rel, size = f["path"], int(f.get("bytes", 0))
+        _update_phase("downloading", f"Downloading {rel}…", 0.10 + 0.40 * (i / n))
         data = _http_get_bytes(base + "/" + rel, max_bytes=max(size + 4096, 8192))
-        got = hashlib.sha256(data).hexdigest()
-        if got != want:
-            raise ValueError(f"hash mismatch for {rel}: expected {want[:12]}…, got {got[:12]}…")
         dest = staging / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        _update_log(f"    {rel} … ok ({len(data)} bytes)")   # one terminal line per verified file
-    _update_phase("verifying", "Re-verifying staged files…", 0.68)
-    for f in files:                                    # defense in depth: re-hash on disk
-        if hashlib.sha256((staging / f["path"]).read_bytes()).hexdigest() != f["sha256"]:
-            raise ValueError(f"post-stage hash mismatch for {f['path']}")
+        _update_log(f"  {rel} … {len(data)} bytes")
+    # STAGE 'VERIFYING': re-hash each staged file against the manifest, then compile-check the new
+    # main. All verification is on the staged copies -- nothing live is touched until it passes.
+    _update_log(f"[VERIFYING] SHA-256 of {n} files")
+    _update_phase("verifying", "Verifying SHA-256…", 0.66)
+    for f in files:
+        rel, want = f["path"], f["sha256"]
+        got = hashlib.sha256((staging / rel).read_bytes()).hexdigest()
+        if got != want:
+            raise ValueError(f"hash mismatch for {rel}: expected {want[:12]}…, got {got[:12]}…")
+        _update_log(f"  {rel} … ok")
     main_py = staging / "generator_control.py"
     if main_py.exists():
         import py_compile
@@ -4796,6 +4922,7 @@ def _download_and_verify(manifest, base=None, staging=None):
             py_compile.compile(str(main_py), doraise=True)
         except py_compile.PyCompileError as e:
             raise ValueError(f"staged generator_control.py failed to compile: {e}")
+        _update_log("  generator_control.py compiles … ok")
     return staging
 
 
@@ -4841,38 +4968,50 @@ def _ensure_backup_dir():
     probe.unlink()
 
 
-def _preflight_check(manifest, dest_root=None):
+def _preflight_check(manifest, dest_root=None, log=None):
     """FINAL sanity check BEFORE any download/swap: prove we can actually write everywhere the
     update will touch -- the backups dir, the staging area, the project root, and EVERY target
-    file's directory (and the file itself if it already exists). Raises with a clear message on
-    the first problem so we abort before changing anything, never half-applying an update we
-    can't finish. `dest_root` is injectable for tests."""
+    file's directory (and the file itself if it already exists) -- plus enough free disk. Raises
+    with a clear message on the first problem so we abort before changing anything, never
+    half-applying an update we can't finish. `dest_root` is injectable for tests; `log`, if given,
+    receives one '  <check> … ok' terminal line per passed sub-check."""
     dest_root = dest_root or SCRIPT_DIR
 
     def writable(p):
         return os.access(str(p), os.W_OK)
 
+    def _ok(msg):
+        if log:
+            log(f"  {msg} … ok")
+
     _ensure_backup_dir()                                  # backups/ creatable + writable (rollback)
+    _ok("backups directory writable (rollback path)")
     if not writable(dest_root):
         raise PermissionError(f"project root is not writable: {dest_root}")
+    _ok("project root writable")
     if not writable(_UPDATE_STAGING.parent):
         raise PermissionError(f"cannot write the staging area under: {_UPDATE_STAGING.parent}")
-    for f in manifest.get("files") or []:
+    _ok("staging area writable")
+    files = manifest.get("files") or []
+    for f in files:
         target = dest_root / f["path"]
         d = target.parent
         if d.exists() and not writable(d):
             raise PermissionError(f"target directory is not writable: {d}")
         if target.exists() and not writable(target):
             raise PermissionError(f"target file is not writable: {target}")
+    _ok(f"all {len(files)} target files writable")
     # Free space: we need room for the download staging + the backup zip + the swap. Require the
     # summed file sizes with generous headroom so we never run out mid-swap (audit H2).
-    need = sum(int(f.get("bytes", 0)) for f in (manifest.get("files") or [])) * 3 + 5_000_000
+    need = sum(int(f.get("bytes", 0)) for f in files) * 3 + 5_000_000
     try:
         free = shutil.disk_usage(str(dest_root)).free
     except OSError:
         free = None
     if free is not None and free < need:
         raise OSError(f"insufficient free disk space for update: need ~{need}, have {free}")
+    if free is not None:
+        _ok(f"free disk space ({free // 1_000_000} MB free, need ~{need // 1_000_000} MB)")
 
 
 def _write_update_result(status, version, note="", log_text=None):
@@ -4919,7 +5058,24 @@ def _make_backup(manifest, dest_root=None, backup_dir=None):
             if p not in names or hashlib.sha256(z.read(p)).hexdigest() != \
                     hashlib.sha256((dest_root / p).read_bytes()).hexdigest():
                 raise OSError(f"backup archive is missing/corrupt for {p}")
+    _prune_backups(backup_dir=backup_dir)                # cap retained backups (newest 20)
     return zpath, added
+
+
+def _prune_backups(keep=20, backup_dir=None):
+    """Keep at most `keep` most-recent backup zips and delete the rest, so backups/ can never
+    grow without bound across many updates. Best-effort -- never raises into the update flow."""
+    backup_dir = backup_dir or _BACKUP_DIR
+    try:
+        zips = sorted(backup_dir.glob("backup-*.zip"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in zips[keep:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except Exception as e:                                # noqa: BLE001 -- pruning is best-effort
+        log.warning(f"backup prune failed: {e}")
 
 
 def _swap(manifest, staging=None, dest_root=None):
@@ -5080,51 +5236,69 @@ def _run_update():
     zpath = None
     swapped = False
     try:
-        _update_log(f"$ update GeneratorPi (installed v{APP_VERSION})")
-        _update_log("> Reaching GitHub + fetching release manifest…")
+        # Terminal log format: bracketed [SECTION] headers (bright, left-aligned) get ' ok' or an
+        # error tacked on when their step finishes; detail lines are indented two spaces.
+        _update_log(f"[UPDATE] GeneratorPi — installed v{APP_VERSION}")
+        _update_log("[CONTACTING GITHUB]")
         _update_phase("checking", "Reaching GitHub…", 0.03)
         manifest = json.loads(_http_get_bytes(_MANIFEST_URL, max_bytes=1_000_000).decode("utf-8"))
-        _validate_manifest_paths(manifest)
         version = manifest.get("version") or "?"
+        nfiles = len(manifest.get("files") or [])
+        _update_log_append(" ok")
+        _update_log(f"  manifest v{version} · {nfiles} files")
+        # Validate the manifest BEFORE trusting any of it (each check aborts the run on failure).
+        _update_log("[VALIDATING RELEASE]")
+        _validate_manifest_paths(manifest)               # traversal + secret/cert denylist
+        _update_log("  file paths safe (no traversal, no secret/cert targets) … ok")
         _validate_version(version)                       # charset-safe before it hits shell/JSON
+        _update_log("  version string well-formed … ok")
         with _update_lock:
             _update_state["version"] = version
-        nfiles = len(manifest.get("files") or [])
-        _update_log(f"  ok — manifest v{version}, {nfiles} files")
-        _update_log("> Validating permissions + free disk space…")
+        # Restart path + WHY up front (obeys env/config; honest about non-systemd hosts).
+        _svc_skip = _service_skip_reason()
+        _update_log("[DEPLOYMENT PLAN] " + (
+            "systemd service — will restart the service to apply"
+            if not _svc_skip else "in-process swap + re-exec"))
+        if _svc_skip:
+            _update_log(f"  reason: {_svc_skip}")
+        _update_log(f"  installed v{APP_VERSION} → target v{version}")
+        _update_log(f"  backups dir: {_BACKUP_DIR}")
+        # Detailed system-readiness checks (writability of every target + free disk space).
+        _update_log("[CHECKING SYSTEM]")
         _update_phase("checking", "Validating permissions + free space…", 0.06)
-        _preflight_check(manifest)                       # abort NOW if we can't write everywhere
-        _update_log("  ok")
-        _update_log(f"> Downloading {nfiles} files + verifying SHA-256…")
-        _update_phase("downloading", "Downloading + verifying files…", 0.1)
-        staging = _download_and_verify(manifest)         # abort if any hash/compile fails; logs each
-        _update_log("  all files downloaded + hashes verified ok")
-        _update_log("> Backing up current files…")
+        _preflight_check(manifest, log=_update_log)      # logs each sub-check; aborts on first failure
+        # Two logged stages: download to staging, then verify SHA-256 + compile-check.
+        _update_log(f"[DOWNLOADING] {nfiles} files")
+        _update_phase("downloading", "Downloading files…", 0.1)
+        staging = _download_and_verify(manifest)         # logs per-file download, then [VERIFYING]
+        _update_log("[BACKING UP]")
         _update_phase("backing_up", "Backing up current files…", 0.8)
         zpath, _added = _make_backup(manifest)
-        _update_log(f"  backup written + integrity-verified: {zpath.name}")
+        _update_log_append(" ok")
+        _update_log(f"  {zpath.name} (integrity-verified)")
         # ── END OF STAGE 1 ── everything is downloaded, hash-verified, and backed up, but NOTHING
         # live has changed yet. Park for the user's go/no-go before STAGE 2 (the swap + restart):
-        # PROCEED applies it, REVERT cancels cleanly (this is the last point a cancel is free).
-        _update_log(f"> Staged + verified v{version} — ready to apply. Nothing changed yet.")
+        # UPDATE applies it, REVERT cancels cleanly (this is the last point a cancel is free).
+        _update_log("[STAGED]")
+        _update_log_append(" ok")
+        _update_log(f"  v{version} ready to apply — nothing has changed yet")
         _update_phase("staged", f"Ready to apply v{version}.", 0.85)
         choice = _await_decision(
-            f"Ready to apply v{version}. PROCEED to swap files + restart, or REVERT to cancel "
-            f"— nothing has changed yet.", allow_proceed=True)
+            f"Ready to apply v{version}.", allow_proceed=True, proceed_label="UPDATE")
         if choice == "revert":
             try:
                 if _UPDATE_STAGING.exists():
                     shutil.rmtree(_UPDATE_STAGING, ignore_errors=True)
             except Exception:                            # noqa: BLE001 -- cleanup is best-effort
                 pass
-            _update_log(f"Reverted before applying — no changes made. Still on v{APP_VERSION}.")
+            _update_log(f"[REVERTED] canceled before applying — still on v{APP_VERSION}")
             _update_phase("failed", "Update canceled before applying.", 0.0)
             return
-        _update_log("> PROCEED — applying update (stage 2)…")
-        if _deployment_has_systemd():
+        _update_log("[APPLYING] stage 2 — this is the point of no easy return")
+        if not _svc_skip:
             with _update_lock:
                 _update_state["systemd"] = True
-            _update_log("> Restarting the application to make final swaps…")
+            _update_log("[RESTARTING] swapping files + restarting the service…")
             _update_phase("restarting", f"Applying v{version} + restarting service…", 0.92)
             # Seed the shared log with everything so far, so the post-restart result terminal
             # shows the FULL run (these pre-restart lines + the bootstrap's swap/restart/health
@@ -5150,7 +5324,7 @@ def _run_update():
         else:
             with _update_lock:
                 _update_state["systemd"] = False
-            _update_log("> Swapping files + restarting the application…")
+            _update_log("[SWAPPING] files, then restarting the app…")
             _update_phase("swapping", "Applying update…", 0.86)
             _swap(manifest)
             swapped = True
@@ -5172,17 +5346,17 @@ def _run_update():
         # user's decision (hard errors can't be safely proceeded past, so REVERT only). REVERT
         # rolls back any partial swap, discards staging, and leaves the OLD version running.
         log.error(f"Self-update failed: {e}")
-        _update_log(f"! ERROR: {e}")
+        _update_log(f"[ERROR] {e}")
         _await_decision(f"Update failed: {e}", allow_proceed=False)
         if swapped and zpath is not None:                # same-process swap failed -> restore
-            _update_log("Rolling back the partial swap…")
+            _update_log("[ROLLBACK] restoring the previous version…")
             _rollback(zpath)
         try:                                             # discard the staged download
             if _UPDATE_STAGING.exists():
                 shutil.rmtree(_UPDATE_STAGING, ignore_errors=True)
         except Exception:                                # noqa: BLE001 -- cleanup is best-effort
             pass
-        _update_log(f"Reverted — no changes applied. Still on v{APP_VERSION}.")
+        _update_log(f"[REVERTED] no changes applied — still on v{APP_VERSION}")
         _update_phase("failed", f"Update reverted: {e}", 0.0, error=str(e))
 
 
