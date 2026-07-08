@@ -26,8 +26,7 @@ GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E ge
 * **Predictive Fuel Tracking**: Linear drain model monitors fuel remaining and estimates running hours to empty.
 * **Web Push Alerts**: Out-of-browser notifications deliver status updates and low-fuel alerts directly to your devices.
 * **Security & Isolation**: Automatic hashing of credential configurations, fail-fast permission checks, and silenced access logging.
-* **System Metrics**: Real-time monitoring of CPU temperature, throttling state, load, and Wi-Fi signal quality.
-* **Persistent Event Log**: SQLite-backed history, capped to keep disk usage bounded.
+* **Monitoring & Event History**: Real-time metrics (CPU temperature, throttling state, load, Wi-Fi signal) alongside a persistent, SQLite-backed event log that's capped to keep disk usage bounded.
 * **Tuned for Single-Core Hardware**: A single-flight, priority-with-fairness poll queue keeps control-critical status fresh without ever dogpiling the weak core, while an ECDSA P-256 certificate with threaded serving cuts TLS handshakes from *seconds* to sub-second on a Raspberry Pi Zero 2 W.
 * **One-Click Self-Updater**: In-app updates verified against a manifest (SHA-256), applied by an atomic file swap with automatic backup, rollback-on-failure, and a live two-stage progress terminal.
 * **Home Assistant Integration**: Exposes the generator as a switch plus sensors, ready to drop into dashboards and automations.
