@@ -19,6 +19,7 @@
 from gpiozero import OutputDevice
 import logging
 import logging.handlers
+import errno
 import os
 import sys
 import time
@@ -2448,6 +2449,22 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .tl-warn{color:#ffb347;font-weight:700}
 .tl-msg{color:#bfe6cf}
 .tl-sub{color:#6fbf90}
+/* Result-modal success/failure banner, shown ABOVE the DISMISS button (replaces the old top note). */
+.upd-banner{display:none;align-items:center;justify-content:center;gap:8px;font-weight:700;
+  padding:10px 12px;border-radius:8px;margin:16px 0;text-align:center;line-height:1.35}
+.upd-banner.show{display:flex}
+.upd-banner-ok{color:#7effb0;background:rgba(126,255,176,.10);border:1px solid rgba(126,255,176,.35)}
+.upd-banner-warn{color:#ffb347;background:rgba(255,179,71,.10);border:1px solid rgba(255,179,71,.35)}
+.upd-banner .upd-ico{font-size:1.15em;line-height:1}
+/* Stage-2 downtime: a large, slowly-rotating "Restarting" spinner that replaces the log while the
+   app restarts, with a warning notice below that escalates (amber at ~2m, red at ~5m). */
+.upd-waiting{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  min-height:190px;text-align:center;padding:26px 16px}
+.upd-waiting .upd-spin{width:46px;height:46px;border-width:4px;animation-duration:1.5s}  /* large + slow */
+.upd-waiting-title{font-size:1.2rem;font-weight:700;color:#eafff5;letter-spacing:.03em}
+.upd-waiting-msg{font-weight:600;min-height:1.2em;max-width:36ch;line-height:1.4}
+.upd-waiting-msg.warn{color:#ffb347}
+.upd-waiting-msg.err{color:#ff8a6a;font-weight:700}
 /* Copy-to-clipboard button floating at the top-right of any log/terminal window. */
 .log-wrap{position:relative}
 .log-copy{position:absolute;top:10px;right:12px;z-index:3;appearance:none;cursor:pointer;
@@ -3732,6 +3749,15 @@ function _decide(choice){
   doBtn.style.display='none';doBtn.dataset.role='';
   cancel.dataset.role='';cancel.textContent='CLOSE';cancel.disabled=true;cancel.className='btn3d steel';
   _updWorking(true);_updWarn(false);_updOk(false);      // resuming work after the decision
+  if(choice==='proceed'){
+    // Proceeding = Stage 2 (swap + restart). The moment the decision is accepted, hand the modal
+    // over to the "Restarting" spinner (the server is about to go down, so live log streaming would
+    // just freeze). The full detailed log is preserved for the result modal. Fire the spinner
+    // whether or not the decide response arrives -- the server may restart before it can reply.
+    if(_updPoll){clearTimeout(_updPoll);_updPoll=null;}
+    post('/api/update/decide',{choice:choice}).then(_waitBackAndReload).catch(_waitBackAndReload);
+    return;
+  }
   post('/api/update/decide',{choice:choice}).catch(function(){});
   _pollUpdate();
 }
@@ -3772,22 +3798,32 @@ function _pollUpdate(){
     _updPoll=setTimeout(_pollUpdate,refreshMs);
   }).catch(function(){_updPoll=setTimeout(_pollUpdate,refreshMs);});
 }
+var _waiting=false;
 function _waitBackAndReload(){
-  // Keep checking until the app answers again, then FORCE a cache-bust reload of the whole page
-  // so the new version's UI loads fresh. Capped (~3min) so a bricked device surfaces guidance.
+  if(_waiting)return; _waiting=true;                     // guard against a double invocation
+  // Stage-2 downtime UI (owner spec): the app is restarting, so live log streaming would just
+  // freeze. HAND OFF from the log to a large, slowly-rotating spinner with "Restarting" below it;
+  // the full detailed log is preserved for the post-restart result modal. A warning notice below
+  // ESCALATES on delay: ~2 min -> amber "Still updating…"; ~5 min -> red "may be unresponsive".
   var cl=$('updChangelog');
-  function _add(html){cl.insertAdjacentHTML('beforeend','<div class="tl">'+html+'</div>');if(_termFollow)cl.scrollTop=cl.scrollHeight;}
-  _add('<span class="tl-hdr">[WAITING]</span> <span class="tl-msg">for the app to come back up…</span>');
-  var tries=0;
+  cl.innerHTML='<div class="upd-waiting"><span class="upd-spin" aria-hidden="true"></span>'
+    +'<div class="upd-waiting-title">Restarting</div>'
+    +'<div id="updWaitMsg" class="upd-waiting-msg" role="status"></div></div>';
+  $('updDoBtn').style.display='none';                    // no actions are possible during the restart
+  $('updCancelBtn').style.display='none';
+  _updWorking(false);_updWarn(false);_updOk(false);
+  var setMsg=function(text,cls){var m=document.getElementById('updWaitMsg');
+    if(m){m.className='upd-waiting-msg'+(cls?' '+cls:'');m.textContent=text||'';}};
+  var tries=0;                                           // 2s per ping
   (function ping(){
     tries++;
+    if(tries===60)setMsg('Still updating\\u2026','warn');       // ~2 min: mild amber warning
+    else if(tries===150)setMsg('GeneratorPi may be unresponsive. Please try reloading the page manually.','err');  // ~5 min: red error, replace text
     fetch('/?ts='+Date.now(),{cache:'no-store'}).then(function(r){
-      if(r&&r.ok){location.replace(location.pathname+'?u='+Date.now());}   // cache-bust fresh load
-      else if(tries<90){setTimeout(ping,2000);}
-      else{_updWarn(true);_add('<span class="tl-warn">[NO RESPONSE]</span> <span class="tl-msg">the app has not come back — it may be rolling back or need a manual restart. Try reloading shortly.</span>');}
+      if(r&&r.ok){location.replace(location.pathname+'?u='+Date.now());}   // app is back -> cache-bust reload
+      else if(tries<330){setTimeout(ping,2000);}         // keep trying to ~11 min (catches a 10-min watchdog rollback)
     }).catch(function(){
-      if(tries<90){setTimeout(ping,2000);}
-      else{_updWarn(true);_add('<span class="tl-warn">[NO RESPONSE]</span> <span class="tl-msg">the app has not come back — it may be rolling back or need a manual restart. Try reloading shortly.</span>');}
+      if(tries<330){setTimeout(ping,2000);}
     });
   })();
 }
@@ -3801,8 +3837,15 @@ function checkUpdateResult(tries){
   var retry=function(){if(tries<7&&location.search.indexOf('u=')>=0)setTimeout(function(){checkUpdateResult(tries+1);},2000);};
   api('/api/update/result').then(function(d){
     if(!d||!d.pending){retry();return;}
-    $('updResultTitle').textContent=(d.status==='success')?'UPDATE COMPLETE':'UPDATE FAILED';
-    $('updResultNote').textContent=d.note||'';
+    var ok=(d.status==='success');
+    $('updResultTitle').textContent=ok?'UPDATE COMPLETE':'UPDATE FAILED';
+    // Success/failure notice as a prominent banner ABOVE the DISMISS button (the old reddish top
+    // note was removed per design). Checkmark for success, caution triangle for a failed update.
+    var ban=$('updResultBanner');
+    ban.className='upd-banner show '+(ok?'upd-banner-ok':'upd-banner-warn');
+    ban.innerHTML=ok
+      ?'<span class="upd-ico">\\u2713</span><span>The update completed successfully!</span>'
+      :'<span class="upd-ico">\\u26a0</span><span>The update did not complete.</span>';
     // Same colourised terminal as the live view, showing the FULL captured log; start at the
     // TOP so the reader can follow it from the beginning.
     var lg=$('updResultLog');lg.innerHTML=_termHTML(String(d.log||'(no log captured)').split('\\n'));lg.scrollTop=0;
@@ -4244,8 +4287,8 @@ HTML_TEMPLATE_BODY = """
   <div class="confirm-overlay" id="updResultModal" role="dialog" aria-modal="true" aria-labelledby="updResultTitle">
     <div class="confirm-card upd-card">
       <h2 id="updResultTitle">UPDATE COMPLETE</h2>
-      <p id="updResultNote"></p>
       <div class="log-wrap"><button type="button" class="log-copy" data-copy="updResultLog" title="Copy to clipboard"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/></svg></button><div class="upd-scroll" id="updResultLog"></div></div>
+      <div id="updResultBanner" class="upd-banner" role="status"></div>
       <div class="confirm-btns">
         <button type="button" class="btn3d steel" id="updResultDismiss" style="width:100%">DISMISS</button>
       </div>
@@ -4696,6 +4739,55 @@ def api_logs():
     return jsonify({"lines": new_lines, "offset": cursor, "reset": False, "path": log_path.name})
 
 
+# The live Werkzeug WSGI server, stored so the restart path can close its LISTENING SOCKET
+# before os.execv. A re-exec inherits open file descriptors, so an unclosed listening socket
+# leaves the port bound against the NEW image -- it then dies with "Address already in use"
+# and the app never comes back on a non-systemd host (no supervisor to retry). Closing the
+# socket here releases the port for the re-exec'd process to rebind.
+_WSGI_SERVER = None
+
+
+def _serve(host, port, ssl_context=None, threaded=False):
+    """Serve the Flask app via an explicit Werkzeug server we keep a handle on (unlike
+    app.run(), which hides its socket). Holding the handle lets _schedule_process_restart
+    release the listening socket before re-exec. Belt-and-suspenders against the port-rebind
+    race (see the non-systemd restart fix):
+      * make_server sets SO_REUSEADDR, so a port still in TIME_WAIT can be reused;
+      * we mark the socket non-inheritable, so an exec drops the FD even if it wasn't closed;
+      * a bounded bind-retry rides out a port that is briefly still held at startup.
+    Mirrors app.run()'s host/port/ssl_context so it is a drop-in for both the production
+    entry point and the dev harness. `threaded` matches each caller's prior behavior."""
+    global _WSGI_SERVER
+    from werkzeug.serving import make_server            # local import: only needed here to serve
+    last_err = None
+    for attempt in range(10):                           # ~5s total: ride out a draining old port
+        try:
+            srv = make_server(host, port, app, threaded=threaded, ssl_context=ssl_context)
+            break
+        except OSError as e:                            # EADDRINUSE while an old socket drains
+            # Only a genuinely in-use / unavailable ADDRESS is worth retrying (a draining old
+            # socket). A cert or permission error (ssl.SSLError / FileNotFoundError -- both OSError
+            # subclasses) must surface IMMEDIATELY, not after 10 pointless retries (audit review #6).
+            if e.errno not in (errno.EADDRINUSE, errno.EADDRNOTAVAIL):
+                raise
+            last_err = e
+            log.warning(f"Bind {host}:{port} busy (attempt {attempt + 1}/10): {e} -- retrying")
+            time.sleep(0.5)
+    else:                                               # retries exhausted -> surface it clearly
+        log.critical(f"Could not bind {host}:{port} after retries: {last_err}")
+        raise last_err
+    try:
+        srv.socket.set_inheritable(False)               # a future exec drops this FD -> no leak
+    except Exception:                                   # non-fatal: closing before exec is the
+        pass                                            # primary guarantee regardless
+    _WSGI_SERVER = srv
+    log.info(f"Serving on {host}:{port} (threaded={threaded}, ssl={'on' if ssl_context else 'off'})")
+    try:
+        srv.serve_forever()
+    finally:
+        _WSGI_SERVER = None
+
+
 def _schedule_process_restart(delay=1.0):
     """Re-exec THIS process after `delay`s, from a daemon thread so the HTTP response is
     delivered BEFORE we go down. os.execv replaces the process image in place, preserving
@@ -4703,6 +4795,21 @@ def _schedule_process_restart(delay=1.0):
     depend on Restart=always. Isolated into a helper so tests can patch it out."""
     def _do():
         time.sleep(delay)
+        # Release our listening socket BEFORE re-exec. os.execv inherits open FDs, so leaving
+        # the listening socket open holds the port against the new image ("Address already in
+        # use") and the app never comes back on a non-systemd host. Closing it frees the port
+        # for the re-exec'd process to rebind. (The systemd path never reaches here -- systemctl
+        # fully stops the old process first, releasing the socket.)
+        srv = _WSGI_SERVER
+        if srv is not None:
+            try:
+                # Safe to close under a live serve_forever() in the main thread ONLY because
+                # os.execv fires on the very next lines: the poll loop drops the closed fd and
+                # swallows the accept() error for the microseconds before exec replaces the image
+                # (audit review #2). A read of the module global is atomic under the GIL (no lock).
+                srv.socket.close()
+            except Exception as e:                   # best-effort: exec's FD drop is the backstop
+                log.warning(f"Could not close listening socket before re-exec: {e}")
         try:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as e:                       # execv shouldn't return; if it does...
@@ -5149,19 +5256,26 @@ def _prune_backups(keep=20, backup_dir=None):
         log.warning(f"backup prune failed: {e}")
 
 
-def _swap(manifest, staging=None, dest_root=None):
+def _swap(manifest, staging=None, dest_root=None, log_fn=None):
     """Copy verified staged files over the live ones (the DEV path; the systemd path swaps
     from the /tmp bootstrap while the service is stopped). Each file is replaced ATOMICALLY --
     copy to a sibling temp, then os.replace (rename) over the live file -- so an interruption
-    can never leave a half-written live file (mirrors the bootstrap's cp→mv, audit NEW-1)."""
+    can never leave a half-written live file (mirrors the bootstrap's cp→mv, audit NEW-1).
+    If `log_fn` is given, each swapped file is reported (old→new bytes) so Stage 2's terminal
+    shows exactly what was replaced, at Stage-1-level detail."""
     staging = staging or _UPDATE_STAGING
     dest_root = dest_root or SCRIPT_DIR
     for f in manifest.get("files") or []:
         live = dest_root / f["path"]
         live.parent.mkdir(parents=True, exist_ok=True)
+        old_bytes = live.stat().st_size if live.exists() else 0   # for the "old→new" report
         tmp = live.with_name(live.name + ".gpnew")       # sibling temp on the same filesystem
         shutil.copy2(staging / f["path"], tmp)
         os.replace(tmp, live)                            # atomic rename over the live file
+        if log_fn:                                       # per-file line: "<path> … 332385 → 333025 bytes … ok"
+            new_bytes = live.stat().st_size
+            verb = "new" if old_bytes == 0 else f"{old_bytes} →"
+            log_fn(f"  {f['path']} … {verb} {new_bytes} bytes … ok")
 
 
 def _rollback(zip_path, dest_root=None):
@@ -5277,11 +5391,12 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
         "DONE_FLAG=\"$ROOT/backups/.gp_update_done\"; rm -f \"$DONE_FLAG\"\n"
         "on_exit() { [ \"$SUCCEEDED\" = 1 ] && return; log 'update did not complete - rolling back'; rollback; }\n"
         "trap on_exit EXIT\n"
-        # WATCHDOG (audit M-3): guarantee a BOUNDED recovery. If the whole apply isn't done within
-        # 30 min (a wedged systemctl restart / stuck mount leaving the app down), force a rollback
-        # and tear down this run's process group so we never hang indefinitely. $$ is the session
-        # leader's PID (setsid), so -$$ targets the bootstrap's group -- NOT the restarted service.
-        "( sleep 1800; [ -f \"$DONE_FLAG\" ] && exit 0; log 'WATCHDOG: 30m elapsed - forcing rollback'; rollback; kill -9 -$$ 2>/dev/null ) &\n"
+        # WATCHDOG (audit M-3): guarantee a BOUNDED recovery. An update should never run long --
+        # owner cap is 10 minutes TOPS. If the whole apply isn't done within 10 min (a wedged
+        # systemctl restart / stuck mount leaving the app down), force a rollback and tear down this
+        # run's process group so we never hang indefinitely. $$ is the session leader's PID (setsid),
+        # so -$$ targets the bootstrap's group -- NOT the restarted service.
+        "( sleep 600; [ -f \"$DONE_FLAG\" ] && exit 0; log 'WATCHDOG: 10m elapsed - forcing rollback'; rollback; kill -9 -$$ 2>/dev/null ) &\n"
         "WATCHDOG=$!\n"
         # Bound a stuck restart with `timeout` when it's available (dependency-free: fall back to a
         # plain restart if `timeout` isn't installed, so a missing coreutils never fails the update).
@@ -5377,7 +5492,7 @@ def _run_update():
             _update_log(f"[REVERTED] canceled before applying — still on v{APP_VERSION}")
             _update_phase("failed", "Update canceled before applying.", 0.0)
             return
-        _update_log("[APPLYING] stage 2 — this is the point of no easy return")
+        _update_log(f"[APPLYING] stage 2 — installing v{version}")
         if not _svc_skip:
             with _update_lock:
                 _update_state["systemd"] = True
@@ -5415,14 +5530,29 @@ def _run_update():
         else:
             with _update_lock:
                 _update_state["systemd"] = False
-            _update_log("[SWAPPING] files, then restarting the app…")
             _update_phase("swapping", "Applying update…", 0.86)
-            # Arm rollback BEFORE the swap: if _swap raises partway (file k of n), the except
-            # path MUST restore from the backup, else the disk is left with a mixed old/new file
-            # set that would brick the next restart (audit H-1). The running process still holds
-            # the OLD code in RAM, so restoring the backup + not re-exec'ing keeps us reachable.
+            # ---- STAGE 2 (non-systemd): in-process atomic swap + re-exec, logged in DETAIL so the
+            # terminal shows exactly what changed -- parity with Stage 1's download/verify sections.
+            # Arm rollback BEFORE the swap: if _swap raises partway (file k of n), the except path
+            # MUST restore from the backup, else the disk is left with a mixed old/new file set that
+            # would brick the next restart (audit H-1). The running process still holds the OLD code
+            # in RAM, so restoring the backup + not re-exec'ing keeps us reachable.
             swapped = True
-            _swap(manifest)
+            _update_log(f"  rollback point armed: {zpath.name}")
+            _update_log(f"[SWAPPING] {nfiles} files (atomic replace)")
+            _swap(manifest, log_fn=_update_log)          # per-file: "<path> … old → new bytes … ok"
+            # Confirm the swap actually landed: re-hash each LIVE file against the manifest. A bad
+            # on-disk file raises -> the except path rolls back from the backup zip.
+            _update_log("[VERIFYING SWAP] on-disk SHA-256")
+            for f in manifest.get("files") or []:
+                rel, want = f["path"], f["sha256"]
+                got = hashlib.sha256((SCRIPT_DIR / rel).read_bytes()).hexdigest()
+                if got != want:
+                    raise ValueError(f"post-swap hash mismatch for {rel}")
+                _update_log(f"  {rel} … ok")
+            _update_log("[RESTARTING] in-process re-exec")
+            _update_log("  releasing the listening socket, then re-exec'ing this process")
+            _update_log("  the app drops for a few seconds and returns on the new version")
             with _update_lock:
                 _full_log = "\n".join(_update_state["log"])
             # Mark 'restarting' (NOT success) BEFORE re-exec; the freshly-started process flips
@@ -5476,8 +5606,21 @@ try:
         _r = json.loads(_UPDATE_RESULT.read_text())
         if _r.get("status") == "restarting":
             _r["status"] = "success"
-            _r["note"] = "Update applied; the app restarted successfully."
+            _ver = _r.get("version", APP_VERSION)
+            _r["note"] = f"Application successfully updated to v{_ver}."
             _UPDATE_RESULT.write_text(json.dumps(_r))
+            # Append the FINAL confirmation to the captured terminal log so the result modal ends
+            # with a clear, green "[DONE]" line (the log was captured just before re-exec; reaching
+            # here proves the new version imported + is serving) -- Stage 2 finishes with a result.
+            try:
+                _prev = _UPDATE_LOG.read_text() if _UPDATE_LOG.exists() else ""
+                _UPDATE_LOG.write_text(
+                    _prev.rstrip("\n")
+                    + "\n[HEALTH] the new version is serving … ok"
+                    + f"\n[DONE] Application successfully updated to v{_ver}"
+                )
+            except Exception:                             # noqa: BLE001 -- log tail is best-effort
+                pass
 except Exception as _e:                                    # noqa: BLE001 -- non-fatal
     log.warning(f"could not promote update result marker: {_e}")
 
@@ -5856,11 +5999,14 @@ def main():
     threading.Thread(target=update_check_loop, daemon=True).start()
 
     try:
-        app.run(
+        # Serve via _serve (not app.run) so the restart path can release the listening socket
+        # before re-exec (see _serve / _schedule_process_restart). threaded=False preserves the
+        # prior single-threaded serving behavior of app.run(); SSL is passed through unchanged.
+        _serve(
             host=CONFIG["HOST"],
             port=CONFIG["PORT"],
             ssl_context=ssl_context,
-            debug=False,
+            threaded=False,
         )
     except KeyboardInterrupt:
         log.info("Shutting down...")

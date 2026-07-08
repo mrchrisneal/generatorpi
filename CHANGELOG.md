@@ -3,6 +3,19 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.1.0
+
+- **Reliable self-update restart (critical)**: on non-systemd installs the updater now releases
+  its listening socket before re-exec (plus `SO_REUSEADDR` and a startup bind-retry), so the app
+  reliably comes back on the new version instead of failing to rebind its port and staying down.
+- **Detailed Stage-2 progress**: applying an update now streams a full, itemised log — each file
+  swapped (old→new size), on-disk hash re-verification, and the restart handoff — matching the
+  detail of the download/verify stage, with a clear "Application successfully updated to vX.Y.Z".
+- **Clearer update UX**: a large "Restarting" spinner while the app comes back (with a delayed
+  "still updating" notice and, past 5 minutes, an unresponsive warning), and a success/failure
+  banner above the Dismiss button on the result screen.
+- **Bounded update time**: an update that wedges is force-rolled-back after 10 minutes (was 30).
+
 ## 1.0.3
 
 - **Footer "Update now" opens the in-app updater directly**: the update banner no longer
