@@ -2441,7 +2441,7 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .tl-sub{color:#6fbf90}
 /* Copy-to-clipboard button floating at the top-right of any log/terminal window. */
 .log-wrap{position:relative}
-.log-copy{position:absolute;top:10px;right:10px;z-index:3;appearance:none;cursor:pointer;
+.log-copy{position:absolute;top:10px;right:12px;z-index:3;appearance:none;cursor:pointer;
   display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;
   border:1px solid #2d4a3a;background:rgba(8,18,12,.9);color:#8fe0a8;border-radius:6px;
   opacity:.33;transition:opacity .15s,color .15s,border-color .15s}
