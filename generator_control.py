@@ -2436,6 +2436,16 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .tl-warn{color:#ffb347;font-weight:700}
 .tl-msg{color:#bfe6cf}
 .tl-sub{color:#6fbf90}
+/* Copy-to-clipboard button floating at the top-right of any log/terminal window. */
+.log-wrap{position:relative}
+.log-copy{position:absolute;top:6px;right:6px;z-index:3;appearance:none;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;
+  border:1px solid #2d4a3a;background:rgba(8,18,12,.9);color:#8fe0a8;border-radius:6px;
+  opacity:.72;transition:opacity .15s,color .15s,border-color .15s}
+.log-copy svg{width:15px;height:15px;display:block}
+.log-wrap:hover .log-copy{opacity:1}
+.log-copy:hover{color:#eafff5;border-color:#3a7a54}
+.log-copy.done{color:#7effb0;border-color:#3a7a54;opacity:1}
 /* Spinner shown to the LEFT of the modal title while the update is actively working. */
 .upd-title-spin{display:none;width:15px;height:15px;margin-right:9px;vertical-align:-2px;
   border:2px solid rgba(180,230,200,.3);border-top-color:#8fe0a8;border-radius:50%;
@@ -2620,9 +2630,17 @@ var _pollPrio={state:0,events:1,logs:1,sys:2};
 // the Pi isn't hammered -- but we KEEP the lightweight 'state' poll so the header bar (ONLINE +
 // latency) stays live even with the modal open / parked at the go/no-go. Only 'state' gets through.
 var updateActive=false;
+// User-controllable poll cadence (localStorage-backed, clamped 1-30s, default 3s). Everything that
+// polls the Pi uses this ONE rate -- incl. the update-status poll -- so we never hammer the link.
+// (The Settings slider that writes gp_refresh_secs is task #37; the plumbing is here now.)
+var refreshMs=Math.max(1000,Math.min(30000,(parseInt(localStorage.getItem('gp_refresh_secs'),10)||3)*1000));
+// The update / result modal covers the log windows, so while EITHER is open we pause the heavy
+// polls too (only 'state' keeps the header live) -- even before the update itself has started.
+function _updModalShown(){var a=document.getElementById('updModal'),b=document.getElementById('updResultModal');
+  return (a&&a.classList.contains('show'))||(b&&b.classList.contains('show'));}
 function pollFetch(key,path,ms){
   return new Promise(function(resolve){
-    if(updateActive&&key!=='state'){resolve(null);return;}   // during an update, only 'state' polls
+    if((updateActive||_updModalShown())&&key!=='state'){resolve(null);return;}   // update running OR modal open -> only 'state'
     for(var i=0;i<_pollQ.length;i++){          // coalesce a still-queued same-key job
       if(_pollQ[i].key===key){_pollQ[i].resolve(null);_pollQ[i].path=path;_pollQ[i].ms=ms;_pollQ[i].resolve=resolve;return;}
     }
@@ -2891,7 +2909,7 @@ function setLogView(v){logView=(v==='log')?'log':'events';
   if(actBtn){if(p&&p.then){p.then(function(){actBtn.classList.remove('loading');});}else{actBtn.classList.remove('loading');}}}
 
 /* ---------- actions ---------- */
-function refresh(){fetchState(function(s){if(s)applyState(s);});loadLogFeed();}
+function refresh(){fetchState(function(s){if(s)applyState(s);});loadLogFeed();setTimeout(_placeCopyBtns,60);}
 function settle(target){var n=0;(function step(){setTimeout(function(){fetchState(function(s){if(s)applyState(s);if((s&&s.running===target)||++n>20){busy=false;sw.disabled=false;if(s)applyState(s);loadLogFeed();}else step();});},600);})();}
 var sw=$('powerSwitch');
 var confirmOverlayEl=$('confirmOverlay');
@@ -3523,7 +3541,7 @@ initDrawer('sysDrawer','sys',function(open){
 })();
 registerSW();
 refresh();
-setInterval(function(){if(!busy)refresh();},4000);
+setInterval(function(){if(!busy)refresh();},refreshMs);
 /* ---------- footer update check ---------- */
 /* Ask the server (which can reach GitHub; the page's CSP can't) for the latest published
    version. ONLY when a newer one exists do we reveal the footer update banner (+ pulse the
@@ -3609,10 +3627,17 @@ function _fmtLogLine(line){
   return '<span class="tl-msg">'+_esc(line)+'</span>';                        // plain line
 }
 function _termHTML(lines){return lines.map(function(l){return '<div class="tl">'+_fmtLogLine(l)+'</div>';}).join('');}
+var _termSig='';
 function _renderTerm(el,logArr){
+  // Skip the DOM rewrite when the log is unchanged (length + last line identical) -- rewriting
+  // innerHTML would wipe the user's text selection, so an idle/parked terminal stays selectable.
+  var sig=(logArr?logArr.length:0)+'|'+(logArr&&logArr.length?logArr[logArr.length-1]:'');
+  if(sig===_termSig)return;
+  _termSig=sig;
   var prev=el.scrollTop;
   el.innerHTML=(logArr&&logArr.length)?_termHTML(logArr):'';
   el.scrollTop=_termFollow?el.scrollHeight:prev;   // follow only while pinned to the bottom
+  _placeCopyBtns();                                // reposition COPY clear of any scrollbar
 }
 // Any scroll away from the bottom stops the auto-follow; returning to the bottom resumes it.
 $('updChangelog').addEventListener('scroll',function(){
@@ -3625,6 +3650,33 @@ function _updWarn(on,text){var w=$('updWarn');if(w)w.classList.toggle('show',!!o
   if(on&&text){var t=$('updWarnText');if(t)t.textContent=text;}
   if(on){_updOk(false);}}
 function _updOk(on){var o=$('updOk');if(o)o.classList.toggle('show',!!on);if(on){var w=$('updWarn');if(w)w.classList.remove('show');}}
+// Copy any log/terminal window to the clipboard (the COPY button top-right of a .log-wrap).
+// innerText keeps the rendered line breaks; falls back to textarea+execCommand off secure ctx.
+document.addEventListener('click',function(e){
+  var b=e.target&&e.target.closest?e.target.closest('.log-copy'):null;if(!b)return;
+  var el=$(b.dataset.copy);if(!el)return;
+  var txt=el.innerText||el.textContent||'';
+  // On success, swap the copy glyph for a checkmark (green), then revert after a moment.
+  var CHECK='<svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z"/></svg>';
+  var done=function(){var o=b.innerHTML;b.innerHTML=CHECK;b.classList.add('done');
+    setTimeout(function(){b.innerHTML=o;b.classList.remove('done');},1200);};
+  var fb=function(){var ta=document.createElement('textarea');ta.value=txt;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.focus();ta.select();var ok=false;try{ok=document.execCommand('copy');}catch(_e){}
+    document.body.removeChild(ta);if(ok)done();};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,fb);}
+  else{fb();}
+});
+// Keep each COPY button clear of the scrollbar: nudge it left by the scroll box's scrollbar
+// width (0 when none) so it's equidistant from the top/right when there's no bar, and never
+// overlaps the bar when there is one.
+function _placeCopyBtns(){
+  var wraps=document.querySelectorAll('.log-wrap');
+  for(var i=0;i<wraps.length;i++){
+    var box=wraps[i].querySelector('.upd-scroll,.log'),btn=wraps[i].querySelector('.log-copy');
+    if(box&&btn){var sb=box.offsetWidth-box.clientWidth;btn.style.right=(6+(sb>0?sb:0))+'px';}
+  }
+}
+window.addEventListener('resize',_placeCopyBtns);
 function openUpdateModal(){
   var cl=$('updChangelog'),doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   cl.textContent='Loading changelog…';cl.style.display='';
@@ -3638,6 +3690,7 @@ function openUpdateModal(){
     if(d&&d.changelog){cl.textContent=d.changelog;}
     else{cl.textContent='Changelog unavailable'+((d&&d.error)?(' — '+d.error):'')+'.';}
     note.textContent='All files are backed up to '+((d&&d.backup_dir)||'backups/')+' before updating.';
+    _placeCopyBtns();
   }).catch(function(e){cl.textContent='Changelog unavailable — request failed'+(e?(' ('+e+')'):'')+'.';});
 }
 // CANCEL doubles as REVERT while the run is parked on a decision; else it only closes when idle.
@@ -3654,7 +3707,7 @@ $('updDoBtn').addEventListener('click',function(){
   b.classList.add('loading');$('updCancelBtn').disabled=true;
   post('/api/update/start').then(function(){
     updateActive=true;                                   // PAUSE all routine polling now
-    _termFollow=true;                                    // follow the terminal until the user scrolls
+    _termFollow=true;_termSig='';                        // follow + force a fresh first render
     _updWorking(true);_updWarn(false);_updOk(false);     // spinner on, no banners yet
     var cl=$('updChangelog');cl.style.display='';cl.textContent='Starting…';
     $('updBackupNote').style.display='none';
@@ -3691,7 +3744,7 @@ function _showDecision(s){
 function _pollUpdate(){
   if(_updPoll)clearTimeout(_updPoll);
   api('/api/update/status').then(function(s){
-    if(!s){_updPoll=setTimeout(_pollUpdate,1200);return;}
+    if(!s){_updPoll=setTimeout(_pollUpdate,refreshMs);return;}
     var cl=$('updChangelog');cl.style.display='';_renderTerm(cl,s.log);
     var working=['checking','downloading','verifying','backing_up','swapping','restarting'].indexOf(s.phase)>=0;
     _updWorking(working);
@@ -3709,8 +3762,8 @@ function _pollUpdate(){
       $('updDoBtn').style.display='none';_updPoll=null;return;
     }
     if(s.phase==='restarting'){_updPoll=null;_waitBackAndReload();return;}
-    _updPoll=setTimeout(_pollUpdate,1200);
-  }).catch(function(){_updPoll=setTimeout(_pollUpdate,1500);});
+    _updPoll=setTimeout(_pollUpdate,refreshMs);
+  }).catch(function(){_updPoll=setTimeout(_pollUpdate,refreshMs);});
 }
 function _waitBackAndReload(){
   // Keep checking until the app answers again, then FORCE a cache-bust reload of the whole page
@@ -3741,7 +3794,7 @@ function checkUpdateResult(){
     // Same colourised terminal as the live view, showing the FULL captured log; start at the
     // TOP so the reader can follow it from the beginning.
     var lg=$('updResultLog');lg.innerHTML=_termHTML(String(d.log||'(no log captured)').split('\\n'));lg.scrollTop=0;
-    _ovShow('updResultModal');
+    _ovShow('updResultModal');_placeCopyBtns();
   }).catch(function(){});
 }
 $('updResultDismiss').addEventListener('click',function(){
@@ -3947,7 +4000,7 @@ HTML_TEMPLATE_BODY = """
                was too crowded); here we keep only the title + the live count. -->
           <span class="log-count" id="logCount">0 EVENTS</span>
         </div>
-        <div class="log" id="log"></div>
+        <div class="log-wrap"><button type="button" class="log-copy" data-copy="log" title="Copy to clipboard"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/></svg></button><div class="log" id="log"></div></div>
       </div>
 
       <!-- Modules: the feature drawers below (fuel projection + system perf history).
@@ -4153,7 +4206,7 @@ HTML_TEMPLATE_BODY = """
   <div class="confirm-overlay" id="updModal" role="dialog" aria-modal="true" aria-labelledby="updModalTitle">
     <div class="confirm-card upd-card" id="updCard">
       <h2 id="updModalTitle"><span class="upd-title-spin" aria-hidden="true"></span>UPDATE GENERATORPI</h2>
-      <div class="upd-scroll" id="updChangelog">Loading changelog…</div>
+      <div class="log-wrap"><button type="button" class="log-copy" data-copy="updChangelog" title="Copy to clipboard"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/></svg></button><div class="upd-scroll" id="updChangelog">Loading changelog…</div></div>
       <div class="upd-backup-note" id="updBackupNote"></div>
       <div class="upd-warn" id="updWarn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>
@@ -4180,7 +4233,7 @@ HTML_TEMPLATE_BODY = """
     <div class="confirm-card upd-card">
       <h2 id="updResultTitle">UPDATE COMPLETE</h2>
       <p id="updResultNote"></p>
-      <div class="upd-scroll" id="updResultLog"></div>
+      <div class="log-wrap"><button type="button" class="log-copy" data-copy="updResultLog" title="Copy to clipboard"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/></svg></button><div class="upd-scroll" id="updResultLog"></div></div>
       <div class="confirm-btns">
         <button type="button" class="btn3d steel" id="updResultDismiss" style="width:100%">DISMISS</button>
       </div>
