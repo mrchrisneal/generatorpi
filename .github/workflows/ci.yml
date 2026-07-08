@@ -1,23 +1,37 @@
-# CI pipeline for GeneratorPi (#11): on every push/PR to main, run the full test suite; on pushes
-# to main, additionally regenerate manifest.json (kills the manual "manifest treadmill" — the
-# updater verifies files against this) and refresh the coverage badge, committing them back with
-# a [skip ci] marker so the auto-commit doesn't re-trigger this workflow.
+# CI + release pipeline for GeneratorPi.
+#
+#  * push/PR to main  -> run the full test suite. On main pushes, additionally regenerate
+#    manifest.json (the in-app updater verifies downloaded files against it) and refresh the
+#    coverage badge, committing them back with a [skip ci] marker so the auto-commit doesn't
+#    re-trigger the workflow.
+#  * push a vX.Y.Z tag -> the `release` job runs: verify the VERSION file matches the tag, gate on
+#    the test suite, verify manifest.json matches the shipped files, then PUBLISH a GitHub Release
+#    whose notes are the CHANGELOG.md section for that version. No manual `gh release create`.
+#
+#  Cutting a release is therefore just:
+#     1) edit CHANGELOG.md (add the "## X.Y.Z" section) + bump VERSION
+#     2) commit + push main            (the push run regenerates + commits manifest.json)
+#     3) git tag vX.Y.Z && git push origin vX.Y.Z   (this job publishes the Release automatically)
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
 permissions:
-  contents: write            # needed to commit the regenerated manifest + coverage badge back
+  contents: write            # commit the regenerated manifest/badge on push; create Releases on tag
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Don't run on the workflow's own auto-commits (they carry [skip ci]).
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    # Branch pushes + PRs only (tag pushes go to `release`). Skip the workflow's own auto-commits
+    # (they carry [skip ci]).
+    if: >-
+      !startsWith(github.ref, 'refs/tags/')
+      && !contains(github.event.head_commit.message, '[skip ci]')
     steps:
       - uses: actions/checkout@v4
 
@@ -64,3 +78,68 @@ jobs:
             git commit -m "ci: regenerate manifest + coverage badge [skip ci]"
             git push
           fi
+
+  release:
+    # Fires only for vX.Y.Z tag pushes: gate + consistency checks, then publish the GitHub Release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
+          pip install pytest
+
+      - name: Derive version from the tag
+        id: ver
+        run: echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: VERSION file must match the tag
+        run: |
+          disk="$(tr -d '[:space:]' < VERSION)"
+          want="${{ steps.ver.outputs.v }}"
+          if [ "$disk" != "$want" ]; then
+            echo "::error::VERSION file ($disk) does not match tag ($want) -- bump VERSION before tagging"
+            exit 1
+          fi
+          echo "VERSION $disk matches tag"
+
+      - name: Run tests (release gate)
+        run: python -m pytest tests/ -q
+
+      - name: manifest.json must match the shipped files
+        run: |
+          python tools/gen-manifest.py
+          if ! git diff --quiet manifest.json; then
+            echo "::error::manifest.json is stale on this tag -- it must be regenerated + committed on main before tagging"
+            git --no-pager diff manifest.json
+            exit 1
+          fi
+          echo "manifest.json matches all shipped files"
+
+      - name: Extract this version's CHANGELOG notes
+        run: |
+          awk -v ver="## ${{ steps.ver.outputs.v }}" '
+            $0 == ver {flag=1; next}      # start after the matching "## X.Y.Z" heading
+            /^## / && flag {flag=0}        # stop at the next version heading
+            flag {print}
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::no CHANGELOG.md section found for ${{ steps.ver.outputs.v }}"
+            exit 1
+          fi
+          echo "----- release notes -----"; cat notes.md
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "GeneratorPi $GITHUB_REF_NAME" \
+            --notes-file notes.md
