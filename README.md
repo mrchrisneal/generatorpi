@@ -14,30 +14,13 @@ GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E ge
   <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/web-ui.png" alt="GeneratorPi web UI — industrial control panel showing RUNNING status, the hero power switch, a current-run timer and total-runtime odometer, system registers, a live event log, and collapsible Fuel Projection and System modules" width="640">
 </p>
 
+<p align="center"><sub><a href="../../wiki/Screenshots">More screenshots are available on the wiki →</a></sub></p>
+
 > [!CAUTION]
 > This system cannot auto-detect the real generator state. Always verify the unit visually and audibly before relying on this readout.
 
 > [!WARNING]
 > This software is provided **as-is**, with no warranty, and is under **active development** — expect changes, rough edges, and breaking updates. **Use caution**, test thoroughly on your own hardware, and never rely on it as your only safeguard around a running generator.
-
-<details>
-<summary><b>📸 More screenshots</b></summary>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/fuel-projection.png" alt="Fuel Projection module — tank gauge with level, drain rate, and time-to-empty projections" width="520"><br>
-  <em>Fuel Projection — live drain-rate model with time-to-empty estimates</em>
-</p>
-<p align="center">
-  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/system-metrics.png" alt="System module — CPU/memory and load charts plus temperature and Wi-Fi link sensors" width="520"><br>
-  <em>System metrics — CPU/memory and load charts, temperature and Wi-Fi link</em>
-</p>
-<p align="center">
-  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/updater-staged.png" alt="Update modal — staged and verified, ready to apply" width="380">
-  <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/updater-complete.png" alt="Update modal — update completed successfully" width="380"><br>
-  <em>One-click self-updater — verified against the manifest, then applied in place</em>
-</p>
-
-</details>
 
 ## Features
 
@@ -114,6 +97,7 @@ For detailed information, refer to the project wiki pages:
 * **System Operations**:
   * [Configuration](../../wiki/Configuration) — Complete settings reference and user additions.
   * [Web UI Guide](../../wiki/Web-UI-Guide) — Interface control panels, manual overrides, and metrics.
+  * [Screenshots](../../wiki/Screenshots) — A visual tour of every panel and modal.
   * [Fuel Projection & Alerts](../../wiki/Fuel-Projection-and-Alerts) — Consumption modeling and alert calibration.
   * [Web Push Notifications](../../wiki/Web-Push-Notifications) — Browser configurations and requirements.
 * **Developer Reference**:
