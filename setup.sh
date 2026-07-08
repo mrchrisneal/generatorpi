@@ -108,6 +108,21 @@ do_install() {
         fi
     fi
 
+    # cheroot (RECOMMENDED): the HTTP server with keep-alive + built-in TLS. The controller still runs
+    # without it (it falls back to the werkzeug server), but every HTTPS request then pays a fresh TLS
+    # handshake -- which pins the CPU on a Pi Zero 2 W. Pure-Python wheel, no compiler. Best-effort.
+    if ! /usr/bin/python3 -c "import cheroot" 2>/dev/null; then
+        echo ""
+        echo "HTTP-server dependency 'cheroot' not found -- attempting a best-effort install."
+        echo "(Recommended: enables HTTP keep-alive so HTTPS doesn't re-handshake every request.)"
+        if ! sudo pip3 install 'cheroot>=11.1.2,<12' >/dev/null 2>&1 \
+           && ! sudo pip3 install --break-system-packages 'cheroot>=11.1.2,<12' >/dev/null 2>&1; then
+            echo "  Could not auto-install cheroot. For HTTP keep-alive later, run:"
+            echo "    sudo pip3 install --break-system-packages 'cheroot>=11.1.2,<12'"
+            echo "  then: sudo systemctl restart ${SERVICE_NAME}"
+        fi
+    fi
+
     # Generate and install the service file
     generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null
     sudo systemctl daemon-reload

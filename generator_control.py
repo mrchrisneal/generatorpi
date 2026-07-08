@@ -32,6 +32,7 @@ import math
 import ipaddress
 import secrets
 import socket
+import ssl               # TLS version floor on the cheroot server's SSL adapter (keep-alive server swap)
 import sqlite3
 import re              # manifest version charset validation (self-updater)
 import hashlib         # SHA-256 verification of downloaded release files (self-updater)
@@ -4442,6 +4443,9 @@ def set_security_headers(response):
     """Add security headers to every response."""
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
+    # Neutralize the server banner's version disclosure (cheroot sends "Cheroot/X.Y.Z", werkzeug sends
+    # "Werkzeug/x Python/y") -- aids targeted CVE matching. Uniform for both server paths; quiet by default.
+    response.headers["Server"] = "generatorpi"
     # Strict CSP for a fully self-contained page: no external requests at all.
     # default-src 'none' denies everything by default; we then re-allow ONLY inline
     # styles/scripts (the whole UI is inline), same-origin XHR/fetch (connect-src),
@@ -4820,36 +4824,129 @@ def api_logs():
 # leaves the port bound against the NEW image -- it then dies with "Address already in use"
 # and the app never comes back on a non-systemd host (no supervisor to retry). Closing the
 # socket here releases the port for the re-exec'd process to rebind.
-_WSGI_SERVER = None
+# ---- WSGI server config (cheroot keep-alive server) ----
+# Thread-pool MINIMUM. The GIL means threads aren't CPU parallelism; this is I/O concurrency so one
+# slow TLS client can't block the rest. 8 is ample for a single user + a few pollers on the Pi Zero 2 W.
+SERVE_THREADS = int(os.environ.get('SERVE_THREADS', '8'))
+# HARD cap on the pool. cheroot's default max=-1 is UNBOUNDED -> a connection flood would grow the pool
+# until the ~512 MB Pi OOM-kills the app (~8 MB stack/thread). A cap turns "OOM" into "excess conns wait".
+SERVE_MAX_THREADS = int(os.environ.get('SERVE_MAX_THREADS', '24'))
+# Per-connection socket timeout (s): a peer sending/receiving nothing for this long is dropped (bounds
+# slow-trickle requests). cheroot's default is 10; set explicitly so it's a reviewed value.
+SERVE_TIMEOUT = int(os.environ.get('SERVE_TIMEOUT', '10'))
+# cheroot stop() waits up to this many seconds for in-flight requests to drain before we re-exec on a
+# restart. Small = snappy self-update; idle keep-alive conns are closed promptly regardless.
+SERVE_SHUTDOWN_TIMEOUT = int(os.environ.get('SERVE_SHUTDOWN_TIMEOUT', '2'))
+
+_WSGI_SERVER = None          # handle to the live server (cheroot Server, or the werkzeug fallback)
+_RESTART_REQUESTED = False   # set by _schedule_process_restart; the MAIN thread execs when serve() returns
+
+
+def _do_execv():
+    """Re-exec THIS process in place, preserving argv. os.execv shouldn't return; if it does, exit so a
+    supervisor (systemd) can respawn. Shared by the cheroot (main-thread) and werkzeug (in-thread) paths."""
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:                              # execv shouldn't return; if it does...
+        log.error(f"Restart re-exec failed ({e}); exiting for a supervisor to respawn.")
+        os._exit(1)
 
 
 def _serve(host, port, ssl_context=None, threaded=False):
-    """Serve the Flask app via an explicit Werkzeug server we keep a handle on (unlike
-    app.run(), which hides its socket). Holding the handle lets _schedule_process_restart
-    release the listening socket before re-exec. Belt-and-suspenders against the port-rebind
-    race (see the non-systemd restart fix):
-      * make_server sets SO_REUSEADDR, so a port still in TIME_WAIT can be reused;
-      * we mark the socket non-inheritable, so an exec drops the FD even if it wasn't closed;
-      * a bounded bind-retry rides out a port that is briefly still held at startup.
-    Mirrors app.run()'s host/port/ssl_context so it is a drop-in for both the production
-    entry point and the dev harness. `threaded` matches each caller's prior behavior."""
+    """Serve the Flask app via cheroot -- a real WSGI server with HTTP keep-alive (an HTTPS poll reuses
+    ONE TLS session instead of paying a fresh ECDSA handshake every request, the dominant CPU cost on
+    the Pi Zero 2 W) and a built-in stdlib-ssl adapter for our self-signed ECDSA P-256 cert. We keep a
+    handle in `_WSGI_SERVER` so _schedule_process_restart can release the listening socket before the
+    os.execv re-exec (the non-systemd restart fix). Belt-and-suspenders: if cheroot can't be imported
+    (e.g. an install that self-updated to this version before `pip install cheroot` ran), fall back to
+    the werkzeug server so the app STILL serves (minus keep-alive) instead of bricking -- keep-alive
+    engages automatically once cheroot is present. `threaded` is retained for call-site compatibility
+    (cheroot always uses a thread pool)."""
+    global _WSGI_SERVER
+    try:
+        from cheroot import wsgi                         # pure-Python; no compiler on the Pi
+        from cheroot.ssl.builtin import BuiltinSSLAdapter
+    except Exception as e:                               # cheroot missing/broken -> stay alive
+        log.warning(f"cheroot unavailable ({e}); falling back to the werkzeug server (NO HTTP "
+                    f"keep-alive). Run `pip install cheroot` to enable keep-alive.")
+        return _serve_werkzeug(host, port, ssl_context=ssl_context, threaded=threaded)
+
+    # Bind-retry via a RAW-SOCKET PROBE that yields a REAL errno. cheroot's prepare() masks bind errors
+    # as an errno-less socket.error, so we can't tell EADDRINUSE (retry a draining old port) from a
+    # cert/permission error (surface now) by its .errno. A raw bind probe gives a real errno, preserving
+    # the #41 / audit-#6 semantics. The tiny probe->cheroot TOCTOU is covered by SO_REUSEADDR (both set
+    # it) and nothing else contends for the port on this single-user box.
+    last_err = None
+    for attempt in range(10):                           # ~5s: ride out a draining old port
+        fam = socket.AF_INET6 if ':' in host else socket.AF_INET   # match an IPv6 host override
+        probe = socket.socket(fam, socket.SOCK_STREAM)
+        try:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, int(port)))               # raises OSError WITH a real .errno
+            break
+        except OSError as ex:
+            if ex.errno not in (errno.EADDRINUSE, errno.EADDRNOTAVAIL):
+                raise                                   # cert/permission/other -> surface NOW
+            last_err = ex
+            log.warning(f"Bind {host}:{port} busy (attempt {attempt + 1}/10): {ex} -- retrying")
+            time.sleep(0.5)
+        finally:
+            probe.close()                               # free it so cheroot can bind the port
+    else:                                               # retries exhausted -> surface it clearly
+        log.critical(f"Could not bind {host}:{port} after retries: {last_err}")
+        raise last_err
+
+    # Port is free -> build + prepare cheroot ONCE. The cert loads EAGERLY at BuiltinSSLAdapter
+    # construction, so a bad/unreadable cert raises HERE (outside the retry loop) -- audit-#6 semantics.
+    srv = wsgi.Server((host, int(port)), app,
+                      numthreads=SERVE_THREADS, max=SERVE_MAX_THREADS,     # bounded pool (no OOM growth)
+                      request_queue_size=16, timeout=SERVE_TIMEOUT,
+                      accepted_queue_size=64, shutdown_timeout=SERVE_SHUTDOWN_TIMEOUT)
+    if ssl_context:                                     # (certfile, keyfile) -> terminate TLS in-process
+        cert, key = ssl_context
+        srv.ssl_adapter = BuiltinSSLAdapter(certificate=str(cert), private_key=str(key))
+        # ciphers=None -> stdlib create_default_context() secure defaults (include ECDHE-ECDSA for our
+        # P-256 cert). Pin an explicit TLS 1.2 floor; create_default_context only pins it on Python 3.10+.
+        srv.ssl_adapter.context.minimum_version = ssl.TLSVersion.TLSv1_2
+    srv.prepare()                                       # binds the listen socket (sets SO_REUSEADDR)
+    try:
+        srv.socket.set_inheritable(False)               # belt-and-suspenders (cheroot already CLOEXECs)
+    except Exception:
+        pass
+    _WSGI_SERVER = srv
+    # Route cheroot's error hook through our logger so the appliance stays quiet + single-streamed
+    # (cheroot logs no request bodies / auth headers).
+    srv.error_log = lambda msg='', level=40, traceback=False: (
+        log.error(f"cheroot: {msg}") if level >= 40 else log.info(f"cheroot: {msg}"))
+    log.info(f"Serving on {host}:{port} via cheroot "
+             f"(threads={SERVE_THREADS}-{SERVE_MAX_THREADS}, keep-alive=on, "
+             f"ssl={'on' if ssl_context else 'off'})")
+    try:
+        srv.serve()                                     # blocks until srv.stop() (restart path)
+    finally:
+        _WSGI_SERVER = None
+    # A restart request makes cheroot's stop() return serve() on THIS main thread; re-exec HERE
+    # (deterministic). A daemon restart thread could be killed at interpreter shutdown before reaching
+    # execv, leaving the app down on a non-systemd host. execv replaces the image, so main()'s cleanup
+    # finally never runs on restart -- matching the pre-cheroot behavior (no relay close on restart).
+    if _RESTART_REQUESTED:
+        _do_execv()
+
+
+def _serve_werkzeug(host, port, ssl_context=None, threaded=False):
+    """Fallback server (NO HTTP keep-alive) -- the proven pre-cheroot werkzeug path, kept verbatim so an
+    install without cheroot still serves. Its serve_forever() never returns on its own, so its restart
+    re-execs IN the restart thread (see _schedule_process_restart's fallback branch), not here."""
     global _WSGI_SERVER
     from werkzeug.serving import make_server            # local import: only needed here to serve
-    # NOTE: werkzeug's dev server does NOT keep HTTP connections alive (it sends Connection: close
-    # even at HTTP/1.1 with a Content-Length), so every HTTPS poll pays a fresh TLS handshake -- the
-    # dominant cost on the Pi Zero 2 W. threaded=True (below, from the caller) still helps a lot: it
-    # lets concurrent handshakes/requests overlap their network round-trips instead of serializing,
-    # so one slow handshake no longer blocks everyone. TRUE keep-alive needs a real WSGI server
-    # (waitress) + reworking the restart socket-release below -- tracked as a follow-up (see #51).
     last_err = None
     for attempt in range(10):                           # ~5s total: ride out a draining old port
         try:
             srv = make_server(host, port, app, threaded=threaded, ssl_context=ssl_context)
             break
         except OSError as e:                            # EADDRINUSE while an old socket drains
-            # Only a genuinely in-use / unavailable ADDRESS is worth retrying (a draining old
-            # socket). A cert or permission error (ssl.SSLError / FileNotFoundError -- both OSError
-            # subclasses) must surface IMMEDIATELY, not after 10 pointless retries (audit review #6).
+            # A cert or permission error (ssl.SSLError / FileNotFoundError -- both OSError subclasses)
+            # must surface IMMEDIATELY, not after 10 pointless retries (audit review #6).
             if e.errno not in (errno.EADDRINUSE, errno.EADDRNOTAVAIL):
                 raise
             last_err = e
@@ -4863,7 +4960,8 @@ def _serve(host, port, ssl_context=None, threaded=False):
     except Exception:                                   # non-fatal: closing before exec is the
         pass                                            # primary guarantee regardless
     _WSGI_SERVER = srv
-    log.info(f"Serving on {host}:{port} (threaded={threaded}, ssl={'on' if ssl_context else 'off'})")
+    log.info(f"Serving on {host}:{port} via werkzeug fallback "
+             f"(threaded={threaded}, NO keep-alive, ssl={'on' if ssl_context else 'off'})")
     try:
         srv.serve_forever()
     finally:
@@ -4871,32 +4969,36 @@ def _serve(host, port, ssl_context=None, threaded=False):
 
 
 def _schedule_process_restart(delay=1.0):
-    """Re-exec THIS process after `delay`s, from a daemon thread so the HTTP response is
-    delivered BEFORE we go down. os.execv replaces the process image in place, preserving
-    argv -- it self-respawns with OR without a supervisor (systemd), which is why we don't
-    depend on Restart=always. Isolated into a helper so tests can patch it out."""
+    """Re-exec THIS process after `delay`s so the HTTP response flushes first. It self-respawns with OR
+    without a supervisor (systemd), which is why we don't depend on Restart=always. Isolated so tests can
+    patch it out. The two server types have OPPOSITE shutdown models:
+      * cheroot: set _RESTART_REQUESTED + call stop() -- stop() makes the MAIN thread's serve() return,
+        and the re-exec then runs on the MAIN thread in _serve. We do NOT exec here: a daemon thread can
+        be killed at interpreter shutdown before reaching execv, which would leave the app down on a
+        non-systemd host (the #41 failure).
+      * werkzeug fallback: its serve_forever() won't return on its own, so we close the socket and
+        re-exec IN this thread (the proven pre-cheroot path)."""
     def _do():
         time.sleep(delay)
-        # Release our listening socket BEFORE re-exec. os.execv inherits open FDs, so leaving
-        # the listening socket open holds the port against the new image ("Address already in
-        # use") and the app never comes back on a non-systemd host. Closing it frees the port
-        # for the re-exec'd process to rebind. (The systemd path never reaches here -- systemctl
-        # fully stops the old process first, releasing the socket.)
+        global _RESTART_REQUESTED
         srv = _WSGI_SERVER
+        if srv is not None and hasattr(srv, 'stop'):     # cheroot: the MAIN thread owns the exec
+            _RESTART_REQUESTED = True                    # set BEFORE stop() (serve() returns after it,
+            try:                                         #   so the main thread always observes True)
+                srv.stop()                               # sets ready=False -> main serve() returns; also
+            except Exception as e:                       #   releases the socket (redundant w/ CLOEXEC)
+                log.warning(f"cheroot stop() before restart failed: {e}")
+            return                                       # DO NOT exec here -- _serve's main thread does
+        # werkzeug fallback (or no server): release the socket + re-exec in THIS thread. os.execv fires
+        # on the next line so serve_forever()'s poll loop just drops the closed fd before the image is
+        # replaced (audit review #2). Reading the module global is atomic under the GIL.
+        _RESTART_REQUESTED = True
         if srv is not None:
             try:
-                # Safe to close under a live serve_forever() in the main thread ONLY because
-                # os.execv fires on the very next lines: the poll loop drops the closed fd and
-                # swallows the accept() error for the microseconds before exec replaces the image
-                # (audit review #2). A read of the module global is atomic under the GIL (no lock).
                 srv.socket.close()
-            except Exception as e:                   # best-effort: exec's FD drop is the backstop
+            except Exception as e:                       # best-effort: exec's CLOEXEC drop is the backstop
                 log.warning(f"Could not close listening socket before re-exec: {e}")
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except Exception as e:                       # execv shouldn't return; if it does...
-            log.error(f"Restart re-exec failed ({e}); exiting for a supervisor to respawn.")
-            os._exit(1)
+        _do_execv()
     threading.Thread(target=_do, daemon=True, name="restart").start()
 
 
@@ -6112,14 +6214,15 @@ def main():
     threading.Thread(target=update_check_loop, daemon=True).start()
 
     try:
-        # Serve via _serve (not app.run) so the restart path can release the listening socket
-        # before re-exec (see _serve / _schedule_process_restart). threaded=True lets the server
-        # handle connections concurrently AND keep HTTP connections alive (werkzeug refuses
-        # keep-alive when single-threaded) -- essential on the Pi Zero 2 W, where a fresh TLS
-        # handshake every poll costs seconds under load. The app is built for concurrency (relay
-        # worker + request threads sharing lock-guarded state: _event_lock/state_lock/relay_lock/
-        # _sys_hist_lock), and the relay path rejects overlapping fires, so concurrent requests are
-        # safe. SSL is passed through unchanged. (os.execv on restart nukes all worker threads.)
+        # Serve via _serve (not app.run) so the restart path can release the listening socket before
+        # re-exec (see _serve / _schedule_process_restart). _serve uses cheroot, which keeps HTTP
+        # connections ALIVE -- so an HTTPS poll reuses one TLS session instead of paying a fresh ECDSA
+        # handshake every request (the dominant CPU cost on the Pi Zero 2 W, where the handshake storm
+        # pinned the single core). The app is built for concurrency (relay worker + request threads
+        # sharing lock-guarded state: _event_lock/state_lock/relay_lock/_sys_hist_lock), and the relay
+        # path rejects overlapping fires, so cheroot's thread pool is safe. SSL is passed through
+        # unchanged. `threaded=True` is vestigial now (cheroot always pools) but kept for the signature.
+        # (On a cheroot restart the MAIN thread re-execs after serve() returns; execv nukes all threads.)
         _serve(
             host=CONFIG["HOST"],
             port=CONFIG["PORT"],

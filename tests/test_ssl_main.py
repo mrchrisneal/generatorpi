@@ -6,7 +6,6 @@ import threading
 from unittest import mock
 
 import pytest
-import werkzeug.serving
 
 
 class TestCertExpiresWithin:
@@ -131,38 +130,155 @@ class TestMain:
 
 
 class TestServeAndRestart:
-    """The non-systemd restart fix: _serve keeps a handle on the WSGI server so
-    _schedule_process_restart can RELEASE the listening socket before os.execv -- otherwise the
-    re-exec'd image inherits the socket, can't rebind the port, and the app stays down."""
+    """The keep-alive server (cheroot) + the non-systemd restart fix. _serve keeps a handle on the
+    server so a restart releases the listening socket before re-exec; on the cheroot path the MAIN
+    thread re-execs after serve() returns (a daemon thread could be killed at interpreter shutdown
+    before reaching execv, leaving the app down -- the #41 failure). The werkzeug fallback keeps its
+    proven in-thread close()+execv."""
 
-    def test_serve_marks_socket_noninheritable_and_serves(self, module, monkeypatch):
+    @staticmethod
+    def _patch_probe_ok(module, monkeypatch):
+        """Make the raw-socket bind probe succeed without touching a real port."""
+        monkeypatch.setattr(module.socket, "socket", mock.Mock(return_value=mock.Mock()))
+
+    def test_serve_builds_cheroot_and_serves(self, module, monkeypatch):
+        import cheroot.wsgi
+        self._patch_probe_ok(module, monkeypatch)
         fake_sock = mock.Mock()
         fake_srv = mock.Mock(socket=fake_sock)
-        # serve_forever blocks forever in reality; raise to fall straight through the finally.
-        fake_srv.serve_forever.side_effect = KeyboardInterrupt
-        monkeypatch.setattr(werkzeug.serving, "make_server", mock.Mock(return_value=fake_srv))
+        fake_srv.serve.side_effect = KeyboardInterrupt   # serve() blocks IRL; raise to hit the finally
+        monkeypatch.setattr(cheroot.wsgi, "Server", mock.Mock(return_value=fake_srv))
         with pytest.raises(KeyboardInterrupt):
             module._serve("127.0.0.1", 5999, threaded=True)
-        fake_sock.set_inheritable.assert_called_once_with(False)  # exec drops the FD
-        fake_srv.serve_forever.assert_called_once()
+        fake_srv.prepare.assert_called_once()
+        fake_sock.set_inheritable.assert_called_once_with(False)
+        fake_srv.serve.assert_called_once()
+
+    def test_serve_bounds_thread_pool(self, module, monkeypatch):
+        # M1: cheroot MUST get an explicit max= cap (not the unbounded default -1).
+        import cheroot.wsgi
+        self._patch_probe_ok(module, monkeypatch)
+        fake_srv = mock.Mock(socket=mock.Mock())
+        fake_srv.serve.side_effect = KeyboardInterrupt
+        made = mock.Mock(return_value=fake_srv)
+        monkeypatch.setattr(cheroot.wsgi, "Server", made)
+        with pytest.raises(KeyboardInterrupt):
+            module._serve("127.0.0.1", 5999)
+        assert made.call_args.kwargs["max"] == module.SERVE_MAX_THREADS
+
+    def test_serve_builds_ssl_adapter_with_tls_floor(self, module, monkeypatch):
+        # ssl_context -> a BuiltinSSLAdapter is built with the cert/key and pinned to TLS 1.2.
+        import ssl as _ssl
+        import cheroot.wsgi
+        import cheroot.ssl.builtin
+        self._patch_probe_ok(module, monkeypatch)
+        fake_srv = mock.Mock(socket=mock.Mock())
+        fake_srv.serve.side_effect = KeyboardInterrupt
+        monkeypatch.setattr(cheroot.wsgi, "Server", mock.Mock(return_value=fake_srv))
+        fake_adapter = mock.Mock(context=mock.Mock())
+        made = mock.Mock(return_value=fake_adapter)
+        monkeypatch.setattr(cheroot.ssl.builtin, "BuiltinSSLAdapter", made)
+        with pytest.raises(KeyboardInterrupt):
+            module._serve("127.0.0.1", 5999, ssl_context=("/c.pem", "/k.pem"))
+        assert made.call_args.kwargs == {"certificate": "/c.pem", "private_key": "/k.pem"}
+        assert fake_srv.ssl_adapter is fake_adapter
+        assert fake_adapter.context.minimum_version == _ssl.TLSVersion.TLSv1_2
 
     def test_serve_retries_only_address_in_use(self, module, monkeypatch):
-        # EADDRINUSE is retried (a draining old socket); a non-bind OSError surfaces immediately
-        # so a cert/permission error isn't buried under 10 pointless retries (audit review #6).
+        # The raw-socket PROBE yields a REAL errno (cheroot's prepare() masks it): EADDRINUSE retries,
+        # but a non-address error (EACCES) surfaces immediately -- not buried under 10 retries (audit #6).
         import errno as _errno
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
-        boom = OSError(_errno.EACCES, "permission denied")
-        monkeypatch.setattr(werkzeug.serving, "make_server", mock.Mock(side_effect=boom))
+        fake_probe = mock.Mock()
+        fake_probe.bind.side_effect = OSError(_errno.EACCES, "permission denied")
+        monkeypatch.setattr(module.socket, "socket", mock.Mock(return_value=fake_probe))
         with pytest.raises(OSError) as exc:
             module._serve("127.0.0.1", 5999)
         assert exc.value.errno == _errno.EACCES
 
-    def test_restart_closes_listening_socket_before_reexec(self, module, monkeypatch):
-        # The socket MUST be closed before execv so the new image can rebind the port.
+    def test_serve_retries_eaddrinuse_then_succeeds(self, module, monkeypatch):
+        # First probe bind hits EADDRINUSE (draining old port), second succeeds -> cheroot serves.
+        import errno as _errno
+        import cheroot.wsgi
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+        seen = []
+
+        def make_probe(*a, **k):
+            p = mock.Mock()
+            if not seen:
+                p.bind.side_effect = OSError(_errno.EADDRINUSE, "in use")
+            seen.append(p)
+            return p
+
+        monkeypatch.setattr(module.socket, "socket", make_probe)
+        fake_srv = mock.Mock(socket=mock.Mock())
+        fake_srv.serve.side_effect = KeyboardInterrupt
+        monkeypatch.setattr(cheroot.wsgi, "Server", mock.Mock(return_value=fake_srv))
+        with pytest.raises(KeyboardInterrupt):
+            module._serve("127.0.0.1", 5999)
+        assert len(seen) == 2                      # retried once, then bound
+        fake_srv.serve.assert_called_once()
+
+    def test_serve_falls_back_to_werkzeug_when_cheroot_missing(self, module, monkeypatch):
+        # cheroot import failing -> _serve_werkzeug is used so the app STILL serves (belt-and-suspenders).
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *a, **k):
+            if name.startswith("cheroot"):
+                raise ImportError("no cheroot")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        fallback = mock.Mock()
+        monkeypatch.setattr(module, "_serve_werkzeug", fallback)
+        module._serve("127.0.0.1", 5999, threaded=True)
+        fallback.assert_called_once()
+
+    def test_restart_cheroot_stops_and_defers_execv_to_main_thread(self, module, monkeypatch):
+        # cheroot branch: stop() is called, the flag is set, execv is NOT called in this thread, and
+        # the socket is NOT closed (cheroot's stop() owns that).
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
+        fake_srv = mock.Mock(spec=["stop", "socket"])   # has .stop -> cheroot branch
+        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+        execv = mock.Mock()
+        monkeypatch.setattr(module.os, "execv", execv)
+        module._schedule_process_restart(delay=0)
+        import time as _t
+        for _ in range(400):                            # wait for the restart thread to run stop()
+            if fake_srv.stop.called:
+                break
+            _t.sleep(0.005)
+        assert fake_srv.stop.called
+        assert module._RESTART_REQUESTED is True
+        execv.assert_not_called()                       # the MAIN thread owns the exec, not this one
+        fake_srv.socket.close.assert_not_called()
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+
+    def test_serve_execs_on_main_thread_when_restart_requested(self, module, monkeypatch):
+        # After serve() returns with the flag set, _serve re-execs on the (main) thread.
+        import cheroot.wsgi
+        self._patch_probe_ok(module, monkeypatch)
+        fake_srv = mock.Mock(socket=mock.Mock())
+        fake_srv.serve.return_value = None              # returns cleanly, as after stop()
+        monkeypatch.setattr(cheroot.wsgi, "Server", mock.Mock(return_value=fake_srv))
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", True)
+        execv = mock.Mock()
+        monkeypatch.setattr(module, "_do_execv", execv)
+        module._serve("127.0.0.1", 5999)
+        execv.assert_called_once()
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+
+    def test_restart_werkzeug_fallback_closes_socket_before_reexec(self, module, monkeypatch):
+        # Fallback server has .socket but NO .stop -> close the socket, then execv, IN this thread.
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
         calls = []
         fake_sock = mock.Mock()
         fake_sock.close.side_effect = lambda: calls.append("close")
-        monkeypatch.setattr(module, "_WSGI_SERVER", mock.Mock(socket=fake_sock))
+        fake_srv = mock.Mock(spec=["socket"])           # no .stop -> werkzeug fallback branch
+        fake_srv.socket = fake_sock
+        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
         done = threading.Event()
 
@@ -174,3 +290,4 @@ class TestServeAndRestart:
         module._schedule_process_restart(delay=0)
         assert done.wait(2), "restart thread never ran"
         assert calls == ["close", "execv"], f"socket must close BEFORE execv, got {calls}"
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation

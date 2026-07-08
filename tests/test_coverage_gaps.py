@@ -12,7 +12,6 @@ import threading
 from unittest import mock
 
 import pytest
-import werkzeug.serving
 
 
 API_KEY = "gaps-test-key"
@@ -107,49 +106,65 @@ class TestStateVersionFields:
 # _serve bind-retry -- the #41 fix: a first EADDRINUSE is RETRIED, not fatal
 # ---------------------------------------------------------------------------
 class TestServeBindRetry:
-    def test_first_eaddrinuse_is_retried_then_succeeds(self, module, monkeypatch):
-        # The core of the fix: make_server raises EADDRINUSE once (old socket still draining),
-        # then succeeds on the second attempt. Both are must-haves: exactly 2 calls + 1 sleep.
-        fake_sock = mock.Mock()
-        fake_srv = mock.Mock(socket=fake_sock)
-        fake_srv.serve_forever.side_effect = KeyboardInterrupt      # fall through the finally
+    """The #41 fix under cheroot: the bind-retry is driven by a raw-socket PROBE (cheroot's prepare()
+    masks the bind errno), so a first EADDRINUSE is retried, not fatal."""
+
+    @staticmethod
+    def _probe(seq):
+        """socket.socket() replacement whose bind() follows `seq(attempt)` -> an OSError raises, else ok."""
         calls = {"n": 0}
 
         def make(*a, **k):
             calls["n"] += 1
-            if calls["n"] == 1:
-                raise OSError(errno.EADDRINUSE, "address in use")
-            return fake_srv
-        monkeypatch.setattr(werkzeug.serving, "make_server", make)
+            p = mock.Mock()
+            err = seq(calls["n"])
+            if err is not None:
+                p.bind.side_effect = err
+            return p
+        return make, calls
+
+    def test_first_eaddrinuse_is_retried_then_succeeds(self, module, monkeypatch):
+        # The core of the fix: the PROBE bind raises EADDRINUSE once (old socket draining), then
+        # succeeds -> cheroot is built once and serves. Must-haves: exactly 2 probes + 1 sleep.
+        import cheroot.wsgi
+        fake_sock = mock.Mock()
+        fake_srv = mock.Mock(socket=fake_sock)
+        fake_srv.serve.side_effect = KeyboardInterrupt              # fall through the finally
+        monkeypatch.setattr(cheroot.wsgi, "Server", mock.Mock(return_value=fake_srv))
+        make, calls = self._probe(lambda n: OSError(errno.EADDRINUSE, "in use") if n == 1 else None)
+        monkeypatch.setattr(module.socket, "socket", make)
         sleeps = []
         monkeypatch.setattr(module.time, "sleep", lambda s: sleeps.append(s))
         with pytest.raises(KeyboardInterrupt):
             module._serve("127.0.0.1", 5999)
-        assert calls["n"] == 2                              # retried exactly once
+        assert calls["n"] == 2                              # probed twice (retried once)
         assert len(sleeps) == 1                             # slept between the two attempts
-        fake_srv.serve_forever.assert_called_once()         # the second server actually served
+        fake_srv.serve.assert_called_once()                 # the server actually served
         fake_sock.set_inheritable.assert_called_once_with(False)
 
     def test_raises_after_retries_exhausted(self, module, monkeypatch):
         # Persistent EADDRINUSE -> after the bounded retries, the last error surfaces.
-        monkeypatch.setattr(werkzeug.serving, "make_server",
-                            mock.Mock(side_effect=OSError(errno.EADDRINUSE, "busy")))
+        make, calls = self._probe(lambda n: OSError(errno.EADDRINUSE, "busy"))   # always busy
+        monkeypatch.setattr(module.socket, "socket", make)
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
         with pytest.raises(OSError) as exc:
             module._serve("127.0.0.1", 5999)
         assert exc.value.errno == errno.EADDRINUSE
+        assert calls["n"] == 10                             # bounded retries
 
     def test_set_inheritable_error_is_nonfatal(self, module, monkeypatch):
-        # A set_inheritable failure must not stop the server from serving (closing the socket
-        # before exec is the primary guarantee anyway).
+        # A set_inheritable failure must not stop the server from serving (cheroot already CLOEXECs).
+        import cheroot.wsgi
+        make, _ = self._probe(lambda n: None)               # probe always ok
+        monkeypatch.setattr(module.socket, "socket", make)
         fake_sock = mock.Mock()
         fake_sock.set_inheritable.side_effect = OSError("not supported")
         fake_srv = mock.Mock(socket=fake_sock)
-        fake_srv.serve_forever.side_effect = KeyboardInterrupt
-        monkeypatch.setattr(werkzeug.serving, "make_server", mock.Mock(return_value=fake_srv))
+        fake_srv.serve.side_effect = KeyboardInterrupt
+        monkeypatch.setattr(cheroot.wsgi, "Server", mock.Mock(return_value=fake_srv))
         with pytest.raises(KeyboardInterrupt):
             module._serve("127.0.0.1", 5999)
-        fake_srv.serve_forever.assert_called_once()
+        fake_srv.serve.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -157,17 +172,23 @@ class TestServeBindRetry:
 # ---------------------------------------------------------------------------
 class TestRestartFallbacks:
     def test_socket_close_error_does_not_block_execv(self, module, monkeypatch):
+        # werkzeug-fallback branch (server has .socket, NO .stop): a close() error must not block execv.
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
         fake_sock = mock.Mock()
         fake_sock.close.side_effect = OSError("already closed")
-        monkeypatch.setattr(module, "_WSGI_SERVER", mock.Mock(socket=fake_sock))
+        fake_srv = mock.Mock(spec=["socket"])              # no .stop -> in-thread close()+execv path
+        fake_srv.socket = fake_sock
+        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
         done = threading.Event()
         monkeypatch.setattr(module.os, "execv", lambda *a: done.set())
         module._schedule_process_restart(delay=0)
         assert done.wait(2)                                # execv still ran despite close error
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
 
     def test_execv_failure_falls_back_to_hard_exit(self, module, monkeypatch):
-        monkeypatch.setattr(module, "_WSGI_SERVER", None)  # no socket to close
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
+        monkeypatch.setattr(module, "_WSGI_SERVER", None)  # no server -> fallback branch -> _do_execv
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
 
         def bad_execv(*a):
@@ -183,6 +204,7 @@ class TestRestartFallbacks:
         module._schedule_process_restart(delay=0)
         assert done.wait(2)
         assert seen["code"] == 1                            # os._exit(1) so a supervisor respawns
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
 
 
 # ---------------------------------------------------------------------------
