@@ -343,6 +343,17 @@ class TestBootstrapScriptHardening:
             assert "curl" not in body                        # curl dependency removed
             assert "trap on_exit EXIT" in body               # roll back on any non-success exit
             assert "setsid" not in body                      # no setsid argv dependency (NEW-6)
+            # Stage-2 log lines match the Stage-1 terminal style: no [gp-update] prefix, no raw
+            # timestamp; bracketed [TAG] headers + dim indented "  … ok" children.
+            assert "gp-update" not in body                   # old prefix removed
+            assert 'log() { echo "$*"; }' in body            # verbatim: no prefix, no timestamp
+            assert "files swapped … ok" in body              # indented child line
+            assert "[DONE] Application successfully updated to v$VER!" in body   # reworded final line
+            assert "'update OK'" not in body                 # old wording gone
+            # The generated script must be valid bash (syntax check only, never executed here).
+            import subprocess as _sp
+            _syn = _sp.run(["bash", "-n", script], capture_output=True, text=True)
+            assert _syn.returncode == 0, "bootstrap is not valid bash:\n" + _syn.stderr
         finally:
             os.remove(script)
 

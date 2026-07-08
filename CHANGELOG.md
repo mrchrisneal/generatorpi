@@ -3,6 +3,16 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.2.3
+
+- **Cleaner Stage-2 update log**: the systemd update path's progress lines now match the rest of the
+  update terminal — no more `[gp-update]` prefix or raw ISO timestamps, and correct coloring. Each
+  step reads as a dim indented `… ok` child under its bright section header, and the run ends with
+  `[DONE] Application successfully updated to vX.Y.Z!`.
+- **Settings polish**: the section headers (MANUAL OVERRIDE, SYSTEM, LOG VIEWER, RESET) are brighter
+  and slightly larger with clearer spacing between sections, and the push-notification button is now
+  labelled "TEST NOTIFICATION".
+
 ## 1.2.2
 
 - **Much faster HTTPS on the Pi**: three changes cut per-request time on a Raspberry Pi Zero 2 W from

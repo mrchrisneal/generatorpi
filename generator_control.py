@@ -2072,6 +2072,12 @@ button{font-family:inherit}
    otherwise the natural 262+344 flex-basis wrap happened around ~723px. */
 @media (max-width:767px){.col-left,.col-right{flex-basis:100%}}
 .section-label{font:600 12px var(--mono);letter-spacing:.16em;color:#969085;margin-bottom:8px}
+/* Settings-drawer SECTION HEADERS (not the inline row-labels): as bright as the SETTINGS drawer
+   title (#d7d3cc), a touch larger (13px), and with generous top breathing room between sections --
+   except the first header in the drawer, which stays flush (no leading margin/padding). Scoped via
+   this modifier so the main-column labels (STATUS/DETAIL/gauges) are untouched. */
+.sec-head{color:#d7d3cc;font-size:13px;margin-top:16px}
+.sec-head:first-child{margin-top:0}
 
 /* ---- status annunciator ---- */
 .annunciator{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:11px;
@@ -4009,7 +4015,7 @@ HTML_TEMPLATE_BODY = """
         </button>
         <div class="drawer-clip" id="advClip">
           <div class="drawer-cavity">
-            <div class="section-label" style="margin:0">MANUAL OVERRIDE</div>
+            <div class="section-label sec-head">MANUAL OVERRIDE</div>
             <div class="alert-cfg">
               <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
               <div class="adv-btns">
@@ -4017,7 +4023,7 @@ HTML_TEMPLATE_BODY = """
                 <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
               </div>
             </div>
-            <div class="section-label" style="margin:0">SYSTEM</div>
+            <div class="section-label sec-head">SYSTEM</div>
             <div class="alert-cfg">
               <div class="alert-cfg-row">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>PUSH NOTIFICATIONS</span>
@@ -4026,7 +4032,7 @@ HTML_TEMPLATE_BODY = """
                 </div>
               </div>
               <div class="helper" id="pushHelp">Checking push support…</div>
-              <button type="button" class="btn3d cyan" id="testPushBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>SEND TEST NOTIFICATION</button>
+              <button type="button" class="btn3d cyan" id="testPushBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>TEST NOTIFICATION</button>
               <div class="drawer-divider"></div>
               <div class="alert-cfg-row">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>LOW-FUEL ALERTS</span>
@@ -4052,7 +4058,7 @@ HTML_TEMPLATE_BODY = """
                  EVENTS<->APP LOG source switch lives here (moved out of the panel header,
                  which was too crowded), plus the routine-HTTP display filter. Both are
                  per-browser view preferences persisted in localStorage. -->
-            <div class="section-label" style="margin:0">LOG VIEWER</div>
+            <div class="section-label sec-head">LOG VIEWER</div>
             <div class="alert-cfg">
               <div class="log-setting">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>LOG SOURCE</span>
@@ -4074,7 +4080,7 @@ HTML_TEMPLATE_BODY = """
             <!-- RESET: local + server escape hatches. RESET PREFS is browser-local and
                  harmless; RESTART/FACTORY RESET hit the server (red, confirmation-gated);
                  UPDATE is greyed until a newer version is published. -->
-            <div class="section-label" style="margin:0">RESET</div>
+            <div class="section-label sec-head">RESET</div>
             <div class="alert-cfg">
               <div class="helper">Clears every saved preference on <strong>this browser</strong> — open/closed panels, chart layout, log source &amp; filters. Does <strong>not</strong> affect the generator, the server, or other devices.</div>
               <button type="button" class="btn3d steel" id="resetPrefsBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESET PREFS</button>
@@ -5448,7 +5454,9 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url, t_
         "mkdir -p \"$ROOT/backups\"\n"
         "RESULT=\"$ROOT/backups/last_update.json\"\n"
         "exec >> \"$ROOT/backups/last_update.log\" 2>&1\n"          # APPEND to the seeded pre-restart log
-        "log() { echo \"[gp-update] $(date -Iseconds) $*\"; }\n"
+        # Emit lines verbatim so they match the Stage-1 terminal style: a bracketed [TAG] renders as
+        # a bright header, a leading-space '  … ok' as a dim child. No prefix, no timestamp.
+        "log() { echo \"$*\"; }\n"
         "write_result() { printf '{\"status\":\"%s\",\"version\":\"%s\",\"ts\":\"%s\",\"note\":\"%s\"}\\n'"
         " \"$1\" \"$VER\" \"$(date -Iseconds)\" \"$2\" > \"$RESULT\"; }\n"
         # Any HTTP response (incl. a 401 challenge) proves the listener bound + is serving.
@@ -5471,7 +5479,7 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url, t_
         "wait_healthy() { local c=0 i; for i in $(seq 1 30); do if health; then c=$((c+1)); "
         "[ $c -ge 3 ] && return 0; else c=0; fi; sleep 2; done; return 1; }\n"
         "rollback() {\n"
-        "  log 'ROLLBACK: restoring backup + restarting the previous version'\n"
+        "  log '[ROLLBACK] restoring backup + restarting the previous version'\n"
         f"  {py_rollback}\n"
         "  sudo systemctl restart \"$SVC\" 2>/dev/null || true\n"
         "  [ \"$T_APPLY\" != 0 ] && log \"Update failed after $(( $(date +%s) - T_APPLY )) seconds\"\n"
@@ -5484,14 +5492,14 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url, t_
         # Roll back on ANY exit that didn't reach SUCCEEDED=1 (covers unexpected deaths too).
         "SUCCEEDED=0\n"
         "DONE_FLAG=\"$ROOT/backups/.gp_update_done\"; rm -f \"$DONE_FLAG\"\n"
-        "on_exit() { [ \"$SUCCEEDED\" = 1 ] && return; log 'update did not complete - rolling back'; rollback; }\n"
+        "on_exit() { [ \"$SUCCEEDED\" = 1 ] && return; log '[ROLLBACK] update did not complete — rolling back'; rollback; }\n"
         "trap on_exit EXIT\n"
         # WATCHDOG (audit M-3): guarantee a BOUNDED recovery. An update should never run long --
         # owner cap is 10 minutes TOPS. If the whole apply isn't done within 10 min (a wedged
         # systemctl restart / stuck mount leaving the app down), force a rollback and tear down this
         # run's process group so we never hang indefinitely. $$ is the session leader's PID (setsid),
         # so -$$ targets the bootstrap's group -- NOT the restarted service.
-        "( sleep 600; [ -f \"$DONE_FLAG\" ] && exit 0; log 'WATCHDOG: 10m elapsed - forcing rollback'; rollback; kill -9 -$$ 2>/dev/null ) &\n"
+        "( sleep 600; [ -f \"$DONE_FLAG\" ] && exit 0; log '[WATCHDOG] 10m elapsed — forcing rollback'; rollback; kill -9 -$$ 2>/dev/null ) &\n"
         "WATCHDOG=$!\n"
         # Bound a stuck restart with `timeout` when it's available (dependency-free: fall back to a
         # plain restart if `timeout` isn't installed, so a missing coreutils never fails the update).
@@ -5499,14 +5507,14 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url, t_
         "sleep 1\n"
         # Swap while the OLD process is still running its in-memory code (safe for a python app),
         # then restart -- KillMode=process spares this detached bootstrap.
-        "log 'swapping files'\n"
         f"( set -e\n{copies}\n) || exit 1\n"
-        "log 'restarting service'\n"
+        "log '  files swapped … ok'\n"
         "do_restart 2>/dev/null || exit 1\n"
-        "log 'waiting for the new version to serve'\n"
+        "log '  service restarted … ok'\n"
         "wait_healthy || exit 1\n"
+        "log '  new version is serving … ok'\n"
         "[ \"$T_APPLY\" != 0 ] && log \"Update finished in $(( $(date +%s) - T_APPLY )) seconds\"\n"
-        "log 'update OK'\n"
+        "log \"[DONE] Application successfully updated to v$VER!\"\n"
         "SUCCEEDED=1\n"
         "touch \"$DONE_FLAG\"\n"                                    # tell the watchdog we finished
         "kill \"$WATCHDOG\" 2>/dev/null\n"                          # cancel the watchdog
