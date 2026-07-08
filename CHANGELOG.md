@@ -3,6 +3,12 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.2.1
+
+- **Update timing**: the update log now reports how long the apply took — e.g. "Update finished in
+  4.2 seconds" (or "Update failed after N seconds" on a rollback) — right before the final result,
+  on both the in-process and systemd update paths.
+
 ## 1.2.0
 
 - **Documentation**: a full GitHub wiki (installation, configuration, hardware & wiring, REST API,

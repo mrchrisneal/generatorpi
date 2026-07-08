@@ -1,10 +1,10 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
   "files": [
     {
       "path": "generator_control.py",
-      "sha256": "81fb1872f6219247ea3faf1b82cda4c09e062963835eee718fd62e1be3397493",
-      "bytes": 348234
+      "sha256": "fe0515ff7af9117627d6be5e1be5134cdc403e5bcce10f5204461c5383991bcc",
+      "bytes": 349770
     },
     {
       "path": "requirements.txt",
@@ -23,13 +23,13 @@
     },
     {
       "path": "VERSION",
-      "sha256": "1e5b51cde515396a9fa762909cf8ca6584ccc564b325d2eebeea76175fe95c4d",
+      "sha256": "6cf4e084b47f33c9b02ef79279d157833868f8f70514169a768be353ee328fea",
       "bytes": 6
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "b72e305a9f558b0963d83c301cdd37c91dce54db7da941689af131fe4cf14ecf",
-      "bytes": 5265
+      "sha256": "c05f2ec7b4fb71de582cbb0fccde5e38414604ac4cd71003f5fe65411964d2b9",
+      "bytes": 5529
     }
   ]
 }

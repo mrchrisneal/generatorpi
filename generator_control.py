@@ -5251,15 +5251,18 @@ def _preflight_check(manifest, dest_root=None, log=None):
         _ok(f"free disk space ({free // 1_000_000} MB free, need ~{need // 1_000_000} MB)")
 
 
-def _write_update_result(status, version, note="", log_text=None):
+def _write_update_result(status, version, note="", log_text=None, started_ts=None):
     """Persist an update outcome ({status, version, note, ts}) + optional log to backups/ so
     the NEXT startup can show the user how the update went (a restart happens in between).
+    `started_ts` is the apply-start unix time; it's stored so the post-restart startup can compute
+    how long the update took (the restart happens in between, so it can't measure it directly).
     Best-effort -- never raises into the update flow."""
     try:
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         _UPDATE_RESULT.write_text(json.dumps({
             "status": status, "version": version, "note": note,
             "ts": datetime.now().isoformat(timespec="seconds"),
+            "started_ts": started_ts,
         }))
         if log_text is not None:
             _UPDATE_LOG.write_text(log_text)
@@ -5366,7 +5369,7 @@ def _rollback(zip_path, dest_root=None):
         log.error(f"Rollback from {zip_path} failed: {e}")
 
 
-def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
+def _write_bootstrap_script(manifest, version, zip_path, staging, health_url, t_apply=None):
     """Write a STANDALONE swap+restart+rollback script to /tmp; return its path.
 
     Runs from /tmp -- OUTSIDE the project root -- so it can replace EVERY project file,
@@ -5454,9 +5457,13 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
         "  log 'ROLLBACK: restoring backup + restarting the previous version'\n"
         f"  {py_rollback}\n"
         "  sudo systemctl restart \"$SVC\" 2>/dev/null || true\n"
+        "  [ \"$T_APPLY\" != 0 ] && log \"Update failed after $(( $(date +%s) - T_APPLY )) seconds\"\n"
         "  if wait_healthy; then write_result failed 'Update failed - rolled back to the previous version.';\n"
         "  else write_result failed 'Update failed AND rollback did not become healthy - manual check needed.'; fi\n"
         "}\n"
+        # Apply-start unix time (stamped in Python at [APPLYING]) so the bootstrap can report how
+        # long the update took; 0 means unknown -> the timing line is skipped.
+        f"T_APPLY={int(t_apply) if t_apply else 0}\n"
         # Roll back on ANY exit that didn't reach SUCCEEDED=1 (covers unexpected deaths too).
         "SUCCEEDED=0\n"
         "DONE_FLAG=\"$ROOT/backups/.gp_update_done\"; rm -f \"$DONE_FLAG\"\n"
@@ -5481,6 +5488,7 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
         "do_restart 2>/dev/null || exit 1\n"
         "log 'waiting for the new version to serve'\n"
         "wait_healthy || exit 1\n"
+        "[ \"$T_APPLY\" != 0 ] && log \"Update finished in $(( $(date +%s) - T_APPLY )) seconds\"\n"
         "log 'update OK'\n"
         "SUCCEEDED=1\n"
         "touch \"$DONE_FLAG\"\n"                                    # tell the watchdog we finished
@@ -5504,6 +5512,7 @@ def _run_update():
     manifest = None
     zpath = None
     swapped = False
+    t_apply = None                                        # set when Stage 2 (apply/swap) actually begins
     try:
         # Terminal log format: bracketed [SECTION] headers (bright, left-aligned) get ' ok' or an
         # error tacked on when their step finishes; detail lines are indented two spaces.
@@ -5564,6 +5573,7 @@ def _run_update():
             _update_phase("failed", "Update canceled before applying.", 0.0)
             return
         _update_log(f"[APPLYING] stage 2 — installing v{version}")
+        t_apply = time.time()                            # start timing the apply (past the go/no-go gate)
         if not _svc_skip:
             with _update_lock:
                 _update_state["systemd"] = True
@@ -5582,7 +5592,7 @@ def _run_update():
             # Health URL the bootstrap probes to confirm the NEW version actually serves.
             scheme = "https" if CONFIG.get("SSL_ENABLED") else "http"
             health_url = f"{scheme}://127.0.0.1:{CONFIG['PORT']}/"
-            script = _write_bootstrap_script(manifest, version, zpath, staging, health_url)
+            script = _write_bootstrap_script(manifest, version, zpath, staging, health_url, t_apply=t_apply)
             # Run the bootstrap at a gentle (mild) CPU niceness so it never starves the generator
             # controller / other work while it swaps + restarts. os.nice() in preexec_fn keeps it
             # dependency-free (no `nice` binary needed); +5 is polite but still prompt for the swap.
@@ -5632,7 +5642,7 @@ def _run_update():
             _write_update_result(
                 "restarting", version,
                 note="Files were swapped directly (non-systemd); the app is restarting.",
-                log_text=_full_log)
+                log_text=_full_log, started_ts=t_apply)
             _update_phase("restarting",
                           f"Updated to v{version}. Restarting the app process…", 0.95)
             _schedule_process_restart(1.5)
@@ -5651,6 +5661,8 @@ def _run_update():
                 shutil.rmtree(_UPDATE_STAGING, ignore_errors=True)
         except Exception:                                # noqa: BLE001 -- cleanup is best-effort
             pass
+        if t_apply is not None:                          # only if we'd started applying (past the gate)
+            _update_log(f"Update failed after {max(0.0, time.time() - t_apply):.1f} seconds")
         _update_log(f"[REVERTED] no changes applied — still on v{APP_VERSION}")
         _update_phase("failed", f"Update reverted: {e}", 0.0, error=str(e))
 
@@ -5679,6 +5691,11 @@ try:
             _ver = _r.get("version", APP_VERSION)
             _r["note"] = f"Application successfully updated to v{_ver}."
             _UPDATE_RESULT.write_text(json.dumps(_r))
+            # How long the apply took, measured ACROSS the re-exec: started_ts was stamped at
+            # [APPLYING] before the restart, so elapsed = now - started_ts.
+            _st = _r.get("started_ts")
+            _took = (f"\nUpdate finished in {max(0.0, time.time() - _st):.1f} seconds"
+                     if isinstance(_st, (int, float)) else "")
             # Append the FINAL confirmation to the captured terminal log so the result modal ends
             # with a clear, green "[DONE]" line (the log was captured just before re-exec; reaching
             # here proves the new version imported + is serving) -- Stage 2 finishes with a result.
@@ -5687,6 +5704,7 @@ try:
                 _UPDATE_LOG.write_text(
                     _prev.rstrip("\n")
                     + "\n[HEALTH] checking if the application is back up … ok"
+                    + _took
                     + f"\n[DONE] Application successfully updated to v{_ver}!"
                 )
             except Exception:                             # noqa: BLE001 -- log tail is best-effort
