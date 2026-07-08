@@ -7,8 +7,10 @@ file against these hashes before swapping. Run at release time -- and by the CI 
 (#11) -- then commit + push manifest.json so running instances can fetch it and compare.
 
 Deliberately EXCLUDES runtime/secret files (generator_control.env, TLS certs, events.db,
-logs) and dev-only trees (tests/, scratchpads/, tools/): an update must NEVER touch
-operator data or credentials, so those are simply never in the manifest and never fetched.
+logs) and dev-only trees (tests/, scratchpads/): an update must NEVER touch operator data
+or credentials. From tools/ ONLY the bundled gp-monitor tool is shipped (gen-manifest.py +
+__pycache__ stay out). The FULL CHANGELOG.md is NOT shipped -- only the generated, short
+CHANGELOG-RECENT.md (which is also what the updater's version check downloads).
 
 Usage:  python3 tools/gen-manifest.py   (writes ./manifest.json)
 """
@@ -29,7 +31,9 @@ SHIPPED_FILES = [
     "setup.sh",               # (re)install / systemd wiring
     "update.sh",              # git-pull fallback updater
     "VERSION",                # single source of truth for the version
-    "CHANGELOG.md",           # release notes shown in the update modal
+    "CHANGELOG-RECENT.md",    # short generated release notes (updater fetches this, not the full log)
+    "tools/gp-monitor.py",    # bundled Wi-Fi/perf diagnostic tool (installs into tools/ on the Pi)
+    "tools/gp-monitor.md",    # gp-monitor docs (mirrors the wiki Wi-Fi-Diagnostics page)
 ]
 
 

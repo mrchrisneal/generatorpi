@@ -90,38 +90,31 @@ do_install() {
         fi
     fi
 
-    # Web Push (OPTIONAL): the controller runs fine without it, but push notifications
-    # need the 'pywebpush' library. Best-effort install -- never fatal.
-    if ! /usr/bin/python3 -c "import pywebpush" 2>/dev/null; then
-        echo ""
-        echo "Web Push dependency 'pywebpush' not found -- attempting a best-effort install."
-        echo "(Push is OPTIONAL; the controller runs without it. See the README.)"
-        sudo apt-get install -y python3-cryptography >/dev/null 2>&1 || true
-        # Newer Raspberry Pi OS / Debian mark the system Python "externally managed",
-        # so fall back to --break-system-packages if a plain pip install is refused.
-        if ! sudo pip3 install pywebpush >/dev/null 2>&1 \
-           && ! sudo pip3 install --break-system-packages pywebpush >/dev/null 2>&1; then
-            echo "  Could not auto-install pywebpush. To enable push later, run:"
-            echo "    sudo apt install -y python3-cryptography"
-            echo "    sudo pip3 install --break-system-packages pywebpush"
-            echo "  then: sudo systemctl restart ${SERVICE_NAME}"
+    # ---- Python dependencies ----
+    # Raspberry Pi OS's system Python has NO pip, so ALL deps come from apt (python3-*). Validate each
+    # required module is importable; install any that are missing. cheroot gives the app HTTP keep-alive
+    # (a big CPU win on the Pi Zero 2 W -- without it the app falls back to the werkzeug server, minus
+    # keep-alive); pywebpush is OPTIONAL (push notifications).
+    echo ""
+    echo "Checking Python dependencies (installed via apt -- the system Python has no pip)..."
+    # $1 = import name, $2 = apt package, $3 = "optional" (anything else = required)
+    check_dep() {
+        if /usr/bin/python3 -c "import $1" 2>/dev/null; then
+            echo "  [ok]      $1"
+        elif sudo apt-get install -y "$2" >/dev/null 2>&1 && /usr/bin/python3 -c "import $1" 2>/dev/null; then
+            echo "  [ok]      $1 (installed $2)"
+        elif [ "$3" = "optional" ]; then
+            echo "  [skip]    $1 is OPTIONAL and unavailable -- continuing (later: sudo apt install $2)"
+        else
+            echo "  [ERROR]   REQUIRED dependency '$1' could not be installed -- run: sudo apt install $2"
         fi
-    fi
-
-    # cheroot (RECOMMENDED): the HTTP server with keep-alive + built-in TLS. The controller still runs
-    # without it (it falls back to the werkzeug server), but every HTTPS request then pays a fresh TLS
-    # handshake -- which pins the CPU on a Pi Zero 2 W. Pure-Python wheel, no compiler. Best-effort.
-    if ! /usr/bin/python3 -c "import cheroot" 2>/dev/null; then
-        echo ""
-        echo "HTTP-server dependency 'cheroot' not found -- attempting a best-effort install."
-        echo "(Recommended: enables HTTP keep-alive so HTTPS doesn't re-handshake every request.)"
-        if ! sudo pip3 install 'cheroot>=11.1.2,<12' >/dev/null 2>&1 \
-           && ! sudo pip3 install --break-system-packages 'cheroot>=11.1.2,<12' >/dev/null 2>&1; then
-            echo "  Could not auto-install cheroot. For HTTP keep-alive later, run:"
-            echo "    sudo pip3 install --break-system-packages 'cheroot>=11.1.2,<12'"
-            echo "  then: sudo systemctl restart ${SERVICE_NAME}"
-        fi
-    fi
+    }
+    check_dep flask         python3-flask
+    check_dep gpiozero      python3-gpiozero
+    check_dep lgpio         python3-lgpio
+    check_dep cryptography  python3-cryptography
+    check_dep cheroot       python3-cheroot                 # HTTP keep-alive server
+    check_dep pywebpush     python3-pywebpush     optional  # push notifications (optional)
 
     # Generate and install the service file
     generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null

@@ -14,6 +14,9 @@ GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E ge
   <img src="https://raw.githubusercontent.com/mrchrisneal/generatorpi/main/docs/screenshots/web-ui.png" alt="GeneratorPi web UI — industrial control panel with status annunciator, hero power switch, current-run readout, total-runtime odometer, event log, and collapsible Fuel Projection and Advanced drawers" width="640">
 </p>
 
+> [!CAUTION]
+> This system cannot auto-detect the real generator state. Always verify the unit visually and audibly before relying on this readout.
+
 ## Features
 
 * **Remote Power Control**: MOMENTARY relay pulses mimic physical engine start/stop button actions.
@@ -41,12 +44,34 @@ For the full rationale and every optimization in depth, see **[Architecture & Pe
 
 ---
 
+## Requirements
+
+**Hardware:** a Raspberry Pi (tested on the Pi Zero 2 W), a relay on a GPIO pin, and the Powermate
+PM9400E generator — see [Hardware & Wiring](../../wiki/Hardware-&-Wiring).
+
+**Software** (Raspberry Pi OS; installed via `apt` — the system Python has no `pip`):
+
+| Package | Purpose |
+|---|---|
+| `python3` (3.11+) | runtime |
+| `python3-flask` | web framework / REST API |
+| `python3-gpiozero`, `python3-lgpio` | GPIO relay control |
+| `python3-cryptography` | TLS / password hashing |
+| `python3-cheroot` | HTTP server with keep-alive + TLS (app falls back to a no-keep-alive server if absent) |
+| `python3-pywebpush` *(optional)* | Web Push notifications |
+| `openssl` | self-signed certificate generation |
+
+`setup.sh install` validates and installs these automatically. Versions are also pinned in
+`requirements.txt` (for CI/dev via pip); on the Pi they come from `apt`.
+
+---
+
 ## Quick Start
 
 SSH into the Pi and install the prerequisite system packages:
 
 ```bash
-sudo apt update && sudo apt install -y git openssl python3 python3-flask python3-gpiozero python3-lgpio python3-cryptography
+sudo apt update && sudo apt install -y git openssl python3 python3-flask python3-gpiozero python3-lgpio python3-cryptography python3-cheroot
 ```
 
 Clone the repository and run the installation script:

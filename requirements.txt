@@ -2,9 +2,11 @@ flask
 gpiozero
 # WSGI server with real HTTP keep-alive + built-in TLS (BuiltinSSLAdapter, stdlib ssl) -- replaces the
 # werkzeug dev server so an HTTPS poll reuses one TLS session instead of paying a fresh handshake each
-# time (the dominant CPU cost on the Pi Zero 2 W). Pure-Python wheel (more-itertools + jaraco.functools);
-# NO compiler needed on Raspberry Pi OS. Do NOT add the [pyopenssl] extra (it would pull cryptography/cffi).
-cheroot>=11.1.2,<12
+# time. Pure-Python (more-itertools + jaraco.functools); NO compiler needed. Do NOT add the [pyopenssl]
+# extra (it would pull cryptography/cffi). On Raspberry Pi OS install via apt (python3-cheroot, 10.x) --
+# the system Python has no pip; the >=10 floor accepts what apt ships. setup.sh installs it. (If cheroot
+# is missing at runtime the app falls back to the werkzeug server, minus keep-alive.)
+cheroot>=10,<12
 # Web Push notifications (optional at runtime -- the app degrades gracefully if it's
 # missing, but push is unavailable without it). Pulls in py-vapid + http-ece +
 # cryptography. On Raspberry Pi OS install cryptography via apt (python3-cryptography)

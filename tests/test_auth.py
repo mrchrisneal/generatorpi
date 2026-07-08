@@ -37,6 +37,90 @@ class TestCheckAuth:
 
 
 # ---------------------------------------------------------------------------
+# check_auth verification cache -- scrypt is ~1.7s/verify on a Pi, so successful
+# Basic-auth verifications are cached briefly to stop a polling browser from
+# re-running scrypt every request. Security-sensitive: only successes are cached,
+# a password change invalidates instantly, and failures always re-run scrypt.
+# ---------------------------------------------------------------------------
+class TestAuthCache:
+    @staticmethod
+    def _spy_scrypt(module, monkeypatch):
+        """Wrap check_password_hash with a call counter that still verifies for real."""
+        from werkzeug.security import check_password_hash as real
+        calls = {"n": 0}
+
+        def spy(stored, pw):
+            calls["n"] += 1
+            return real(stored, pw)
+
+        monkeypatch.setattr(module, "check_password_hash", spy)
+        return calls
+
+    def test_cache_hit_skips_scrypt(self, module, monkeypatch):
+        module._auth_cache.clear()
+        module.AUTH_USERS["chris"] = generate_password_hash("s3cret")
+        calls = self._spy_scrypt(module, monkeypatch)
+        assert module.check_auth("chris", "s3cret") is True      # miss -> scrypt
+        assert module.check_auth("chris", "s3cret") is True      # hit -> no scrypt
+        assert module.check_auth("chris", "s3cret") is True      # hit -> no scrypt
+        assert calls["n"] == 1, "scrypt must run once, then serve from cache"
+
+    def test_failure_is_never_cached(self, module, monkeypatch):
+        module._auth_cache.clear()
+        module.AUTH_USERS["chris"] = generate_password_hash("s3cret")
+        calls = self._spy_scrypt(module, monkeypatch)
+        assert module.check_auth("chris", "wrong") is False
+        assert module.check_auth("chris", "wrong") is False
+        assert calls["n"] == 2, "a wrong password must re-run scrypt every time (rate limiter intact)"
+
+    def test_password_change_invalidates_immediately(self, module, monkeypatch):
+        module._auth_cache.clear()
+        module.AUTH_USERS["chris"] = generate_password_hash("oldpw")
+        assert module.check_auth("chris", "oldpw") is True       # cached success
+        module.AUTH_USERS["chris"] = generate_password_hash("newpw")   # owner changes password
+        calls = self._spy_scrypt(module, monkeypatch)
+        assert module.check_auth("chris", "oldpw") is False      # old pw rejected NOW (no stale window)
+        assert module.check_auth("chris", "newpw") is True       # new pw works (re-runs scrypt)
+        assert calls["n"] == 2
+
+    def test_user_deletion_invalidates(self, module):
+        module._auth_cache.clear()
+        module.AUTH_USERS["chris"] = generate_password_hash("s3cret")
+        assert module.check_auth("chris", "s3cret") is True      # cached success
+        del module.AUTH_USERS["chris"]
+        assert module.check_auth("chris", "s3cret") is False     # deleted user rejected even on a hit
+
+    def test_ttl_expiry_reruns_scrypt(self, module, monkeypatch):
+        module._auth_cache.clear()
+        monkeypatch.setattr(module, "_AUTH_CACHE_TTL", 0.05)
+        module.AUTH_USERS["chris"] = generate_password_hash("s3cret")
+        calls = self._spy_scrypt(module, monkeypatch)
+        assert module.check_auth("chris", "s3cret") is True      # miss -> scrypt (n=1)
+        import time as _t
+        _t.sleep(0.08)                                           # let the entry expire
+        assert module.check_auth("chris", "s3cret") is True      # expired -> scrypt again (n=2)
+        assert calls["n"] == 2
+
+    def test_ttl_zero_disables_cache(self, module, monkeypatch):
+        module._auth_cache.clear()
+        monkeypatch.setattr(module, "_AUTH_CACHE_TTL", 0.0)
+        module.AUTH_USERS["chris"] = generate_password_hash("s3cret")
+        calls = self._spy_scrypt(module, monkeypatch)
+        assert module.check_auth("chris", "s3cret") is True
+        assert module.check_auth("chris", "s3cret") is True
+        assert calls["n"] == 2, "TTL=0 disables caching (scrypt every request)"
+
+    def test_no_plaintext_password_in_cache_keys(self, module):
+        module._auth_cache.clear()
+        module.AUTH_USERS["chris"] = generate_password_hash("SuperSecretPw!")
+        assert module.check_auth("chris", "SuperSecretPw!") is True
+        # Keys are HMAC-SHA256 digests (opaque bytes); the plaintext must appear nowhere.
+        for k in module._auth_cache:
+            assert isinstance(k, bytes)
+            assert b"SuperSecretPw!" not in k
+
+
+# ---------------------------------------------------------------------------
 # check_api_key -- exercised through a request context
 # ---------------------------------------------------------------------------
 class TestCheckApiKey:

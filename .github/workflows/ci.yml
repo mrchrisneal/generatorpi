@@ -50,8 +50,10 @@ jobs:
           python -m pytest tests/ --cov=generator_control \
             --cov-report=json:.cov.json --cov-report=term -q
 
-      - name: Regenerate manifest.json
-        run: python tools/gen-manifest.py
+      - name: Regenerate manifest.json + CHANGELOG-RECENT.md
+        run: |
+          python tools/gen-manifest.py
+          python tools/changelog.py
 
       - name: Refresh coverage badge
         if: github.event_name == 'push'
@@ -71,11 +73,11 @@ jobs:
           rm -f .cov.json                       # don't commit the raw coverage data
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add manifest.json .github/badges/coverage.json
+          git add manifest.json CHANGELOG-RECENT.md .github/badges/coverage.json
           if git diff --cached --quiet; then
-            echo "manifest + badge already up to date"
+            echo "manifest + CHANGELOG-RECENT + badge already up to date"
           else
-            git commit -m "ci: regenerate manifest + coverage badge [skip ci]"
+            git commit -m "ci: regenerate manifest + CHANGELOG-RECENT + coverage badge [skip ci]"
             git push
           fi
 
@@ -85,6 +87,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history so we can commit regenerated files back to main
 
       - uses: actions/setup-python@v5
         with:
@@ -113,21 +117,28 @@ jobs:
       - name: Run tests (release gate)
         run: python -m pytest tests/ -q
 
-      - name: manifest.json must match the shipped files
+      - name: Regenerate manifest + CHANGELOG-RECENT and sync to main
         run: |
           python tools/gen-manifest.py
-          if ! git diff --quiet manifest.json; then
-            echo "::error::manifest.json is stale on this tag -- it must be regenerated + committed on main before tagging"
-            git --no-pager diff manifest.json
-            exit 1
+          python tools/changelog.py
+          if git diff --quiet manifest.json CHANGELOG-RECENT.md; then
+            echo "manifest.json + CHANGELOG-RECENT.md already current on the tagged commit"
+          else
+            # The in-app updater fetches these from raw main, so self-heal: commit the regenerated
+            # files to main (fast-forwards when the tag is main's HEAD, the normal case).
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add manifest.json CHANGELOG-RECENT.md
+            git commit -m "ci: regenerate manifest + CHANGELOG-RECENT for ${GITHUB_REF_NAME} [skip ci]"
+            git push origin HEAD:main
+            echo "regenerated + pushed manifest.json + CHANGELOG-RECENT.md to main"
           fi
-          echo "manifest.json matches all shipped files"
 
       - name: Extract this version's CHANGELOG notes
         run: |
-          awk -v ver="## ${{ steps.ver.outputs.v }}" '
-            $0 == ver {flag=1; next}      # start after the matching "## X.Y.Z" heading
-            /^## / && flag {flag=0}        # stop at the next version heading
+          awk -v v="${{ steps.ver.outputs.v }}" '
+            $1=="##" && $2==v {flag=1; next}   # start at "## X.Y.Z" (field match; date is on the next line)
+            /^## / && flag {flag=0}             # stop at the next version heading
             flag {print}
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then

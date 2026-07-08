@@ -3,6 +3,10 @@
 #  gp-monitor.py  --  on-device Wi-Fi + performance correlator for Raspberry Pi
 # =============================================================================
 #
+#  DOCS: full guide (columns, how to read it, Pi + AP fixes) is on the wiki:
+#        https://github.com/mrchrisneal/generatorpi/wiki/Wi-Fi-Diagnostics
+#        (mirrors gp-monitor.md, shipped next to this script).
+#
 #  WHAT IT DOES
 #  ------------
 #  Samples EVERY candidate cause of Wi-Fi flakiness on a Pi, once every few

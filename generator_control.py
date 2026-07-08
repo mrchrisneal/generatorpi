@@ -1080,16 +1080,64 @@ def record_success(ip):
 # same whether the username is valid or not (prevents enumeration via timing).
 _DUMMY_HASH = generate_password_hash("timing-safe-dummy-value")
 
+# ----------------------------------------------------------------------------
+# Basic-auth verification cache. check_password_hash() is scrypt -- deliberately
+# CPU/memory-hard, ~1.7s PER verify on a Pi Zero 2 W core (measured). A browser
+# polls several endpoints every few seconds over HTTP Basic auth, so WITHOUT
+# this cache every request re-runs scrypt and pins the single core near 100%.
+# We cache ONLY successful verifications, briefly, keyed by an HMAC over
+# (username, CURRENT stored hash, password) under a per-process random secret:
+#   * the plaintext password is never stored (only an HMAC that dies with the
+#     process -- not reversible without the secret);
+#   * the key binds to the current stored hash, so a password change INSTANTLY
+#     invalidates cached entries (the old password now hashes against the new
+#     stored hash -> cache miss -> scrypt -> fail);
+#   * FAILURES are never cached, so the brute-force limiter (run BEFORE auth)
+#     still sees and slows every wrong guess -- no auth bypass.
+# Set AUTH_CACHE_TTL=0 to disable (every request re-runs scrypt).
+# ----------------------------------------------------------------------------
+_AUTH_CACHE_SECRET = secrets.token_bytes(32)      # per-process; gone on restart
+_AUTH_CACHE_TTL = float(os.environ.get("AUTH_CACHE_TTL", "60"))   # seconds a success stays cached
+_AUTH_CACHE_MAX = 256                             # hard cap on entries (bound memory)
+_auth_cache = {}                                  # hmac_key(bytes) -> expiry_epoch(float)
+_auth_cache_lock = threading.Lock()
+
+
+def _auth_cache_key(username, stored_hash, password):
+    """Fast keyed hash of (username, current stored hash, password). Binds to stored_hash so a
+    password change misses the cache; the '\\x00' separators stop a||b == a'||b' key collisions."""
+    mac = hmac.new(_AUTH_CACHE_SECRET, digestmod=hashlib.sha256)
+    for part in (username, stored_hash, password):
+        mac.update(part.encode("utf-8"))
+        mac.update(b"\x00")
+    return mac.digest()
+
 
 def check_auth(username, password):
-    """Verify that the provided username and password are valid.
-
-    Uses a constant-time comparison path regardless of whether the username
-    exists, to prevent timing-based username enumeration.
-    """
+    """Verify a username + password. Constant-time against a dummy hash when the username
+    doesn't exist (anti-enumeration). Successful verifications are cached for AUTH_CACHE_TTL
+    seconds so a polling browser doesn't re-run scrypt on every request (see the cache notes)."""
     stored_hash = AUTH_USERS.get(username, _DUMMY_HASH)
-    valid = check_password_hash(stored_hash, password)
-    return valid and username in AUTH_USERS
+    key = _auth_cache_key(username, stored_hash, password)
+    now = time.time()
+    with _auth_cache_lock:
+        exp = _auth_cache.get(key)
+        if exp is not None and exp > now:
+            # Cached SUCCESS. Re-check membership so a user deleted since caching is rejected
+            # immediately (a CHANGED password already misses via the stored-hash-bound key).
+            return username in AUTH_USERS
+    # Cache miss/expired -> pay the scrypt cost exactly once per TTL per credential. A nonexistent
+    # user still hashes against _DUMMY_HASH here (constant time) and is never cached (ok stays False).
+    ok = check_password_hash(stored_hash, password) and username in AUTH_USERS
+    if ok and _AUTH_CACHE_TTL > 0:                            # TTL<=0 disables the cache entirely
+        with _auth_cache_lock:
+            if len(_auth_cache) >= _AUTH_CACHE_MAX:          # evict expired; hard-reset if still full
+                for k in [k for k, e in _auth_cache.items() if e <= now]:
+                    _auth_cache.pop(k, None)
+                if len(_auth_cache) >= _AUTH_CACHE_MAX:
+                    _auth_cache.clear()
+            _auth_cache[key] = now + _AUTH_CACHE_TTL
+    return ok
 
 
 def check_api_key():
@@ -5846,7 +5894,10 @@ def api_update_changelog():
     """Fetch the release CHANGELOG for the update modal. Never errors hard -- returns
     {changelog: null} if the repo is unreachable so the modal can still open."""
     try:
-        text = _http_get_bytes(_RAW_BASE + "/CHANGELOG.md", max_bytes=200_000).decode("utf-8", "replace")
+        # CHANGELOG-RECENT.md holds only the latest few releases (generated from the full CHANGELOG.md
+        # by tools/changelog.py). We fetch the SHORT file so a version check isn't a full-changelog
+        # download every time. See the "Changelog" section in the repo CLAUDE.md.
+        text = _http_get_bytes(_RAW_BASE + "/CHANGELOG-RECENT.md", max_bytes=64_000).decode("utf-8", "replace")
         return jsonify({"changelog": text, "backup_dir": str(_BACKUP_DIR)})
     except Exception as e:                              # noqa: BLE001 -- non-fatal
         return jsonify({"changelog": None, "error": str(e), "backup_dir": str(_BACKUP_DIR)})

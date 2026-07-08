@@ -15,3 +15,13 @@ scratchpads/
 # Self-updater runtime dirs (never committed): rollback backups + download staging.
 backups/
 .update_staging/
+
+# tools/: ignore the whole directory by DEFAULT so local/dev-only tools (e.g. the gitignored
+# PII/secret scanner, scratch scripts) never get committed to the PUBLIC repo, then WHITELIST
+# exactly the tools we ship/commit. (Ignore the CONTENTS `tools/*`, not the dir, so the negations
+# below can re-include specific files.)
+/tools/*
+!/tools/gen-manifest.py
+!/tools/changelog.py
+!/tools/gp-monitor.py
+!/tools/gp-monitor.md

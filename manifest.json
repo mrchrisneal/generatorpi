@@ -1,20 +1,20 @@
 {
-  "version": "1.2.3",
+  "version": "1.3.0",
   "files": [
     {
       "path": "generator_control.py",
-      "sha256": "9cbe8ef97de2cddd3b4c5a421fd6fc5374866e0f080eafc63bb9a9f4a9e6b739",
-      "bytes": 359717
+      "sha256": "8e277310026d571512d8c00d5ab22178f629d502ffd1fa08da18bc8151ca0a8d",
+      "bytes": 363221
     },
     {
       "path": "requirements.txt",
-      "sha256": "cc2aca7691d675046397a4661f2eb74f8fd15d295a0578147675b6b5b6e26262",
-      "bytes": 793
+      "sha256": "0d770294df6b80ae33b6c5f856143ecdc8712468a81d8f14a84119416e5c82b8",
+      "bytes": 974
     },
     {
       "path": "setup.sh",
-      "sha256": "67cb75e211de8ee9c877c49a77eac50ea848eb33396b0026f05d9ccd898fd98a",
-      "bytes": 8882
+      "sha256": "4be26a8cbc32ee5d05db8e67298fef430ded9a2df4a72e435f7aba280968aaa1",
+      "bytes": 8264
     },
     {
       "path": "update.sh",
@@ -23,13 +23,23 @@
     },
     {
       "path": "VERSION",
-      "sha256": "d82f34ae9aa41bc4a0cb529a1ac0898fed09d6b479fb1cc44cb66c34f15ee84d",
+      "sha256": "64d23f858ef51b0f996e4966d4e27c0371b437e2d2787890b1f7ad22d4ec5663",
       "bytes": 6
     },
     {
-      "path": "CHANGELOG.md",
-      "sha256": "df761fbaea9dca3f094ef55127bbcd302f6a937db106b0f10341184a3ce79cee",
-      "bytes": 6894
+      "path": "CHANGELOG-RECENT.md",
+      "sha256": "213b5264f8c1d48dbcf373feeb02559c2bd8756582ff59e453e1cb3b23253636",
+      "bytes": 4061
+    },
+    {
+      "path": "tools/gp-monitor.py",
+      "sha256": "a80a087613b70189483169428685e5be358f2fe08be1106ebc778ae13455d937",
+      "bytes": 15159
+    },
+    {
+      "path": "tools/gp-monitor.md",
+      "sha256": "70c607e29e05656362a7150a6190a43d8eb34ba2bd3b8d28e75a1f844adb163e",
+      "bytes": 11843
     }
   ]
 }

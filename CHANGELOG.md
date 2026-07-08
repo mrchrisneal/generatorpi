@@ -1,7 +1,28 @@
 # Changelog
 
-All notable changes to GeneratorPi. The in-app updater shows the entry for the
-release it's about to install.
+Full, canonical history of GeneratorPi releases. The in-app updater downloads only the most recent
+releases from **CHANGELOG-RECENT.md** (generated from this file by `tools/changelog.py`). Format:
+each release is `## X.Y.Z` with `Released on Month D, YYYY` directly below, and its changes are tagged
+— **FEAT** (new), **PERF** (speed), **FIX** (bug), **SEC** (security), **DOCS**, **CHORE**.
+
+## 1.3.0
+Released on July 8, 2026
+
+- **PERF:** Big CPU drop on the Pi. Web-UI HTTP Basic-auth verification (scrypt) was re-run on *every*
+  request, so an open browser pinned the Raspberry Pi Zero 2 W's core near 100%. Successful
+  verifications are now cached in memory for a short TTL — with a browser connected and polling, CPU
+  fell from ~95% to ~2.5% (measured on hardware). Wrong passwords still re-run the hash (brute-force
+  protection intact) and a password change invalidates the cache immediately.
+- **PERF/FEAT:** New HTTP server (**cheroot**) with real keep-alive and built-in TLS — an HTTPS poll
+  reuses one TLS session instead of a fresh handshake every request. Falls back to the previous
+  server automatically if cheroot isn't installed.
+- **FEAT:** Bundled **gp-monitor**, an on-device Wi-Fi + performance diagnostic tool (in `tools/`),
+  documented on the wiki (Wi-Fi Diagnostics).
+- **DOCS:** New wiki pages (Architecture & Performance, Wi-Fi Diagnostics); a README "Under the Hood"
+  section, Requirements list, and expanded Features; auto-updating version badge.
+- **CHORE:** `setup.sh` installs/validates dependencies via apt (the Pi's system Python has no pip);
+  the changelog is split into the full history (this file) plus a short `CHANGELOG-RECENT.md` that the
+  updater downloads; tag-driven release automation.
 
 ## 1.2.3
 
