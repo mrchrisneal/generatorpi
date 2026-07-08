@@ -17,6 +17,9 @@ GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E ge
 > [!CAUTION]
 > This system cannot auto-detect the real generator state. Always verify the unit visually and audibly before relying on this readout.
 
+> [!WARNING]
+> This software is provided **as-is**, with no warranty, and is under **active development** — expect changes, rough edges, and breaking updates. **Use caution**, test thoroughly on your own hardware, and never rely on it as your only safeguard around a running generator.
+
 ## Features
 
 * **Remote Power Control**: MOMENTARY relay pulses mimic physical engine start/stop button actions.
