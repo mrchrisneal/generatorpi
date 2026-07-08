@@ -2642,6 +2642,10 @@ var updateActive=false;
 // polls the Pi uses this ONE rate -- incl. the update-status poll -- so we never hammer the link.
 // (The Settings slider that writes gp_refresh_secs is task #37; the plumbing is here now.)
 var refreshMs=Math.max(1000,Math.min(30000,(parseInt(localStorage.getItem('gp_refresh_secs'),10)||3)*1000));
+// Central client request-timeout: the flaky Pi link can take 10-20s+, so give every request
+// generous headroom before it's aborted. ONE place to tweak; all poll requests obey it (any
+// pollFetch caller that passes no explicit ms uses this). Fuller central-timeout work = roadmap.
+var REQ_TIMEOUT_MS=45000;
 // The update / result modal covers the log windows, so while EITHER is open we pause the heavy
 // polls too (only 'state' keeps the header live) -- even before the update itself has started.
 function _updModalShown(){var a=document.getElementById('updModal'),b=document.getElementById('updResultModal');
@@ -2671,7 +2675,7 @@ function _drainPollQ(){
   }
   var job=_pollQ.splice(bi,1)[0];
   var ctrl=('AbortController' in window)?new AbortController():null;
-  var to=setTimeout(function(){if(ctrl)ctrl.abort();},job.ms||30000);
+  var to=setTimeout(function(){if(ctrl)ctrl.abort();},job.ms||REQ_TIMEOUT_MS);
   netFetch(job.path,ctrl?{signal:ctrl.signal}:{})
     .then(function(r){return r.json().catch(function(){return {};});})
     .catch(function(){return null;})
@@ -2873,7 +2877,7 @@ function _setLogCount(){var n=$('log').querySelectorAll('.logln').length;$('logC
 // otherwise), so prepending never yanks text the user is reading.
 function loadAppLog(){var lg=$('log');if(!lg.children.length)lg.classList.add('loading');
   var q='/api/logs?lines=1000';if(_logOffset!=null)q+='&since='+_logOffset;
-  return pollFetch('logs',q,30000).then(function(d){if(!d||logView!=='log')return;
+  return pollFetch('logs',q,REQ_TIMEOUT_MS).then(function(d){if(!d||logView!=='log')return;
     var log=$('log');log.classList.remove('loading');
     var lines=d.lines||[];
     if(typeof d.offset==='number')_logOffset=d.offset;   // advance the delta cursor
@@ -3325,7 +3329,7 @@ var SYS=(function(){
     var q='/api/system/history';
     if(points.length)q+='?since='+points[points.length-1].t;
     else setScreensLoading(true);          // first load: show the spinners right away
-    return pollFetch('sys',q,30000).then(function(d){
+    return pollFetch('sys',q,REQ_TIMEOUT_MS).then(function(d){
         if(!d)return;                       // coalesced / failed / aborted -- nothing to merge
         if(d.capacity)capacity=d.capacity;
         var fresh=colsToRows(d);
