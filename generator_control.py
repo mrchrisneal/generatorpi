@@ -3486,8 +3486,9 @@ function openUpdateModal(){
   cancel.disabled=false;cancel.textContent='CANCEL';
   _ovShow('updModal');doBtn.focus();
   api('/api/update/changelog').then(function(d){
-    cl.textContent=(d&&d.changelog)?d.changelog:'(changelog unavailable)';
-  }).catch(function(){cl.textContent='(changelog unavailable)';});
+    if(d&&d.changelog){cl.textContent=d.changelog;}
+    else{cl.textContent='Changelog unavailable'+((d&&d.error)?(' — '+d.error):'')+'.';}
+  }).catch(function(e){cl.textContent='Changelog unavailable — request failed'+(e?(' ('+e+')'):'')+'.';});
 }
 $('updCancelBtn').addEventListener('click',function(){if(_updPoll)return;_ovHide('updModal');});
 $('updDoBtn').addEventListener('click',function(){
