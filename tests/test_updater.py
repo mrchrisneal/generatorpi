@@ -359,3 +359,67 @@ class TestBootstrapScriptHardening:
             assert "VER=1.0; rm -rf /" not in body           # ...but NOT as a bare command
         finally:
             os.remove(script)
+
+
+# ---------------------------------------------------------------------------
+# REVERT/PROCEED decision endpoint + log reset (terminal-UX backend)
+# ---------------------------------------------------------------------------
+class TestDecideEndpoint:
+    def test_decide_requires_auth(self, client):
+        assert client.post("/api/update/decide").status_code == 401
+
+    def test_decide_rejects_bad_choice(self, client, module):
+        assert client.post(_q("/api/update/decide"), json={"choice": "maybe"}).status_code == 400
+
+    def test_decide_409_when_nothing_pending(self, client, module):
+        with module._update_lock:
+            module._update_state["phase"] = "idle"
+            module._update_state["decide"] = None
+        assert client.post(_q("/api/update/decide"), json={"choice": "revert"}).status_code == 409
+
+    def test_proceed_downgraded_to_revert_when_not_allowed(self, client, module):
+        with module._update_lock:
+            module._update_state["phase"] = "awaiting"
+            module._update_state["decide"] = {"allow_proceed": False}
+            module._update_decision_choice["choice"] = None
+        module._update_decision_event.clear()
+        try:
+            r = client.post(_q("/api/update/decide"), json={"choice": "proceed"})
+            assert r.status_code == 200 and r.get_json()["choice"] == "revert"
+            assert module._update_decision_event.is_set()   # worker gets unblocked
+        finally:
+            with module._update_lock:
+                module._update_state["phase"] = "idle"
+                module._update_state["decide"] = None
+
+    def test_proceed_honored_when_allowed(self, client, module):
+        with module._update_lock:
+            module._update_state["phase"] = "awaiting"
+            module._update_state["decide"] = {"allow_proceed": True}
+            module._update_decision_choice["choice"] = None
+        module._update_decision_event.clear()
+        try:
+            r = client.post(_q("/api/update/decide"), json={"choice": "proceed"})
+            assert r.status_code == 200 and r.get_json()["choice"] == "proceed"
+        finally:
+            with module._update_lock:
+                module._update_state["phase"] = "idle"
+                module._update_state["decide"] = None
+
+
+class TestStartResetsTerminalLog:
+    def test_start_clears_prior_log(self, client, module, monkeypatch):
+        class FakeThread:
+            def __init__(self, target=None, **k):
+                pass
+
+            def start(self):
+                pass
+        monkeypatch.setattr(module.threading, "Thread", FakeThread)
+        with module._update_lock:
+            module._update_state["phase"] = "idle"
+            module._update_state["log"] = ["stale line from a previous run"]
+        assert client.post(_q("/api/update/start")).status_code == 200
+        with module._update_lock:
+            assert module._update_state["log"] == []
+            assert module._update_state["decide"] is None

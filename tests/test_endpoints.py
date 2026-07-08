@@ -551,6 +551,12 @@ class TestFactoryResetEndpoint:
 class TestCheckUpdateEndpoint:
     """GET /api/check-update compares APP_VERSION to the upstream version (network mocked)."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_check_cache(self, module):
+        # The update-check cache is module-level; clear it before each test so the first read
+        # performs a live (mocked) check instead of returning a prior test's cached result.
+        module._update_check_cache.update(latest=None, update_available=False, checked_at=None)
+
     def test_requires_auth(self, client):
         assert client.get("/api/check-update").status_code == 401
 
@@ -577,6 +583,24 @@ class TestCheckUpdateEndpoint:
         monkeypatch.setattr(module, "_fetch_latest_version", lambda: None)
         d = client.get(_q("/api/check-update")).get_json()
         assert d["latest"] is None and d["update_available"] is False
+
+    def test_cached_read_does_not_hit_github(self, client, module, monkeypatch):
+        # Passive footer refresh: a default read returns the CACHED value WITHOUT any network.
+        module._update_check_cache.update(latest="9.9.9", update_available=True, checked_at=1.0)
+
+        def boom():
+            raise AssertionError("passive footer read must not hit GitHub")
+        monkeypatch.setattr(module, "_fetch_latest_version", boom)
+        d = client.get(_q("/api/check-update")).get_json()
+        assert d["latest"] == "9.9.9" and d["update_available"] is True
+
+    def test_fresh_forces_live_check(self, client, module, monkeypatch):
+        # ?fresh=1 (manual "Check again" / on-load) hits the (mocked) network even with a cache.
+        module._update_check_cache.update(latest="1.0.0", update_available=False, checked_at=1.0)
+        monkeypatch.setattr(module, "APP_VERSION", "1.0.0")
+        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "2.0.0")
+        d = client.get(_q("/api/check-update?fresh=1")).get_json()
+        assert d["latest"] == "2.0.0" and d["update_available"] is True
 
     def test_version_tuple_orders_numerically(self, module):
         # "1.10.0" > "1.9.0" numerically (string compare would get this wrong).

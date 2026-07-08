@@ -2589,8 +2589,12 @@ var _pollQ=[], _pollActive=false;
 // preempt a request already IN FLIGHT (that's the one-at-a-time contract), it just loses
 // its place in line. Unknown keys default to lowest priority.
 var _pollPrio={state:0,events:1,logs:1,sys:2};
+// While an update is running we PAUSE every routine poll (state/events/logs/sys) so the ONLY
+// traffic to the Pi is the update's own /api/update/status poll -- no overhead, all sequential.
+var updateActive=false;
 function pollFetch(key,path,ms){
   return new Promise(function(resolve){
+    if(updateActive){resolve(null);return;}   // routine polling is paused during an update
     for(var i=0;i<_pollQ.length;i++){          // coalesce a still-queued same-key job
       if(_pollQ[i].key===key){_pollQ[i].resolve(null);_pollQ[i].path=path;_pollQ[i].ms=ms;_pollQ[i].resolve=resolve;return;}
     }
@@ -2599,7 +2603,7 @@ function pollFetch(key,path,ms){
   });
 }
 function _drainPollQ(){
-  if(_pollActive||!_pollQ.length)return;
+  if(_pollActive||!_pollQ.length||updateActive)return;
   _pollActive=true;
   // Pick the highest-priority queued job (FIFO among equal priority).
   var bi=0;
@@ -3516,10 +3520,13 @@ function _updSet(text,actionLabel,actionMode,href){
    "Checking…" and, when UP TO DATE, reports "Version up-to-date" as feedback. An AUTOMATIC
    (on-load) check stays silent when up to date -- the line only surfaces for
    available/failed. Both reveal the line for an available update (+ pulse) or a failure. */
-function checkUpdate(manual){
+function checkUpdate(manual,passive){
   var row=$('updRow'),v=$('verLink');if(!row)return;
+  if(updateActive)return;                                    // never poll while an update runs
   if(manual){row.classList.add('checking');_updSet('Checking for updates\\u2026');if(v)v.classList.remove('out-of-date');}
-  api('/api/check-update').then(function(d){
+  // Manual + on-load do a LIVE repo check (?fresh=1); the passive 5-min refresh reads the
+  // server's CACHED last-known result so an open page never hammers GitHub.
+  api('/api/check-update'+(passive?'':'?fresh=1')).then(function(d){
     row.classList.remove('checking');
     if(d&&d.update_available&&d.latest){                      // update available
       _updSet('v'+d.latest+' available!','Update now','update','https://github.com/mrchrisneal/generatorpi/releases');
@@ -3543,20 +3550,23 @@ $('updAction').addEventListener('click',function(e){
    tooltip says so on hover. */
 (function(){var vl=$('verLink');if(!vl)return;
   vl.addEventListener('click',function(e){e.preventDefault();checkUpdate(true);});})();
-checkUpdate();
+checkUpdate();                                               // on-load: one live check
+// Keep the footer in sync on a 5-minute timer via the server's CACHED result (no GitHub hit).
+setInterval(function(){checkUpdate(false,true);},300000);
 
 /* ---------- self-update flow (changelog -> progress -> restart -> reload) ---------- */
 var _updPoll=null;
 function _ovShow(id){$(id).className='confirm-overlay show';setBackgroundInert(true);}
 function _ovHide(id){$(id).className='confirm-overlay';setBackgroundInert(false);}
+// Render an array of log lines into a scroll box as a terminal, pinned to the bottom.
+function _renderTerm(el,logArr){el.textContent=(logArr&&logArr.length)?logArr.join('\\n'):'';el.scrollTop=el.scrollHeight;}
 function openUpdateModal(){
   var cl=$('updChangelog'),doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   cl.textContent='Loading changelog…';cl.style.display='';
   var note=$('updBackupNote');note.textContent='';note.style.display='';
-  $('updProgressWrap').style.display='none';$('updBarFill').style.width='0';
-  $('updBarFill').style.background='';
-  doBtn.classList.remove('loading');doBtn.disabled=false;doBtn.style.display='';
-  cancel.disabled=false;cancel.textContent='CANCEL';
+  $('updProgressWrap').style.display='none';
+  doBtn.className='btn3d danger';doBtn.textContent='UPDATE';doBtn.dataset.role='';doBtn.disabled=false;doBtn.style.display='';
+  cancel.className='btn3d steel';cancel.textContent='CANCEL';cancel.dataset.role='';cancel.disabled=false;cancel.style.display='';
   _ovShow('updModal');doBtn.focus();
   api('/api/update/changelog').then(function(d){
     if(d&&d.changelog){cl.textContent=d.changelog;}
@@ -3564,61 +3574,87 @@ function openUpdateModal(){
     note.textContent='All files are backed up to '+((d&&d.backup_dir)||'backups/')+' before updating.';
   }).catch(function(e){cl.textContent='Changelog unavailable — request failed'+(e?(' ('+e+')'):'')+'.';});
 }
-$('updCancelBtn').addEventListener('click',function(){if(_updPoll)return;_ovHide('updModal');});
+// CANCEL doubles as REVERT while the run is parked on a decision; else it only closes when idle.
+$('updCancelBtn').addEventListener('click',function(){
+  var b=$('updCancelBtn');
+  if(b.dataset.role==='revert'){_decide('revert');return;}
+  if(_updPoll||updateActive)return;                      // no closing mid-run
+  _ovHide('updModal');
+});
 $('updDoBtn').addEventListener('click',function(){
-  var b=$('updDoBtn');if(b.classList.contains('loading'))return;
+  var b=$('updDoBtn');
+  if(b.dataset.role==='proceed'){_decide('proceed');return;}   // PROCEED past a warning
+  if(b.classList.contains('loading'))return;
   b.classList.add('loading');$('updCancelBtn').disabled=true;
   post('/api/update/start').then(function(){
-    $('updChangelog').style.display='none';$('updBackupNote').style.display='none';
-    $('updProgressWrap').style.display='';
-    b.style.display='none';                              // update is now automatic
-    $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').disabled=true;  // no cancel mid-update
+    updateActive=true;                                   // PAUSE all routine polling now
+    var cl=$('updChangelog');cl.style.display='';cl.textContent='Starting…';
+    $('updBackupNote').style.display='none';
+    b.classList.remove('loading');b.style.display='none';   // progress is automatic
+    $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').disabled=true;
     _pollUpdate();
   }).catch(function(){
     b.classList.remove('loading');$('updCancelBtn').disabled=false;
-    $('updProgressWrap').style.display='';$('updProgressMsg').textContent='Could not start the update.';
+    $('updChangelog').textContent='Could not start the update.';
   });
 });
+// Answer a REVERT/PROCEED prompt, then resume polling the terminal.
+function _decide(choice){
+  var doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
+  doBtn.style.display='none';doBtn.dataset.role='';
+  cancel.dataset.role='';cancel.textContent='CLOSE';cancel.disabled=true;cancel.className='btn3d steel';
+  post('/api/update/decide',{choice:choice}).catch(function(){});
+  _pollUpdate();
+}
+// Parked on an error/warning: offer REVERT (always) + PROCEED (only when the step allows it).
+function _showDecision(s){
+  var doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
+  cancel.className='btn3d steel';cancel.textContent='REVERT';cancel.dataset.role='revert';cancel.disabled=false;cancel.style.display='';
+  if(s.decide&&s.decide.allow_proceed){
+    doBtn.className='btn3d danger';doBtn.textContent='PROCEED';doBtn.dataset.role='proceed';doBtn.disabled=false;doBtn.style.display='';
+  }else{doBtn.style.display='none';}
+}
 function _pollUpdate(){
   if(_updPoll)clearTimeout(_updPoll);
   api('/api/update/status').then(function(s){
     if(!s){_updPoll=setTimeout(_pollUpdate,1200);return;}
-    $('updBarFill').style.width=Math.round((s.progress||0)*100)+'%';
-    $('updProgressMsg').textContent=s.message||s.phase||'';
-    if(s.phase==='failed'){
-      $('updBarFill').style.background='#ff5a4a';
-      $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').disabled=false;_updPoll=null;return;
+    var cl=$('updChangelog');cl.style.display='';_renderTerm(cl,s.log);
+    if(s.phase==='awaiting'){_showDecision(s);_updPoll=setTimeout(_pollUpdate,1200);return;}
+    if(s.phase==='failed'){                              // reverted / failed -> allow closing
+      updateActive=false;                               // resume routine polling (old version runs)
+      $('updCancelBtn').textContent='CLOSE';$('updCancelBtn').dataset.role='';$('updCancelBtn').disabled=false;
+      $('updDoBtn').style.display='none';_updPoll=null;return;
     }
-    if(s.phase==='restarting'){                          // server going down -> wait + reload
-      $('updProgressMsg').textContent='Restarting — reconnecting…';_updPoll=null;_waitBackAndReload();return;
-    }
+    if(s.phase==='restarting'){_updPoll=null;_waitBackAndReload();return;}
     _updPoll=setTimeout(_pollUpdate,1200);
   }).catch(function(){_updPoll=setTimeout(_pollUpdate,1500);});
 }
 function _waitBackAndReload(){
-  // Ping the app until it answers again (new version up), then hard-reload so the fresh UI +
-  // the post-update result modal appear. Capped (~2min) so a bricked device surfaces guidance
-  // instead of spinning forever (audit M6). The browser resends Basic auth on same-origin GETs.
+  // Keep checking until the app answers again, then FORCE a cache-bust reload of the whole page
+  // so the new version's UI loads fresh. Capped (~3min) so a bricked device surfaces guidance.
+  var cl=$('updChangelog');
+  cl.textContent+='\\n\\n> waiting for the app to come back up…';cl.scrollTop=cl.scrollHeight;
   var tries=0;
   (function ping(){
     tries++;
     fetch('/?ts='+Date.now(),{cache:'no-store'}).then(function(r){
-      if(r&&r.ok){location.reload();}
-      else if(tries<60){setTimeout(ping,2000);}
-      else{$('updProgressMsg').textContent='The app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';}
+      if(r&&r.ok){location.replace(location.pathname+'?u='+Date.now());}   // cache-bust fresh load
+      else if(tries<90){setTimeout(ping,2000);}
+      else{cl.textContent+='\\nThe app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';cl.scrollTop=cl.scrollHeight;}
     }).catch(function(){
-      if(tries<60){setTimeout(ping,2000);}
-      else{$('updProgressMsg').textContent='The app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';}
+      if(tries<90){setTimeout(ping,2000);}
+      else{cl.textContent+='\\nThe app has not come back. It may be rolling back or need a manual restart — try reloading shortly.';cl.scrollTop=cl.scrollHeight;}
     });
   })();
 }
-/* Post-restart result modal: shown once after an update; DISMISS clears it server-side. */
+/* Post-restart result modal: the SAME terminal look, showing the FULL captured log; DISMISS
+   clears it server-side so it never reappears until the next update. */
 function checkUpdateResult(){
   api('/api/update/result').then(function(d){
     if(!d||!d.pending)return;
     $('updResultTitle').textContent=(d.status==='success')?'UPDATE COMPLETE':'UPDATE FAILED';
     $('updResultNote').textContent=d.note||'';
-    $('updResultLog').textContent=d.log||'(no log captured)';
+    var lg=$('updResultLog');lg.textContent=d.log||'(no log captured)';lg.scrollTop=lg.scrollHeight;
     _ovShow('updResultModal');
   }).catch(function(){});
 }
@@ -4611,20 +4647,38 @@ def _fetch_latest_version():
         return None
 
 
+# Cached result of the most recent GitHub update check. The footer refreshes on a 5-minute
+# timer by READING THIS CACHE (no network) -- only the server loop, the on-load check, and a
+# manual "Check again" actually reach out to the repo, so an open browser never hammers GitHub.
+_update_check_cache = {"latest": None, "update_available": False, "checked_at": None}
+
+
+def _run_update_check():
+    """Hit the repo, compute availability, UPDATE THE CACHE, and return the result. The ONLY
+    path that performs the network call for an update check (loop / on-load / manual)."""
+    latest = _fetch_latest_version()
+    available = latest is not None and _version_tuple(latest) > _version_tuple(APP_VERSION)
+    with _update_lock:
+        _update_check_cache.update(latest=latest, update_available=bool(available),
+                                   checked_at=time.time())
+    return {"installed": APP_VERSION, "latest": latest, "update_available": bool(available)}
+
+
 @app.route('/api/check-update', methods=['GET'])
 @auth_required
 def api_check_update():
-    """Report the installed version and whether a newer one is published upstream. The
-    frontend footer uses this to pulse the version yellow + offer an Update link. `latest`
-    is null when the check couldn't reach the repo (offline / not yet public)."""
-    latest = _fetch_latest_version()
-    installed = APP_VERSION
-    available = latest is not None and _version_tuple(latest) > _version_tuple(installed)
-    return jsonify({
-        "installed": installed,
-        "latest": latest,
-        "update_available": bool(available),
-    })
+    """Report installed vs. published version. `?fresh=1` does a LIVE repo check (manual
+    "Check again" + the on-load check); the default returns the CACHED last-known result so the
+    footer's 5-minute refresh never touches GitHub. `latest` is null when a live check couldn't
+    reach the repo (offline / not yet public)."""
+    if request.args.get("fresh"):
+        return jsonify(_run_update_check())
+    with _update_lock:
+        cached = dict(_update_check_cache)
+    if cached.get("checked_at") is None:          # nothing cached yet -> one live check
+        return jsonify(_run_update_check())
+    return jsonify({"installed": APP_VERSION, "latest": cached["latest"],
+                    "update_available": bool(cached["update_available"])})
 
 
 # ============================================================================
@@ -4647,8 +4701,40 @@ _SERVICE_UNIT = Path("/etc/systemd/system/generator_control.service")
 # Live progress the UI polls. phase: idle/checking/downloading/verifying/backing_up/
 # swapping/restarting/done/failed. Its own lock (touched from the worker thread).
 _update_state = {"phase": "idle", "message": "", "progress": 0.0, "error": None,
-                 "version": None, "systemd": None}
+                 "version": None, "systemd": None, "log": [], "decide": None}
 _update_lock = threading.Lock()
+# Decision gate: when the run hits an error/warning it parks on phase "awaiting" and BLOCKS on
+# this event until the user clicks REVERT or PROCEED (default REVERT on timeout). One update runs
+# at a time, so a single event + holder is sufficient.
+_update_decision_event = threading.Event()
+_update_decision_choice = {"choice": None}
+
+
+def _update_log(line):
+    """Append one line to the live terminal log the progress view + result modal render."""
+    with _update_lock:
+        _update_state["log"].append(line)
+
+
+def _await_decision(message, allow_proceed):
+    """Park the run: show `message`, offer REVERT (+ PROCEED iff allow_proceed), and BLOCK until
+    the user decides. Returns 'proceed' or 'revert' (defaults to the SAFE 'revert' on timeout so
+    an unattended browser can never leave the updater hung mid-run). Requests to the Pi stay
+    sequential -- the worker simply waits; only the status poll continues."""
+    _update_log(message)
+    with _update_lock:
+        _update_state.update(phase="awaiting", message=message,
+                             decide={"allow_proceed": bool(allow_proceed)})
+        _update_decision_choice["choice"] = None
+    _update_decision_event.clear()
+    got = _update_decision_event.wait(600)               # up to 10 min for a human decision
+    with _update_lock:
+        choice = _update_decision_choice["choice"] if got else "revert"
+        if choice not in ("proceed", "revert"):
+            choice = "revert"
+        _update_state["decide"] = None
+    _update_log(f"→ {choice.upper()}")
+    return choice
 
 
 def _deployment_has_systemd():
@@ -4698,6 +4784,7 @@ def _download_and_verify(manifest, base=None, staging=None):
         dest = staging / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
+        _update_log(f"    {rel} … ok ({len(data)} bytes)")   # one terminal line per verified file
     _update_phase("verifying", "Re-verifying staged files…", 0.68)
     for f in files:                                    # defense in depth: re-hash on disk
         if hashlib.sha256((staging / f["path"]).read_bytes()).hexdigest() != f["sha256"]:
@@ -4928,7 +5015,7 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
         "SVC=generator_control.service\n"
         "mkdir -p \"$ROOT/backups\"\n"
         "RESULT=\"$ROOT/backups/last_update.json\"\n"
-        "exec > \"$ROOT/backups/last_update.log\" 2>&1\n"           # capture the log for the modal
+        "exec >> \"$ROOT/backups/last_update.log\" 2>&1\n"          # APPEND to the seeded pre-restart log
         "log() { echo \"[gp-update] $(date -Iseconds) $*\"; }\n"
         "write_result() { printf '{\"status\":\"%s\",\"version\":\"%s\",\"ts\":\"%s\",\"note\":\"%s\"}\\n'"
         " \"$1\" \"$VER\" \"$(date -Iseconds)\" \"$2\" > \"$RESULT\"; }\n"
@@ -4993,22 +5080,44 @@ def _run_update():
     zpath = None
     swapped = False
     try:
-        _update_phase("checking", "Fetching release manifest…", 0.03)
+        _update_log(f"$ update GeneratorPi (installed v{APP_VERSION})")
+        _update_log("> Reaching GitHub + fetching release manifest…")
+        _update_phase("checking", "Reaching GitHub…", 0.03)
         manifest = json.loads(_http_get_bytes(_MANIFEST_URL, max_bytes=1_000_000).decode("utf-8"))
         _validate_manifest_paths(manifest)
         version = manifest.get("version") or "?"
         _validate_version(version)                       # charset-safe before it hits shell/JSON
         with _update_lock:
             _update_state["version"] = version
-        _update_phase("checking", "Checking permissions…", 0.04)
+        nfiles = len(manifest.get("files") or [])
+        _update_log(f"  ok — manifest v{version}, {nfiles} files")
+        _update_log("> Validating permissions + free disk space…")
+        _update_phase("checking", "Validating permissions + free space…", 0.06)
         _preflight_check(manifest)                       # abort NOW if we can't write everywhere
-        staging = _download_and_verify(manifest)         # abort if any hash/compile fails
+        _update_log("  ok")
+        _update_log(f"> Downloading {nfiles} files + verifying SHA-256…")
+        _update_phase("downloading", "Downloading + verifying files…", 0.1)
+        staging = _download_and_verify(manifest)         # abort if any hash/compile fails; logs each
+        _update_log("  all files downloaded + hashes verified ok")
+        _update_log("> Backing up current files…")
         _update_phase("backing_up", "Backing up current files…", 0.8)
         zpath, _added = _make_backup(manifest)
+        _update_log(f"  backup written + integrity-verified: {zpath.name}")
         if _deployment_has_systemd():
             with _update_lock:
                 _update_state["systemd"] = True
+            _update_log("> Restarting the application to make final swaps…")
             _update_phase("restarting", f"Applying v{version} + restarting service…", 0.92)
+            # Seed the shared log with everything so far, so the post-restart result terminal
+            # shows the FULL run (these pre-restart lines + the bootstrap's swap/restart/health
+            # lines, which the bootstrap APPENDS to this same file).
+            with _update_lock:
+                _seed = "\n".join(_update_state["log"])
+            try:
+                _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+                _UPDATE_LOG.write_text(_seed + "\n")
+            except OSError:
+                pass
             # Health URL the bootstrap probes to confirm the NEW version actually serves.
             scheme = "https" if CONFIG.get("SSL_ENABLED") else "http"
             health_url = f"{scheme}://127.0.0.1:{CONFIG['PORT']}/"
@@ -5023,28 +5132,40 @@ def _run_update():
         else:
             with _update_lock:
                 _update_state["systemd"] = False
+            _update_log("> Swapping files + restarting the application…")
             _update_phase("swapping", "Applying update…", 0.86)
             _swap(manifest)
             swapped = True
+            with _update_lock:
+                _full_log = "\n".join(_update_state["log"])
             # Mark 'restarting' (NOT success) BEFORE re-exec; the freshly-started process flips
             # it to success at startup, so an import failure in the new code can't masquerade as
-            # a successful update (audit M1).
+            # a successful update (audit M1). The captured log is the whole terminal, so the
+            # result modal shows the same lines the user just watched.
             _write_update_result(
                 "restarting", version,
-                note="Not a systemd service — files were swapped directly; restarting the app.",
-                log_text=f"Dev/non-systemd update to v{version}: "
-                         f"{len(manifest.get('files') or [])} files verified + swapped; re-exec.")
+                note="Files were swapped directly (non-systemd); the app is restarting.",
+                log_text=_full_log)
             _update_phase("restarting",
-                          f"Updated to v{version}. Not running as a systemd service — files "
-                          f"were swapped directly; restarting the app process…", 0.95)
+                          f"Updated to v{version}. Restarting the app process…", 0.95)
             _schedule_process_restart(1.5)
     except Exception as e:
+        # Any failure BEFORE the restart lands here. Show it in the terminal and PARK for the
+        # user's decision (hard errors can't be safely proceeded past, so REVERT only). REVERT
+        # rolls back any partial swap, discards staging, and leaves the OLD version running.
         log.error(f"Self-update failed: {e}")
+        _update_log(f"! ERROR: {e}")
+        _await_decision(f"Update failed: {e}", allow_proceed=False)
         if swapped and zpath is not None:                # same-process swap failed -> restore
+            _update_log("Rolling back the partial swap…")
             _rollback(zpath)
-            _update_phase("failed", f"Update failed (rolled back): {e}", 0.0, error=str(e))
-        else:
-            _update_phase("failed", f"Update failed: {e}", 0.0, error=str(e))
+        try:                                             # discard the staged download
+            if _UPDATE_STAGING.exists():
+                shutil.rmtree(_UPDATE_STAGING, ignore_errors=True)
+        except Exception:                                # noqa: BLE001 -- cleanup is best-effort
+            pass
+        _update_log(f"Reverted — no changes applied. Still on v{APP_VERSION}.")
+        _update_phase("failed", f"Update reverted: {e}", 0.0, error=str(e))
 
 
 # FAIL FAST at startup: the updater must always be able to write a rollback backup, so a
@@ -5103,10 +5224,32 @@ def api_update_start():
         if _update_state["phase"] not in ("idle", "done", "failed"):
             return jsonify({"success": False, "message": "An update is already in progress."}), 409
         _update_state.update(phase="checking", message="Starting…", progress=0.0,
-                             error=None, systemd=_deployment_has_systemd())
+                             error=None, systemd=_deployment_has_systemd(), log=[], decide=None)
     log.warning(f"Self-update requested by {caller_identity()}@{request.remote_addr}")
     threading.Thread(target=_run_update, daemon=True, name="self-update").start()
     return jsonify({"success": True})
+
+
+@app.route('/api/update/decide', methods=['POST'])
+@auth_required
+def api_update_decide():
+    """Answer a REVERT/PROCEED prompt the running update parked on (phase 'awaiting'). Body
+    {choice: 'proceed'|'revert'}; 'proceed' is only honored when the parked step allowed it
+    (a hard safety error offers REVERT only). 409 if nothing is awaiting a decision."""
+    data = request.get_json(silent=True) or {}
+    choice = data.get("choice")
+    if choice not in ("proceed", "revert"):
+        return jsonify({"success": False, "message": "choice must be 'proceed' or 'revert'"}), 400
+    with _update_lock:
+        decide = _update_state.get("decide")
+        if _update_state["phase"] != "awaiting" or not decide:
+            return jsonify({"success": False, "message": "no decision is pending"}), 409
+        # Refuse PROCEED on a step that forbids it (safety errors) -- fall back to REVERT.
+        if choice == "proceed" and not decide.get("allow_proceed"):
+            choice = "revert"
+        _update_decision_choice["choice"] = choice
+    _update_decision_event.set()                          # unblock the worker's _await_decision
+    return jsonify({"success": True, "choice": choice})
 
 
 @app.route('/api/update/result', methods=['GET'])
@@ -5157,18 +5300,20 @@ def update_check_loop():
     if _monitor_stop.wait(30):                        # first check 30s after startup
         return
     while True:
-        if not pushed:
-            latest = _fetch_latest_version()
-            if latest and _version_tuple(latest) > _version_tuple(APP_VERSION):
-                pushed = True                         # exactly one update push per restart
-                log.info(f"Update available: v{latest} (installed v{APP_VERSION})")
-                record_event("update", f"Update available: v{latest} (installed v{APP_VERSION})")
-                send_push_async(
-                    "Update available",
-                    f"GeneratorPi v{latest} is available (you have v{APP_VERSION}).",
-                    tag="update",
-                )
-        if _monitor_stop.wait(3600):                  # ~hourly; True == stop requested
+        # Refresh the footer cache every cycle (so cached footer reads stay reasonably current)
+        # and push exactly once per run when a newer version first appears.
+        result = _run_update_check()
+        latest = result["latest"]
+        if not pushed and result["update_available"]:
+            pushed = True                             # exactly one update push per restart
+            log.info(f"Update available: v{latest} (installed v{APP_VERSION})")
+            record_event("update", f"Update available: v{latest} (installed v{APP_VERSION})")
+            send_push_async(
+                "Update available",
+                f"GeneratorPi v{latest} is available (you have v{APP_VERSION}).",
+                tag="update",
+            )
+        if _monitor_stop.wait(3600):                  # ~hourly repo check; True == stop requested
             return
 
 
