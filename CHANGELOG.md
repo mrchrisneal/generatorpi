@@ -3,6 +3,18 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.2.0
+
+- **Documentation**: a full GitHub wiki (installation, configuration, hardware & wiring, REST API,
+  self-updater, TLS & security, Home Assistant integration, fuel projection, troubleshooting, FAQ),
+  a slimmed README that links into it, and status badges (build, coverage, license, version).
+- **CI pipeline**: GitHub Actions runs the full test suite on every push, regenerates the update
+  manifest, and refreshes the coverage badge automatically.
+- **Updater**: preserves the executable bit on shell scripts across an update swap, and shows a
+  loading spinner beside "Loading changelog…" in the update modal.
+- Consolidates the 1.1.x self-updater hardening — reliable non-systemd restart, detailed two-stage
+  progress with a live "Restarting" view, and robust API-based restart detection — into this release.
+
 ## 1.1.3
 
 - **UI polish**: the RESTART APP button is now amber (red is reserved for Factory Reset), and in

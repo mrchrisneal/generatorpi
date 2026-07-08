@@ -423,3 +423,23 @@ class TestStartResetsTerminalLog:
         with module._update_lock:
             assert module._update_state["log"] == []
             assert module._update_state["decide"] is None
+
+
+def test_swap_preserves_executable_bit(module, tmp_path):
+    """A swap must keep the LIVE file's permission bits -- setup.sh/update.sh stay executable even
+    though the staged copy was written with the default (non-exec) umask mode (exec-bit fix)."""
+    import stat as _stat
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    live = dest / "setup.sh"
+    live.write_text("#!/bin/bash\necho old\n")
+    os.chmod(live, 0o755)                                # the live script is executable
+    staged = staging / "setup.sh"
+    staged.write_text("#!/bin/bash\necho new\n")
+    os.chmod(staged, 0o644)                             # the staged copy is NOT executable
+    module._swap({"files": [{"path": "setup.sh", "sha256": "x", "bytes": 0}]},
+                 staging=staging, dest_root=dest)
+    assert live.read_text() == "#!/bin/bash\necho new\n"           # content swapped
+    assert _stat.S_IMODE(os.stat(live).st_mode) == 0o755          # exec bit preserved

@@ -1,0 +1,66 @@
+# CI pipeline for GeneratorPi (#11): on every push/PR to main, run the full test suite; on pushes
+# to main, additionally regenerate manifest.json (kills the manual "manifest treadmill" — the
+# updater verifies files against this) and refresh the coverage badge, committing them back with
+# a [skip ci] marker so the auto-commit doesn't re-trigger this workflow.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write            # needed to commit the regenerated manifest + coverage badge back
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Don't run on the workflow's own auto-commits (they carry [skip ci]).
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt || true
+          pip install pytest pytest-cov
+
+      - name: Run tests with coverage (gate)
+        run: |
+          python -m pytest tests/ --cov=generator_control \
+            --cov-report=json:.cov.json --cov-report=term -q
+
+      - name: Regenerate manifest.json
+        run: python tools/gen-manifest.py
+
+      - name: Refresh coverage badge
+        if: github.event_name == 'push'
+        run: |
+          pct=$(python -c "import json;print(round(json.load(open('.cov.json'))['totals']['percent_covered']))")
+          if   [ "$pct" -ge 90 ]; then color=brightgreen
+          elif [ "$pct" -ge 75 ]; then color=yellow
+          else color=red; fi
+          mkdir -p .github/badges
+          printf '{"schemaVersion": 1, "label": "coverage", "message": "%s%%", "color": "%s"}\n' \
+            "$pct" "$color" > .github/badges/coverage.json
+          echo "coverage: ${pct}%"
+
+      - name: Commit manifest + badge if changed
+        if: github.event_name == 'push'
+        run: |
+          rm -f .cov.json                       # don't commit the raw coverage data
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifest.json .github/badges/coverage.json
+          if git diff --cached --quiet; then
+            echo "manifest + badge already up to date"
+          else
+            git commit -m "ci: regenerate manifest + coverage badge [skip ci]"
+            git push
+          fi

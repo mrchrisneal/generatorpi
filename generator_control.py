@@ -36,6 +36,7 @@ import sqlite3
 import re              # manifest version charset validation (self-updater)
 import hashlib         # SHA-256 verification of downloaded release files (self-updater)
 import shutil          # staging dir management for the self-updater
+import stat            # preserve file permission bits (exec bit) across an update swap
 import shlex           # safe quoting when generating the swap/restart shell script
 import zipfile         # ZIP backup of the project root before a self-update (rollback)
 import tempfile        # the self-update swap script runs from /tmp (can replace every file)
@@ -2414,6 +2415,11 @@ footer #verLink.out-of-date .ver-caution{display:inline-block;color:#ffcf5a;
 .upd-spin{display:none;width:11px;height:11px;margin-right:7px;vertical-align:-1px;
   border:2px solid rgba(255,255,255,.25);border-top-color:#cfe6dd;border-radius:50%}
 footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s linear infinite}
+/* Inline loading spinner shown to the LEFT of "Loading changelog…" in the update modal. The base
+   .upd-spin is footer-scoped + hidden by default, so this is a standalone always-visible variant. */
+.upd-inline-spin{display:inline-block;width:12px;height:12px;margin-right:8px;vertical-align:-2px;
+  border:2px solid rgba(255,255,255,.25);border-top-color:#7effb0;border-radius:50%;
+  animation:btnspin .8s linear infinite}
 
 /* ---- start confirm dialog ---- */
 /* position:fixed (not absolute) so the overlay + card center in the VIEWPORT, not
@@ -3726,7 +3732,7 @@ function openUpdateModal(){
   var _w=$('updWaiting'); if(_w)_w.style.display='none';
   if(cl.parentElement)cl.parentElement.style.display='';
   var _cb=$('updCard').querySelector('.confirm-btns'); if(_cb)_cb.style.display='';
-  cl.textContent='Loading changelog…';cl.style.display='';
+  cl.innerHTML='<span class="upd-inline-spin" aria-hidden="true"></span>Loading changelog\\u2026';cl.style.display='';
   var note=$('updBackupNote');note.textContent='';note.style.display='';
   $('updProgressWrap').style.display='none';
   doBtn.className='btn3d danger';doBtn.textContent='PROCEED';doBtn.dataset.role='';doBtn.disabled=false;doBtn.style.display='';
@@ -5321,9 +5327,16 @@ def _swap(manifest, staging=None, dest_root=None, log_fn=None):
     for f in manifest.get("files") or []:
         live = dest_root / f["path"]
         live.parent.mkdir(parents=True, exist_ok=True)
-        old_bytes = live.stat().st_size if live.exists() else 0   # for the "old→new" report
+        existed = live.exists()
+        old_bytes = live.stat().st_size if existed else 0   # for the "old→new" report
+        # Preserve the LIVE file's permission bits (e.g. the +x on setup.sh/update.sh): the staged
+        # copy was written via write_bytes() with the default umask mode, so without this the swap
+        # would silently drop the executable bit on shell scripts (audit: exec-bit preservation).
+        orig_mode = stat.S_IMODE(live.stat().st_mode) if existed else None
         tmp = live.with_name(live.name + ".gpnew")       # sibling temp on the same filesystem
         shutil.copy2(staging / f["path"], tmp)
+        if orig_mode is not None:
+            os.chmod(tmp, orig_mode)                     # re-apply the original permissions
         os.replace(tmp, live)                            # atomic rename over the live file
         if log_fn:                                       # per-file line: "<path> … 332385 → 333025 bytes … ok"
             new_bytes = live.stat().st_size
@@ -5377,9 +5390,14 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url):
     # filesystem, then `mv` (rename(2)) it over the live file. The live file is therefore only
     # ever replaced all-at-once -- a power loss mid-copy leaves a harmless *.gpnew temp, never a
     # truncated generator_control.py that would crash-loop the service on reboot.
+    # Also preserve the live file's mode (e.g. +x on setup.sh/update.sh) onto the replacement,
+    # best-effort via `chmod --reference` -- otherwise the swap would drop the exec bit like the
+    # dev _swap did before its fix. The ( …; true ) subshell can't fail the &&-chain, so mv always
+    # proceeds even if the reference/chmod is unavailable.
     copies = "\n".join(
         f'mkdir -p "$ROOT/$(dirname {q(p)})" && '
         f'cp -f {q(str(staging))}/{q(p)} "$ROOT"/{q(p)}.gpnew && '
+        f'( [ -e "$ROOT"/{q(p)} ] && chmod --reference="$ROOT"/{q(p)} "$ROOT"/{q(p)}.gpnew 2>/dev/null; true ) && '
         f'mv -f "$ROOT"/{q(p)}.gpnew "$ROOT"/{q(p)}'
         for p in paths
     )
