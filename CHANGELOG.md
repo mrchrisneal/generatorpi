@@ -3,6 +3,14 @@
 All notable changes to GeneratorPi. The in-app updater shows the entry for the
 release it's about to install.
 
+## 1.1.1
+
+- **Update restart UX**: while the app restarts, the log is hidden in favor of a large rotating
+  "Restarting" spinner and an elapsed timer; restart completion is now detected robustly through
+  the API — the state endpoint reports the running version and the process start time, so the page
+  knows exactly when the app has fully restarted. Delayed restarts surface inline notices ("still
+  updating…", and past five minutes an unresponsive warning). Minor log-wording cleanups.
+
 ## 1.1.0
 
 - **Reliable self-update restart (critical)**: on non-systemd installs the updater now releases

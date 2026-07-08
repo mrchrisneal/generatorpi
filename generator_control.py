@@ -82,6 +82,12 @@ def _read_app_version():
 
 APP_VERSION = _read_app_version()
 
+# Unix timestamp of THIS process's start, captured at import. A full restart (systemd restart or
+# the updater's os.execv re-exec) re-imports the module, so this value CHANGES on every restart --
+# the client uses it as a robust "did the app actually restart?" signal (and to show when the app
+# was last fully restarted). Bundled into /api/state alongside app_version.
+_STARTED_AT = time.time()
+
 # Defaults -- overridden by values in the env file
 CONFIG = {
     # GPIO
@@ -2456,15 +2462,17 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .upd-banner-ok{color:#7effb0;background:rgba(126,255,176,.10);border:1px solid rgba(126,255,176,.35)}
 .upd-banner-warn{color:#ffb347;background:rgba(255,179,71,.10);border:1px solid rgba(255,179,71,.35)}
 .upd-banner .upd-ico{font-size:1.15em;line-height:1}
-/* Stage-2 downtime: a large, slowly-rotating "Restarting" spinner that replaces the log while the
-   app restarts, with a warning notice below that escalates (amber at ~2m, red at ~5m). */
+/* Stage-2 downtime: the log is HIDDEN and replaced by a large, slowly-rotating "Restarting"
+   spinner + an elapsed timer; the escalating notice below uses the .upd-banner style. */
 .upd-waiting{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
-  min-height:190px;text-align:center;padding:26px 16px}
-.upd-waiting .upd-spin{width:46px;height:46px;border-width:4px;animation-duration:1.5s}  /* large + slow */
-.upd-waiting-title{font-size:1.2rem;font-weight:700;color:#eafff5;letter-spacing:.03em}
-.upd-waiting-msg{font-weight:600;min-height:1.2em;max-width:36ch;line-height:1.4}
-.upd-waiting-msg.warn{color:#ffb347}
-.upd-waiting-msg.err{color:#ff8a6a;font-weight:700}
+  min-height:190px;text-align:center;padding:34px 16px}
+/* The base .upd-spin is display:none with no animation (it's activated only by a footer selector);
+   inside the modal we must force BOTH display and the btnspin animation, or nothing renders. */
+.upd-waiting .upd-spin{display:block;width:48px;height:48px;border-width:4px;
+  animation:btnspin 1.5s linear infinite}
+.upd-waiting-title{font-size:1.35rem;font-weight:700;color:#eafff5;letter-spacing:.03em}
+.upd-waiting-timer{font-variant-numeric:tabular-nums;color:#9fd6b6;font-weight:600;font-size:.95rem}
+.upd-banner-err{color:#ff8a6a;background:rgba(255,138,106,.10);border:1px solid rgba(255,138,106,.35)}
 /* Copy-to-clipboard button floating at the top-right of any log/terminal window. */
 .log-wrap{position:relative}
 .log-copy{position:absolute;top:10px;right:12px;z-index:3;appearance:none;cursor:pointer;
@@ -3801,30 +3809,44 @@ function _pollUpdate(){
 var _waiting=false;
 function _waitBackAndReload(){
   if(_waiting)return; _waiting=true;                     // guard against a double invocation
-  // Stage-2 downtime UI (owner spec): the app is restarting, so live log streaming would just
-  // freeze. HAND OFF from the log to a large, slowly-rotating spinner with "Restarting" below it;
-  // the full detailed log is preserved for the post-restart result modal. A warning notice below
-  // ESCALATES on delay: ~2 min -> amber "Still updating…"; ~5 min -> red "may be unresponsive".
-  var cl=$('updChangelog');
-  cl.innerHTML='<div class="upd-waiting"><span class="upd-spin" aria-hidden="true"></span>'
-    +'<div class="upd-waiting-title">Restarting</div>'
-    +'<div id="updWaitMsg" class="upd-waiting-msg" role="status"></div></div>';
-  $('updDoBtn').style.display='none';                    // no actions are possible during the restart
-  $('updCancelBtn').style.display='none';
-  _updWorking(false);_updWarn(false);_updOk(false);
-  var setMsg=function(text,cls){var m=document.getElementById('updWaitMsg');
-    if(m){m.className='upd-waiting-msg'+(cls?' '+cls:'');m.textContent=text||'';}};
-  var tries=0;                                           // 2s per ping
-  (function ping(){
+  // Stage-2 downtime: HIDE the whole log box + note/banners/buttons and show the dedicated waiting
+  // panel -- a large rotating spinner + "Restarting" + an elapsed timer. The full detailed log is
+  // preserved for the post-restart result modal.
+  var card=$('updCard');
+  var cl=$('updChangelog'); if(cl&&cl.parentElement)cl.parentElement.style.display='none';   // .log-wrap
+  ['updBackupNote','updWarn','updOk','updProgressWrap'].forEach(function(id){var e=$(id);if(e)e.style.display='none';});
+  var cb=card.querySelector('.confirm-btns'); if(cb)cb.style.display='none';
+  _updWorking(false);
+  $('updWaiting').style.display='';
+  var banner=$('updWaitBanner'); banner.className='upd-banner';        // hidden until it escalates
+  var timerEl=$('updWaitTimer'), t0=Date.now(), dots=0;
+  // 1s tick: elapsed timer + escalating INLINE notification banner (same style/size as the result
+  // "Update completed" banner) -- orange "Still updating" with animated dots (. .. ... looping) once
+  // past 2 min, red "may be unresponsive" past 5 min.
+  var render=function(){
+    var s=Math.floor((Date.now()-t0)/1000);
+    timerEl.textContent=Math.floor(s/60)+':'+('0'+(s%60)).slice(-2);
+    if(s>=300){banner.className='upd-banner show upd-banner-err';
+      banner.textContent='GeneratorPi may be unresponsive. Please try reloading the page manually.';}
+    else if(s>=120){dots=(dots%3)+1;banner.className='upd-banner show upd-banner-warn';
+      banner.textContent='Still updating'+new Array(dots+1).join('.');}
+  };
+  var timer=setInterval(render,1000); render();
+  // ROBUST restart detection via the API (the proven auth path, unlike a raw fetch): /api/state now
+  // reports started_at (this process's start unix ts). Baseline it from the FIRST (pre-restart)
+  // poll -- the re-exec is delayed ~1.5s so the app is still up -- then when started_at CHANGES the
+  // app has fully restarted on the new version -> cache-bust reload to the fresh UI (result modal).
+  var base=null, tries=0;
+  (function poll(){
     tries++;
-    if(tries===60)setMsg('Still updating\\u2026','warn');       // ~2 min: mild amber warning
-    else if(tries===150)setMsg('GeneratorPi may be unresponsive. Please try reloading the page manually.','err');  // ~5 min: red error, replace text
-    fetch('/?ts='+Date.now(),{cache:'no-store'}).then(function(r){
-      if(r&&r.ok){location.replace(location.pathname+'?u='+Date.now());}   // app is back -> cache-bust reload
-      else if(tries<330){setTimeout(ping,2000);}         // keep trying to ~11 min (catches a 10-min watchdog rollback)
-    }).catch(function(){
-      if(tries<330){setTimeout(ping,2000);}
-    });
+    api('/api/state').then(function(s){
+      if(s&&s.started_at!=null){
+        if(base===null){base=s.started_at;}                       // old process (still up)
+        else if(s.started_at!==base){clearInterval(timer);        // NEW process -> restarted -> done
+          location.replace(location.pathname+'?u='+Date.now());return;}
+      }
+      if(tries<330)setTimeout(poll,2000);                         // ~11 min ceiling (outlasts the 10m watchdog)
+    }).catch(function(){if(tries<330)setTimeout(poll,2000);});    // app down mid-restart -> keep waiting
   })();
 }
 /* Post-restart result modal: the SAME terminal look, showing the FULL captured log; DISMISS
@@ -4275,6 +4297,14 @@ HTML_TEMPLATE_BODY = """
         <div class="upd-bar"><div class="upd-bar-fill" id="updBarFill"></div></div>
         <div class="upd-progress-msg" id="updProgressMsg"></div>
       </div>
+      <div id="updWaiting" style="display:none">
+        <div class="upd-waiting">
+          <span class="upd-spin" aria-hidden="true"></span>
+          <div class="upd-waiting-title">Restarting</div>
+          <div class="upd-waiting-timer" id="updWaitTimer">0:00</div>
+        </div>
+        <div id="updWaitBanner" class="upd-banner" role="status"></div>
+      </div>
       <div class="confirm-btns">
         <button type="button" class="btn3d steel" id="updCancelBtn">CANCEL</button>
         <button type="button" class="btn3d danger" id="updDoBtn">UPDATE</button>
@@ -4563,6 +4593,11 @@ def api_state():
             "fuel_enabled": alerts_state.get("fuel_enabled", True),
         }
     snap["server_now"] = time.time()
+    # Running version + this process's start timestamp (unix). started_at CHANGES on every full
+    # restart, so the client can robustly detect a completed self-update (new process = new
+    # started_at) and show when the app was last fully restarted.
+    snap["app_version"] = APP_VERSION
+    snap["started_at"] = _STARTED_AT
     # SYSTEM drawer FACE stat -- a single glanceable value shown even when the drawer is
     # collapsed. CPU% is the most universally understood "how busy" metric and is always
     # available. Pulled from the last ring-buffer sample, NOT computed here: _cpu_pct() is a
@@ -5552,7 +5587,6 @@ def _run_update():
                 _update_log(f"  {rel} … ok")
             _update_log("[RESTARTING] in-process re-exec")
             _update_log("  releasing the listening socket, then re-exec'ing this process")
-            _update_log("  the app drops for a few seconds and returns on the new version")
             with _update_lock:
                 _full_log = "\n".join(_update_state["log"])
             # Mark 'restarting' (NOT success) BEFORE re-exec; the freshly-started process flips
@@ -5616,8 +5650,8 @@ try:
                 _prev = _UPDATE_LOG.read_text() if _UPDATE_LOG.exists() else ""
                 _UPDATE_LOG.write_text(
                     _prev.rstrip("\n")
-                    + "\n[HEALTH] the new version is serving … ok"
-                    + f"\n[DONE] Application successfully updated to v{_ver}"
+                    + "\n[HEALTH] checking if the application is back up … ok"
+                    + f"\n[DONE] Application successfully updated to v{_ver}!"
                 )
             except Exception:                             # noqa: BLE001 -- log tail is best-effort
                 pass
