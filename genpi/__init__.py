@@ -325,13 +325,13 @@ from .auth import (                # noqa: F401  (re-exported for the routes bel
 # the run-hours accounting helpers, and set_total_run_hours now live in genpi/state.py (LAYER 2:
 # depends on store + logg). Importing it restores durable state from the kv store EXACTLY as before.
 # The state dicts, state_lock, and the _monitor_stop Event are re-exported by REFERENCE -- the test
-# suite and the not-yet-peeled relay/control/fuel/route code mutate their CONTENTS, which is shared.
-# _low_fuel_alerted is defined in state but read/written by the fuel monitor still in THIS module,
-# so its gc-level rebinds (conftest + the low-fuel tests) keep working until fuel peels out (Stage 7).
+# suite and the not-yet-peeled route code mutate their CONTENTS, which is shared. _low_fuel_alerted
+# lives in state and is read/written by the fuel monitor in genpi/fuel.py (Stage 7) as
+# state._low_fuel_alerted, so it is NOT re-exported here (a bare copy would go stale on every rebind).
 from . import state
 from .state import (               # noqa: F401  (re-exported for the rest of this module + tests)
     generator_state, state_lock, fuel_state, alerts_state, FUEL_DEFAULT_RATE,
-    _low_fuel_alerted, _monitor_stop, MAX_TOTAL_RUN_HOURS, load_persisted_state,
+    _monitor_stop, MAX_TOTAL_RUN_HOURS, load_persisted_state,
     _live_total_run_hours_locked, _apply_running_transition_locked, set_total_run_hours,
 )
 

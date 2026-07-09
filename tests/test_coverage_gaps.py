@@ -283,7 +283,7 @@ class TestSystemMetricSoftFails:
     def test_cpu_pct_seeds_then_computes_delta(self, module, monkeypatch):
         seq = [(1000, 900), (1100, 950)]
         monkeypatch.setattr(module.sysmon, "_read_cpu_times", lambda: seq.pop(0))
-        monkeypatch.setattr(module, "_prev_cpu", None)
+        monkeypatch.setattr(module.sysmon, "_prev_cpu", None)
         assert module.sysmon._cpu_pct() is None                    # first call only seeds the baseline
         assert module.sysmon._cpu_pct() == 50.0                    # second call yields the delta
 

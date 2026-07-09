@@ -9,9 +9,9 @@
 # daemon, and the operator mutators (record_fuel_reading / set_fuel_rate / reset_fuel_rate /
 # set_fuel_fill / set_alerts). NONE of these touch the relay -- they only adjust tracked state.
 #
-# state._low_fuel_alerted lives in genpi.state (it is reset on stop / server restart alongside `running`);
-# this module reads + writes it as state._low_fuel_alerted (module-qualified) so a single binding is
-# shared with the test suite's reset -- a bare `global` here would rebind a private, unshared copy.
+# The _low_fuel_alerted edge flag lives in genpi.state (it is reset on stop / server restart alongside
+# the running flag); this module reads + writes it as state._low_fuel_alerted (module-qualified) so a
+# single binding is shared with the test suite's reset -- a bare global here would rebind a private copy.
 #
 # Copyright (C) 2026 Chris Neal <https://neal.media> and Alex Neal <https://neal.tools>
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -21,7 +21,7 @@ from .logg import log                        # monitor start + low-fuel warnings
 from . import state                          # state._low_fuel_alerted is read/written module-qualified
 from .state import (                         # the fuel model + run-hours helpers + monitor stop Event
     fuel_state, alerts_state, generator_state, state_lock,
-    _apply_running_transition_locked, _live_total_run_hours_locked, _monitor_stop,
+    _live_total_run_hours_locked, _monitor_stop,
 )
 from . import store                          # push notify is module-qualified (store.send_push_async)
 from .store import kv_set, record_event      # durable persistence + event log
