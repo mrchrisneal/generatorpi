@@ -174,22 +174,22 @@ class TestServeBindRetry:
 class TestRestartFallbacks:
     def test_socket_close_error_does_not_block_execv(self, module, monkeypatch):
         # werkzeug-fallback branch (server has .socket, NO .stop): a close() error must not block execv.
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)
         fake_sock = mock.Mock()
         fake_sock.close.side_effect = OSError("already closed")
         fake_srv = mock.Mock(spec=["socket"])              # no .stop -> in-thread close()+execv path
         fake_srv.socket = fake_sock
-        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
+        monkeypatch.setattr(module.lifecycle, "_WSGI_SERVER", fake_srv)
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
         done = threading.Event()
         monkeypatch.setattr(module.os, "execv", lambda *a: done.set())
         module._schedule_process_restart(delay=0)
         assert done.wait(2)                                # execv still ran despite close error
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)   # isolation
 
     def test_execv_failure_falls_back_to_hard_exit(self, module, monkeypatch):
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
-        monkeypatch.setattr(module, "_WSGI_SERVER", None)  # no server -> fallback branch -> _do_execv
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)
+        monkeypatch.setattr(module.lifecycle, "_WSGI_SERVER", None)  # no server -> fallback branch -> _do_execv
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
 
         def bad_execv(*a):
@@ -205,7 +205,7 @@ class TestRestartFallbacks:
         module._schedule_process_restart(delay=0)
         assert done.wait(2)
         assert seen["code"] == 1                            # os._exit(1) so a supervisor respawns
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)   # isolation
 
 
 # ---------------------------------------------------------------------------

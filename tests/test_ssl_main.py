@@ -233,16 +233,16 @@ class TestServeAndRestart:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         fallback = mock.Mock()
-        monkeypatch.setattr(module, "_serve_werkzeug", fallback)
+        monkeypatch.setattr(module.lifecycle, "_serve_werkzeug", fallback)
         module._serve("127.0.0.1", 5999, threaded=True)
         fallback.assert_called_once()
 
     def test_restart_cheroot_stops_and_defers_execv_to_main_thread(self, module, monkeypatch):
         # cheroot branch: stop() is called, the flag is set, execv is NOT called in this thread, and
         # the socket is NOT closed (cheroot's stop() owns that).
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)
         fake_srv = mock.Mock(spec=["stop", "socket"])   # has .stop -> cheroot branch
-        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
+        monkeypatch.setattr(module.lifecycle, "_WSGI_SERVER", fake_srv)
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
         execv = mock.Mock()
         monkeypatch.setattr(module.os, "execv", execv)
@@ -253,10 +253,10 @@ class TestServeAndRestart:
                 break
             _t.sleep(0.005)
         assert fake_srv.stop.called
-        assert module._RESTART_REQUESTED is True
+        assert module.lifecycle._RESTART_REQUESTED is True
         execv.assert_not_called()                       # the MAIN thread owns the exec, not this one
         fake_srv.socket.close.assert_not_called()
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)   # isolation
 
     def test_serve_execs_on_main_thread_when_restart_requested(self, module, monkeypatch):
         # After serve() returns with the flag set, _serve re-execs on the (main) thread.
@@ -265,22 +265,22 @@ class TestServeAndRestart:
         fake_srv = mock.Mock(socket=mock.Mock())
         fake_srv.serve.return_value = None              # returns cleanly, as after stop()
         monkeypatch.setattr(cheroot.wsgi, "Server", mock.Mock(return_value=fake_srv))
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", True)
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", True)
         execv = mock.Mock()
-        monkeypatch.setattr(module, "_do_execv", execv)
+        monkeypatch.setattr(module.lifecycle, "_do_execv", execv)
         module._serve("127.0.0.1", 5999)
         execv.assert_called_once()
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)   # isolation
 
     def test_restart_werkzeug_fallback_closes_socket_before_reexec(self, module, monkeypatch):
         # Fallback server has .socket but NO .stop -> close the socket, then execv, IN this thread.
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)
         calls = []
         fake_sock = mock.Mock()
         fake_sock.close.side_effect = lambda: calls.append("close")
         fake_srv = mock.Mock(spec=["socket"])           # no .stop -> werkzeug fallback branch
         fake_srv.socket = fake_sock
-        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
+        monkeypatch.setattr(module.lifecycle, "_WSGI_SERVER", fake_srv)
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
         done = threading.Event()
 
@@ -292,15 +292,15 @@ class TestServeAndRestart:
         module._schedule_process_restart(delay=0)
         assert done.wait(2), "restart thread never ran"
         assert calls == ["close", "execv"], f"socket must close BEFORE execv, got {calls}"
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)   # isolation
 
     def test_restart_cheroot_stop_exception_is_logged_and_defers(self, module, monkeypatch):
         # If cheroot's stop() raises, the restart thread must SWALLOW it (logged as a warning) and
         # still NOT exec in this thread -- the main thread owns the exec after serve() returns.
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)
         fake_srv = mock.Mock(spec=["stop", "socket"])   # has .stop -> cheroot branch
         fake_srv.stop.side_effect = RuntimeError("stop boom")
-        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
+        monkeypatch.setattr(module.lifecycle, "_WSGI_SERVER", fake_srv)
         monkeypatch.setattr(module.time, "sleep", lambda s: None)
         execv = mock.Mock()
         monkeypatch.setattr(module.os, "execv", execv)
@@ -312,9 +312,9 @@ class TestServeAndRestart:
                 break
             _t.sleep(0.005)
         assert any("cheroot stop()" in w for w in warnings), warnings
-        assert module._RESTART_REQUESTED is True        # flag still set before the failed stop()
+        assert module.lifecycle._RESTART_REQUESTED is True        # flag still set before the failed stop()
         execv.assert_not_called()                       # never exec in this thread on the cheroot path
-        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+        monkeypatch.setattr(module.lifecycle, "_RESTART_REQUESTED", False)   # isolation
 
 
 class TestServeWerkzeugFallback:
@@ -335,7 +335,7 @@ class TestServeWerkzeugFallback:
         module._serve_werkzeug("127.0.0.1", 5999)
         srv.serve_forever.assert_called_once()
         srv.socket.set_inheritable.assert_called_once_with(False)   # drop FD across a future exec
-        assert module._WSGI_SERVER is None              # handle cleared in the finally
+        assert module.lifecycle._WSGI_SERVER is None              # handle cleared in the finally
 
     def test_retries_eaddrinuse_then_binds(self, module, monkeypatch):
         import werkzeug.serving
