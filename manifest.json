@@ -3,8 +3,8 @@
   "files": [
     {
       "path": "genpi/__init__.py",
-      "sha256": "c4937185c903932fec197ca04483ed3ea0785a0d506e6361308abd7097996a01",
-      "bytes": 397548
+      "sha256": "0a6c18f42f20a293cf690e44875b4ee0e204861d5af3b7b1c389490e0c39187e",
+      "bytes": 407379
     },
     {
       "path": "genpi/__main__.py",
@@ -96,5 +96,9 @@
       "required": false,
       "feature": "Web Push notifications"
     }
-  ]
+  ],
+  "cli_only_versions": [
+    "1.4.0"
+  ],
+  "important_notes": []
 }

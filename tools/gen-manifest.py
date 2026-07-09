@@ -16,8 +16,14 @@ Usage:  python3 tools/gen-manifest.py   (writes ./manifest.json)
 """
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
+
+# A CLI-only gate must be a CLEAN dotted-numeric version (X.Y.Z) -- NOT the 'v1.4.0' tag form. A malformed
+# gate would parse to a tiny version tuple and silently NEVER block the updater (fail-OPEN), defeating the
+# whole feature, so we reject it LOUDLY at manifest-generation time (below) rather than ship an inert gate.
+_GATE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 # Repo root = parent of this tools/ dir. All manifest paths are relative to it.
 ROOT = Path(__file__).resolve().parent.parent
@@ -66,6 +72,25 @@ DEPENDENCIES = [
 ]
 
 
+# Per-release UPDATE CONSTRAINTS surfaced to the in-app web updater (added v1.5.0).
+#
+# CLI_ONLY_VERSIONS: versions that can ONLY be installed via the CLI (`./setup.sh reinstall` or
+# `./update.sh`) -- e.g. a release that changes the systemd entrypoint / package layout, which the
+# in-app updater cannot do (its scoped sudo can't rewrite the unit). This is an APPEND-ONLY list of
+# every such "gate" release. The in-app updater REFUSES to apply the latest release when ANY listed
+# version G falls STRICTLY ABOVE the device's installed version and AT-OR-BELOW the latest
+# (installed < G <= latest) -- i.e. a manual gate sits between where the user is and where they'd land.
+# This is what stops a very old install from web-JUMPING across a gate and failing hard: it's blocked
+# and told to install manually (which always jumps straight to latest, crossing every gate at once, so
+# nobody is ever stuck). Append a version here whenever you cut such a release. If the LATEST release is
+# itself a gate, include it too (then everyone below it is blocked -> all install via the CLI).
+#
+# IMPORTANT_NOTES: operator guidance shown in the updater's IMPORTANT box when a release is blocked
+# (list of strings; a single string is also accepted). Older clients ignore both keys (forward-compat).
+CLI_ONLY_VERSIONS = ["1.4.0"]   # v1.4.0 restructured the app into a package + repointed the systemd entrypoint
+IMPORTANT_NOTES = []
+
+
 def _sha256(path):
     """Streaming SHA-256 of a file (64 KiB chunks) so a large file never loads whole."""
     h = hashlib.sha256()
@@ -79,6 +104,13 @@ def build_manifest(root=ROOT, files=SHIPPED_FILES):
     """Return the manifest dict for the given root. Missing files are skipped with a
     warning (a release should have them all, but we never crash on a packaging slip)."""
     version = (root / "VERSION").read_text(encoding="utf-8").strip()
+    # Fail LOUD on a malformed CLI-only gate (e.g. the natural 'v1.4.0' typo, or garbage) -- it would
+    # parse to a tiny tuple in the updater and silently never block, defeating the feature. Better a
+    # broken release build than an inert gate that lets an old install web-jump across it and brick.
+    _bad = [g for g in CLI_ONLY_VERSIONS if not _GATE_VERSION_RE.match(str(g))]
+    if _bad:
+        raise ValueError(f"CLI_ONLY_VERSIONS has malformed entries {_bad!r}: each must be a clean "
+                         f"dotted-numeric version like '1.4.0' (NOT 'v1.4.0'). A bad gate fails OPEN.")
     entries = []
     for rel in files:
         p = root / rel
@@ -86,7 +118,9 @@ def build_manifest(root=ROOT, files=SHIPPED_FILES):
             print(f"WARN: {rel} not found -- skipping", file=sys.stderr)
             continue
         entries.append({"path": rel, "sha256": _sha256(p), "bytes": p.stat().st_size})
-    return {"version": version, "files": entries, "dependencies": DEPENDENCIES}
+    return {"version": version, "files": entries, "dependencies": DEPENDENCIES,
+            "cli_only_versions": CLI_ONLY_VERSIONS,
+            "important_notes": IMPORTANT_NOTES}
 
 
 def main():

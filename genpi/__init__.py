@@ -2198,6 +2198,7 @@ HTML_TEMPLATE_HEAD = """<!DOCTYPE html>
 {% raw %}<style>
 /* ---- reset + page frame ---- */
 *{box-sizing:border-box;margin:0;padding:0}
+a{text-decoration:none}                       /* links: no underline by default; add it on :hover */
 html,body{background:#0a0a0b;color:#d7d3cc;-webkit-text-size-adjust:100%}
 body{font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
   min-height:100vh;display:flex;justify-content:center;
@@ -2777,6 +2778,23 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
   font:600 12px/1.4 var(--mono);color:#a6f0c4}
 .upd-ok.show{display:flex}
 .upd-ok svg{flex:0 0 auto;width:18px;height:18px;color:#7effb0}
+/* Dedicated IMPORTANT note box (below the warn banner) shown when a release is NOT web-installable:
+   a light red-tinted border framing the operator guidance, which the terminal log only points to.
+   Error-toned (matching the refusal's severity) with an "IMPORTANT" header + the note text below. */
+.upd-important{display:none;margin:-6px 0 14px;padding:11px 13px 12px;border-radius:9px;
+  border:1px solid rgba(245,130,107,.55);background:linear-gradient(180deg,#241210,#180b09);
+  font:600 12.5px/1.5 var(--mono)}
+.upd-important.show{display:block}
+.upd-important .imp-hdr{display:flex;align-items:center;gap:8px;color:#f5826b;font-weight:700;
+  letter-spacing:.09em;font-size:15px;margin:5px 0 13px}
+.upd-important .imp-hdr svg{flex:0 0 auto;width:21px;height:21px;margin-top:-2px;
+  filter:drop-shadow(0 0 3px rgba(245,130,107,.8));animation:verpulse 1.4s ease-in-out infinite}
+.upd-important .imp-body{color:#e88c75;font-weight:500}
+.upd-important .imp-body p{margin:0}.upd-important .imp-body p+p{margin-top:12px}
+/* Red-tone the fading dividers inside the box (vs the drawers' neutral white) to match its palette. */
+.upd-important .drawer-divider{margin:11px auto;background:linear-gradient(90deg,transparent,rgba(245,130,107,.4),transparent)}
+.upd-important a{color:#ffc7a2;font-weight:600}                /* text-decoration:none via the global a rule */
+.upd-important a:hover{color:#ffdcc2;text-decoration:underline}
 
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
 
@@ -4091,7 +4109,7 @@ function openUpdateModal(){
   $('updProgressWrap').style.display='none';
   doBtn.className='btn3d danger';doBtn.textContent='PROCEED';doBtn.dataset.role='';doBtn.disabled=false;doBtn.style.display='';
   cancel.className='btn3d steel';cancel.textContent='CANCEL';cancel.dataset.role='';cancel.disabled=false;cancel.style.display='';
-  _updWorking(false);_updWarn(false);_updOk(false);_lastUpdPhase='';
+  _updWorking(false);_updWarn(false);_updOk(false);_showImportant(null);_lastUpdPhase='';
   _ovShow('updModal');doBtn.focus();
   api('/api/update/changelog').then(function(d){
     if(d&&d.changelog){cl.textContent=d.changelog;}
@@ -4134,7 +4152,7 @@ function _decide(choice){
   var doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   doBtn.style.display='none';doBtn.dataset.role='';
   cancel.dataset.role='';cancel.textContent='CLOSE';cancel.disabled=true;cancel.className='btn3d steel';
-  _updWorking(true);_updWarn(false);_updOk(false);      // resuming work after the decision
+  _updWorking(true);_updWarn(false);_updOk(false);_showImportant(null);  // resuming work after the decision
   if(choice==='proceed'){
     // Proceeding = Stage 2 (swap + restart). The moment the decision is accepted, hand the modal
     // over to the "Restarting" spinner (the server is about to go down, so live log streaming would
@@ -4147,17 +4165,49 @@ function _decide(choice){
   post('/api/update/decide',{choice:choice}).catch(function(){});
   _pollUpdate();
 }
-// Parked on a go/no-go (stage gate) OR an error/warning: offer REVERT (always) + PROCEED (only
-// when the step allows it). A NON-proceedable park = a real error/warning -> show the banner.
+// Build + show the dedicated IMPORTANT note box for a release the web updater refuses to install.
+// `notes` = the operator note list from the manifest: a NON-EMPTY list -> the intro line, the note(s),
+// a fading divider, then the release/repo links (Case A); an EMPTY list -> the single-sentence fallback
+// with the links (Case B). `notes === null` -> hide the box (any normal decision / non-blocked state).
+// Note text is escaped; the links are a fixed repo + encodeURIComponent(version), so no injection.
+var GH_REPO='https://github.com/mrchrisneal/generatorpi';
+function _showImportant(notes,version){
+  var box=$('updImportant'),body=$('updImportantBody');
+  if(notes===null){box.className='upd-important';body.textContent='';return;}
+  var rel=GH_REPO+'/releases/tag/v'+encodeURIComponent(version||'');
+  var links='the <a href="'+rel+'" target="_blank" rel="noopener noreferrer">release page</a> or '
+           +'<a href="'+GH_REPO+'" target="_blank" rel="noopener noreferrer">GitHub repo</a>';
+  if(notes.length){
+    body.innerHTML='<p>This release cannot be installed by the web updater:</p>'
+      +notes.map(function(n){return '<p>'+_esc(n)+'</p>';}).join('')
+      +'<div class="drawer-divider"></div>'
+      +'<p>For more information, see '+links+'.</p>';
+  }else{
+    body.innerHTML='<p>This release cannot be installed by the web updater. For more information, see '+links+'.</p>';
+  }
+  box.className='upd-important show';
+}
+// Parked on a go/no-go (stage gate) OR an error/warning: offer REVERT (always) + PROCEED (only when the
+// step allows it). A NON-proceedable park = a real error/warning -> the amber banner. A NOT-web-installable
+// park = the greyed (disabled) apply button + the IMPORTANT box (which carries the message; no amber banner).
 function _showDecision(s){
   var doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
   var allow=s.decide&&s.decide.allow_proceed;
-  cancel.className='btn3d steel';cancel.textContent='REVERT';cancel.dataset.role='revert';cancel.disabled=false;cancel.style.display='';
+  var blocked=s.decide&&s.decide.proceed_disabled;      // release NOT web-installable -> greyed apply btn + IMPORTANT box
+  // When blocked there is nothing staged to revert, so the cancel button reads CLOSE (it just dismisses).
+  cancel.className='btn3d steel';cancel.textContent=blocked?'CLOSE':'REVERT';cancel.dataset.role='revert';cancel.disabled=false;cancel.style.display='';
   if(allow){
     doBtn.className='btn3d danger';doBtn.textContent=(s.decide.proceed_label)||'PROCEED';doBtn.dataset.role='proceed';doBtn.disabled=false;doBtn.style.display='';
+  }else if(blocked){
+    // SHOW the apply button but GREYED + disabled so the refused action is visible (not hidden). The
+    // IMPORTANT box below says why + how to install manually; dataset.role cleared + the button's
+    // `disabled` triggers .btn3d:disabled greying, so a click is inert (backend also refuses proceed).
+    doBtn.className='btn3d danger';doBtn.textContent=(s.decide.proceed_label)||'UPDATE';doBtn.dataset.role='';doBtn.disabled=true;doBtn.style.display='';
   }else{doBtn.style.display='none';}
+  _showImportant(blocked?(s.important_notes||[]):null,s.version);   // dedicated IMPORTANT box (blocked only)
   _updWorking(false);                                   // not actively working while parked
   if(allow){_updOk(true);}                              // clean staged go/no-go -> green ready banner
+  else if(blocked){_updWarn(false);_updOk(false);}      // not-installable: the IMPORTANT box carries the message
   else{_updWarn(true,'A warning or error occurred during the update — review the log above before proceeding.');}
 }
 function _pollUpdate(){
@@ -4171,7 +4221,7 @@ function _pollUpdate(){
     }
     var working=['checking','downloading','verifying','backing_up','swapping','restarting'].indexOf(s.phase)>=0;
     _updWorking(working);
-    if(working){_updWarn(false);_updOk(false);}         // no banners while actively working
+    if(working){_updWarn(false);_updOk(false);_showImportant(null);}   // no banners/box while actively working
     // Parked on a decision -> STOP polling entirely (zero network traffic while we wait on the
     // human). The REVERT/UPDATE click (_decide) resumes _pollUpdate; nothing changes until then.
     if(s.phase==='awaiting'){_showDecision(s);_updPoll=null;return;}
@@ -4688,6 +4738,12 @@ HTML_TEMPLATE_BODY = """
       <div class="upd-warn" id="updWarn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>
         <span id="updWarnText">A warning or error occurred during the update — review the log above before proceeding.</span>
+      </div>
+      <!-- Dedicated IMPORTANT box: shown ONLY when the release is not web-installable (built by
+           _showImportant); carries the "cannot be installed" message + optional note(s) + release/repo links. -->
+      <div class="upd-important" id="updImportant">
+        <div class="imp-hdr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>IMPORTANT</div>
+        <div class="imp-body" id="updImportantBody"></div>
       </div>
       <div class="upd-ok" id="updOk">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
@@ -5537,6 +5593,11 @@ _update_state = {"phase": "idle", "message": "", "progress": 0.0, "error": None,
                  # Stage-1 dependency check results (populated during [CHECKING DEPENDENCIES]).
                  # missing_deps: [{apt, feature, required}, ...]; deps_install_cmd: the apt one-liner.
                  "missing_deps": [], "deps_install_cmd": "",
+                 # Manifest-declared update constraints (populated during [VALIDATING RELEASE]).
+                 # installable: False => the release refuses in-app apply (greyed button); important_notes:
+                 # operator guidance shown as "IMPORTANT: <note>" lines. Default installable True so an
+                 # older manifest (no key) stays applicable (forward-compatible).
+                 "installable": True, "important_notes": [],
                  # Which stage the worker is in (1 = pre-apply checks, 2 = apply/swap/restart) + a
                  # per-stage tally of warning/error lines -> the end-of-stage colored summary lines.
                  "stage": 1, "counts": {"stage1": {"warn": 0, "err": 0}, "stage2": {"warn": 0, "err": 0}}}
@@ -5607,17 +5668,23 @@ def _stage_summary(stage):
         _update_log(f"[ERROR] Stage {stage}: {e} error{'' if e == 1 else 's'} encountered")
 
 
-def _await_decision(message, allow_proceed, proceed_label="PROCEED"):
+def _await_decision(message, allow_proceed, proceed_label="PROCEED", proceed_disabled=False):
     """Park the run: show `message`, offer REVERT (+ a proceed button labelled `proceed_label`
     iff allow_proceed), and BLOCK until the user decides. Returns 'proceed' or 'revert' (defaults
     to the SAFE 'revert' on timeout so an unattended browser can never leave the updater hung
     mid-run). Requests to the Pi stay sequential -- the worker just waits; only the status poll
     continues. The caller already logs a terminal line for the situation, so we do NOT re-log
-    `message` here (that would duplicate the line); it's kept only as the phase message."""
+    `message` here (that would duplicate the line); it's kept only as the phase message.
+
+    `proceed_disabled` (used for a release the manifest declares NOT web-installable) makes the UI
+    SHOW the apply button but GREYED/disabled -- distinct from a plain error park, which hides it --
+    so the operator sees the action exists yet is refused. allow_proceed stays False in that case,
+    so the backend also rejects a proceed even if the disabled button were somehow clicked."""
     with _update_lock:
         _update_state.update(phase="awaiting", message=message,
                              decide={"allow_proceed": bool(allow_proceed),
-                                     "proceed_label": proceed_label})
+                                     "proceed_label": proceed_label,
+                                     "proceed_disabled": bool(proceed_disabled)})
         _update_decision_choice["choice"] = None
     _update_decision_event.clear()
     got = _update_decision_event.wait(600)               # up to 10 min for a human decision
@@ -6130,6 +6197,8 @@ def _run_update():
                                    "stage2": {"warn": 0, "err": 0}}   # api_update_start reset)
         _update_state["missing_deps"] = []
         _update_state["deps_install_cmd"] = ""
+        _update_state["installable"] = True               # optimistic default; the manifest may lower it
+        _update_state["important_notes"] = []
     try:
         # Terminal log format: bracketed [SECTION] headers (bright, left-aligned) get ' ok' or an
         # error tacked on when their step finishes; detail lines are indented two spaces.
@@ -6149,6 +6218,54 @@ def _run_update():
         _update_log("  version string well-formed … ok")
         with _update_lock:
             _update_state["version"] = version
+        # CLI-ONLY GATE: the manifest may list versions installable ONLY via the CLI (a release that
+        # changes the systemd entrypoint / package layout, which the in-app updater can't do). If ANY
+        # listed gate G falls STRICTLY ABOVE the installed version and AT-OR-BELOW the latest
+        # (installed < G <= latest), a manual gate sits between where we are and where we'd land -- so we
+        # REFUSE the web apply HERE, before downloading or touching anything. This stops a very old install
+        # from web-JUMPING across a gate and failing hard; the operator installs manually instead (which
+        # jumps straight to latest, crossing every gate at once). Missing/empty list -> nothing gates ->
+        # applicable (forward-compatible with older manifests). A single string is accepted as one gate.
+        _gates = manifest.get("cli_only_versions") or []
+        if isinstance(_gates, str):
+            _gates = [_gates]
+        # Normalize a gate for comparison: trim + tolerate a 'v'-tagged form ("v1.4.0" -> "1.4.0"). Releases
+        # are TAGGED vX.Y.Z, so that typo is the natural mistake -- and left as-is it would parse to (0,4,0)
+        # and silently NEVER block (fail-OPEN), letting exactly the old install this protects web-jump a gate
+        # and brick. (gen-manifest.py ALSO rejects a malformed gate at generation time -- defense in depth.)
+        def _gate_ver(g):
+            g = str(g).strip()
+            return g[1:] if g[:1] in ("v", "V") else g
+        _cur_t, _latest_t = _version_tuple(APP_VERSION), _version_tuple(version)
+        _blocking = sorted({_gate_ver(g) for g in _gates
+                            if _gate_ver(g) and _cur_t < _version_tuple(_gate_ver(g)) <= _latest_t},
+                           key=_version_tuple)
+        _notes = manifest.get("important_notes") or []
+        if isinstance(_notes, str):                      # accept a single string OR a list of strings
+            _notes = [_notes]
+        _notes = [str(n).strip() for n in _notes if str(n).strip()]
+        with _update_lock:
+            _update_state["installable"] = not _blocking
+            # Rendered in the UI's dedicated IMPORTANT box: with notes -> the intro + note(s) + a divider
+            # + the release/repo links (Case A); empty -> the single-sentence fallback with the links
+            # (Case B). Either way the box carries the message, so the log only points to it.
+            _update_state["important_notes"] = _notes
+        if _blocking:
+            # The terminal log only POINTS to the box; the note TEXT itself is shown in the dedicated
+            # bordered "IMPORTANT" box below the log (the UI reads it from _update_state.important_notes).
+            _update_log(f"[ERROR] v{version} cannot be installed by the web updater")
+            _update_sev(f"  A manual-install-only version ({', '.join('v' + g for g in _blocking)}) is "
+                        f"between your v{APP_VERSION} and v{version}.", "err")
+            _update_sev("  Nothing has changed. See the IMPORTANT note below, then install it "
+                        "manually (e.g. ./setup.sh reinstall).", "err")
+            _update_phase("staged", f"v{version} is not installable via the web updater.", 0.85)
+            # Park: apply button SHOWN but greyed/disabled + REVERT/CLOSE; allow_proceed False so the
+            # backend refuses proceed even if the disabled button were clicked (belt-and-suspenders).
+            _await_decision(f"v{version} cannot be installed by the web updater.",
+                            allow_proceed=False, proceed_label="UPDATE", proceed_disabled=True)
+            _update_log(f"[ERROR] not applied. Still on v{APP_VERSION}.")
+            _update_phase("failed", "This release must be installed manually.", 0.0)
+            return
         # Restart path + WHY up front (obeys env/config; honest about non-systemd hosts).
         _svc_skip = _service_skip_reason()
         _update_log("[DEPLOYMENT PLAN] " + (
@@ -6404,7 +6521,8 @@ def api_update_start():
             return jsonify({"success": False, "message": "An update is already in progress."}), 409
         _update_state.update(phase="checking", message="Starting…", progress=0.0,
                              error=None, systemd=_deployment_has_systemd(), log=[], decide=None,
-                             missing_deps=[], deps_install_cmd="", stage=1,
+                             missing_deps=[], deps_install_cmd="", installable=True,
+                             important_notes=[], stage=1,
                              counts={"stage1": {"warn": 0, "err": 0}, "stage2": {"warn": 0, "err": 0}})
     log.warning(f"Self-update requested by {caller_identity()}@{request.remote_addr}")
     threading.Thread(target=_run_update, daemon=True, name="self-update").start()

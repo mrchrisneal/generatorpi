@@ -173,6 +173,143 @@ class TestManifestForwardCompat:
         assert {d["apt"] for d in module._update_state["missing_deps"]} == {"python3-absent-fc"}
 
 
+class TestCliOnlyGate:
+    """cli_only_versions: the manifest lists versions installable ONLY via the CLI. The web updater
+    REFUSES the latest release when ANY listed gate G satisfies installed < G <= latest -- a manual gate
+    sits between the device and the target -- so a very old install can't web-jump across it and fail. It
+    logs an [ERROR] pointing to the IMPORTANT box, exposes the note(s) via _update_state["important_notes"],
+    and parks with the apply button disabled, WITHOUT downloading or touching anything."""
+
+    def _run(self, module, monkeypatch, tmp_path, installed, latest, gates, notes=None, seen=None):
+        monkeypatch.setattr(module, "APP_VERSION", installed)   # deterministic "installed" version
+        manifest = {"version": latest,
+                    "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}],
+                    "cli_only_versions": gates}
+        if notes is not None:
+            manifest["important_notes"] = notes
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        def _await(msg, allow_proceed, proceed_label="PROCEED", proceed_disabled=False):
+            if seen is not None:
+                seen.update(allow_proceed=allow_proceed, proceed_label=proceed_label,
+                            proceed_disabled=proceed_disabled)
+            return "revert"
+        monkeypatch.setattr(module, "_await_decision", _await)
+        _prime_state(module)
+        module._run_update()
+
+    def test_gate_between_installed_and_latest_blocks(self, module, monkeypatch, tmp_path):
+        seen = {}
+        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0",
+                  gates=["1.4.0"], notes=["Run ./setup.sh reinstall.", "Then restart the app."], seen=seen)
+        st = module._update_state
+        assert st["installable"] is False
+        # Notes go to the BOX (this state field), NOT dumped into the terminal log.
+        assert st["important_notes"] == ["Run ./setup.sh reinstall.", "Then restart the app."]
+        log = "\n".join(st["log"])
+        assert "[ERROR] v1.6.0 cannot be installed by the web updater" in log
+        assert "manual-install-only version (v1.4.0)" in log     # names the blocking gate
+        assert "between your v1.3.4 and v1.6.0" in log
+        assert "See the IMPORTANT note below" in log             # log only POINTS to the box
+        assert "Then restart the app." not in log                # note text lives in the box, not the log
+        assert "[DOWNLOADING]" not in log and "[STAGED]" not in log   # refused before touching anything
+        assert st["phase"] == "failed"
+        assert seen["proceed_disabled"] is True and seen["allow_proceed"] is False
+        assert seen["proceed_label"] == "UPDATE"
+
+    def test_installed_at_the_gate_is_allowed(self, module, monkeypatch, tmp_path):
+        # Already crossed the gate (installed == gate) -> web-update to latest is allowed (not < G).
+        seen = {}
+        self._run(module, monkeypatch, tmp_path, installed="1.4.0", latest="1.6.0",
+                  gates=["1.4.0"], seen=seen)
+        st = module._update_state
+        assert st["installable"] is True
+        assert "cannot be installed by the web updater" not in "\n".join(st["log"])
+        assert "[STAGED]" in "\n".join(st["log"])
+        assert seen["allow_proceed"] is True and seen["proceed_disabled"] is False
+
+    def test_gate_below_installed_does_not_block(self, module, monkeypatch, tmp_path):
+        # A gate the user already passed (G < installed) never blocks.
+        self._run(module, monkeypatch, tmp_path, installed="1.5.0", latest="1.6.0", gates=["1.4.0"])
+        assert module._update_state["installable"] is True
+        assert "[STAGED]" in "\n".join(module._update_state["log"])
+
+    def test_latest_itself_is_a_gate_blocks_everyone_below(self, module, monkeypatch, tmp_path):
+        # When the LATEST release is itself CLI-only (gate == latest), everyone below it is blocked.
+        self._run(module, monkeypatch, tmp_path, installed="1.4.0", latest="1.5.0", gates=["1.5.0"])
+        assert module._update_state["installable"] is False
+        assert "[ERROR] v1.5.0 cannot be installed by the web updater" in \
+            "\n".join(module._update_state["log"])
+
+    def test_no_cli_only_versions_key_is_forward_compatible(self, module, monkeypatch, tmp_path):
+        # Older/ordinary manifest with no cli_only_versions -> nothing gates -> applicable.
+        monkeypatch.setattr(module, "APP_VERSION", "1.0.0")
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "revert")
+        _prime_state(module)
+
+        module._run_update()
+
+        assert module._update_state["installable"] is True
+        assert module._update_state["important_notes"] == []
+        assert "[STAGED]" in "\n".join(module._update_state["log"])
+
+    def test_blocked_without_notes_leaves_notes_empty_for_case_b(self, module, monkeypatch, tmp_path):
+        # Blocked but no important_notes -> list stays empty (UI renders the Case B fallback box). The
+        # refusal still logs the [ERROR] + pointer, so it is never silent even without a note.
+        self._run(module, monkeypatch, tmp_path, installed="1.3.0", latest="1.6.0", gates=["1.4.0"])
+        assert module._update_state["important_notes"] == []
+        log = "\n".join(module._update_state["log"])
+        assert "[ERROR] v1.6.0 cannot be installed by the web updater" in log
+        assert "See the IMPORTANT note below" in log
+
+    def test_important_notes_string_is_normalized_to_list(self, module, monkeypatch, tmp_path):
+        # important_notes MAY be a single string -> normalized + trimmed to a one-element list for the box.
+        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0",
+                  gates=["1.4.0"], notes="  Reinstall via setup.sh.  ")
+        assert module._update_state["important_notes"] == ["Reinstall via setup.sh."]
+
+    def test_cli_only_versions_as_single_string_is_accepted(self, module, monkeypatch, tmp_path):
+        # cli_only_versions MAY be a bare string (one gate) -> normalized + applied.
+        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0", gates="1.4.0")
+        assert module._update_state["installable"] is False
+
+    def test_v_prefixed_gate_still_blocks(self, module, monkeypatch, tmp_path):
+        # A gate written in the 'v1.4.0' TAG form (the natural typo) must STILL gate: the updater strips
+        # the leading 'v' before comparing, so it can't silently fail open (parse to (0,4,0) -> never block).
+        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0", gates=["v1.4.0"])
+        st = module._update_state
+        assert st["installable"] is False
+        assert "manual-install-only version (v1.4.0)" in "\n".join(st["log"])   # normalized: a single 'v'
+
+    def test_multiple_in_range_gates_listed_ascending(self, module, monkeypatch, tmp_path):
+        # Several gates between installed and latest -> all named in ascending version order.
+        self._run(module, monkeypatch, tmp_path, installed="1.2.0", latest="2.0.0",
+                  gates=["1.6.0", "1.4.0"])
+        assert module._update_state["installable"] is False
+        assert "manual-install-only version (v1.4.0, v1.6.0)" in \
+            "\n".join(module._update_state["log"])
+
+
+class TestAwaitDecisionProceedDisabled:
+    def test_decide_dict_carries_proceed_disabled(self, module, monkeypatch):
+        # _await_decision writes the decide dict (read by api_update_status -> the UI) BEFORE it blocks.
+        # A not-installable park passes proceed_disabled=True so the UI shows the apply button greyed.
+        captured = {}
+        def fake_wait(timeout):
+            captured["decide"] = dict(module._update_state["decide"])   # snapshot before we resolve
+            return True                                                 # resolve instantly (no 10-min block)
+        monkeypatch.setattr(module._update_decision_event, "wait", fake_wait)
+        module._update_decision_choice["choice"] = "revert"
+
+        out = module._await_decision("msg", allow_proceed=False,
+                                     proceed_label="UPDATE", proceed_disabled=True)
+
+        assert out == "revert"
+        assert captured["decide"] == {"allow_proceed": False, "proceed_label": "UPDATE",
+                                      "proceed_disabled": True}
+
+
 class TestRunUpdateSystemd:
     def test_systemd_path_launches_bootstrap(self, module, monkeypatch, tmp_path):
         # A managed (systemd) deployment hands the swap+restart to a detached /tmp bootstrap.
