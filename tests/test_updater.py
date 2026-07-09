@@ -49,7 +49,7 @@ class TestDownloadAndVerify:
     def test_downloads_and_stages_on_matching_hashes(self, module, tmp_path, monkeypatch):
         content = b"print('ok')\n"
         blobs = {"a.py": content, "VERSION": b"2.0.0\n"}
-        monkeypatch.setattr(module, "_http_get_bytes",
+        monkeypatch.setattr(module.updater, "_http_get_bytes",
                             lambda url, **k: blobs[url.rsplit("/", 1)[1]])
         manifest = {"version": "2.0.0", "files": [
             {"path": "a.py", "sha256": _sha(content), "bytes": len(content)},
@@ -61,7 +61,7 @@ class TestDownloadAndVerify:
         assert (staging / "VERSION").read_bytes() == b"2.0.0\n"
 
     def test_aborts_on_hash_mismatch(self, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "_http_get_bytes", lambda url, **k: b"tampered")
+        monkeypatch.setattr(module.updater, "_http_get_bytes", lambda url, **k: b"tampered")
         manifest = {"version": "2", "files": [
             {"path": "a.py", "sha256": _sha(b"expected"), "bytes": 8}]}
         with pytest.raises(ValueError, match="hash mismatch"):
@@ -72,7 +72,7 @@ class TestDownloadAndVerify:
         # BEFORE any live swap. The check now covers EVERY staged .py (not just the old single
         # file), so use the real package path to prove a genpi/ submodule is compile-gated.
         bad = b"def (:\n"                                   # syntax error
-        monkeypatch.setattr(module, "_http_get_bytes", lambda url, **k: bad)
+        monkeypatch.setattr(module.updater, "_http_get_bytes", lambda url, **k: bad)
         manifest = {"version": "2", "files": [
             {"path": "genpi/__init__.py", "sha256": _sha(bad), "bytes": len(bad)}]}
         with pytest.raises(ValueError, match="compile"):
@@ -148,7 +148,7 @@ class TestSwapAndBackupDir:
 
     def test_ensure_backup_dir_creates_and_probes(self, module, tmp_path, monkeypatch):
         d = tmp_path / "backups"
-        monkeypatch.setattr(module, "_BACKUP_DIR", d)
+        monkeypatch.setattr(module.updater, "_BACKUP_DIR", d)
         module._ensure_backup_dir()
         assert d.is_dir()
         assert not (d / ".write_probe").exists()             # probe cleaned up
@@ -215,7 +215,7 @@ class TestUpdateEndpoints:
 
 class TestPreflight:
     def test_passes_when_writable(self, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        monkeypatch.setattr(module.updater, "_BACKUP_DIR", tmp_path / "bk")
         root = tmp_path / "root"
         root.mkdir()
         (root / "a.py").write_text("x")
@@ -223,7 +223,7 @@ class TestPreflight:
 
     def test_raises_on_readonly_target(self, module, tmp_path, monkeypatch):
         import os
-        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        monkeypatch.setattr(module.updater, "_BACKUP_DIR", tmp_path / "bk")
         root = tmp_path / "root"
         root.mkdir()
         f = root / "a.py"
@@ -287,7 +287,7 @@ class TestManifestDenylist:
 
 class TestDiskPreflight:
     def test_raises_when_free_space_too_low(self, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "_BACKUP_DIR", tmp_path / "bk")
+        monkeypatch.setattr(module.updater, "_BACKUP_DIR", tmp_path / "bk")
         root = tmp_path / "root"
         root.mkdir()
         (root / "a.py").write_text("x")

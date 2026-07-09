@@ -561,26 +561,26 @@ class TestCheckUpdateEndpoint:
         assert client.get("/api/check-update").status_code == 401
 
     def test_update_available(self, client, module, monkeypatch):
-        monkeypatch.setattr(module, "APP_VERSION", "1.0.0")
-        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "1.2.0")
+        monkeypatch.setattr(module.updater, "APP_VERSION", "1.0.0")
+        monkeypatch.setattr(module.updater, "_fetch_latest_version", lambda: "1.2.0")
         d = client.get(_q("/api/check-update")).get_json()
         assert d == {"installed": "1.0.0", "latest": "1.2.0", "update_available": True}
 
     def test_up_to_date(self, client, module, monkeypatch):
-        monkeypatch.setattr(module, "APP_VERSION", "1.2.0")
-        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "1.2.0")
+        monkeypatch.setattr(module.updater, "APP_VERSION", "1.2.0")
+        monkeypatch.setattr(module.updater, "_fetch_latest_version", lambda: "1.2.0")
         d = client.get(_q("/api/check-update")).get_json()
         assert d["update_available"] is False and d["latest"] == "1.2.0"
 
     def test_local_ahead_is_not_an_update(self, client, module, monkeypatch):
         # Dev build ahead of the published release -> not "available".
-        monkeypatch.setattr(module, "APP_VERSION", "1.3.0")
-        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "1.2.0")
+        monkeypatch.setattr(module.updater, "APP_VERSION", "1.3.0")
+        monkeypatch.setattr(module.updater, "_fetch_latest_version", lambda: "1.2.0")
         assert client.get(_q("/api/check-update")).get_json()["update_available"] is False
 
     def test_unreachable_latest_is_null(self, client, module, monkeypatch):
         # Offline / private repo -> latest null, never an error, never "available".
-        monkeypatch.setattr(module, "_fetch_latest_version", lambda: None)
+        monkeypatch.setattr(module.updater, "_fetch_latest_version", lambda: None)
         d = client.get(_q("/api/check-update")).get_json()
         assert d["latest"] is None and d["update_available"] is False
 
@@ -590,15 +590,15 @@ class TestCheckUpdateEndpoint:
 
         def boom():
             raise AssertionError("passive footer read must not hit GitHub")
-        monkeypatch.setattr(module, "_fetch_latest_version", boom)
+        monkeypatch.setattr(module.updater, "_fetch_latest_version", boom)
         d = client.get(_q("/api/check-update")).get_json()
         assert d["latest"] == "9.9.9" and d["update_available"] is True
 
     def test_fresh_forces_live_check(self, client, module, monkeypatch):
         # ?fresh=1 (manual "Check again" / on-load) hits the (mocked) network even with a cache.
         module._update_check_cache.update(latest="1.0.0", update_available=False, checked_at=1.0)
-        monkeypatch.setattr(module, "APP_VERSION", "1.0.0")
-        monkeypatch.setattr(module, "_fetch_latest_version", lambda: "2.0.0")
+        monkeypatch.setattr(module.updater, "APP_VERSION", "1.0.0")
+        monkeypatch.setattr(module.updater, "_fetch_latest_version", lambda: "2.0.0")
         d = client.get(_q("/api/check-update?fresh=1")).get_json()
         assert d["latest"] == "2.0.0" and d["update_available"] is True
 
