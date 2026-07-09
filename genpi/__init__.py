@@ -52,7 +52,6 @@ import urllib.request  # server-side fetch of the repo's raw VERSION for update 
 from flask import Flask, render_template_string, jsonify, request, Response, g
 from datetime import datetime
 from pathlib import Path
-from werkzeug.security import generate_password_hash, check_password_hash
 
 # ============================================================================
 # CONFIGURATION + CREDENTIALS  (peeled into genpi/config.py -- roadmap #59, Stage 2)

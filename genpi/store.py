@@ -26,7 +26,6 @@ import base64                          # decode browser subscription keys (p256d
 from pathlib import Path               # resolve the event-DB path (_event_db_path)
 from urllib.parse import urlparse      # validate/inspect a subscription endpoint URL
 
-from . import config                   # noqa: F401  (module handle kept for symmetry / future use)
 from .config import CONFIG, SCRIPT_DIR, APP_VERSION, _PUSH_AVAILABLE
 from .logg import log
 # Web-Push crypto/HTTP libraries live behind the guard in config.py; bind them here ONLY when
