@@ -3357,9 +3357,9 @@ function refreshPushUI(){
   if(!pushSupported){setTog('pushToggle',false);
     // Surface WHY it's unavailable (the two real causes) + a link to the enable guide.
     var why=(window.isSecureContext!==true)?'Push needs a secure (HTTPS) connection on this device.':'This browser doesn\\u2019t support web push.';
-    setPushHelp(why+' In-page alerts still work.','Push-Notifications');testBtn.disabled=true;return;}
-  if(!serverPush.supported){setTog('pushToggle',false);setPushHelp('Push isn\\u2019t configured on the server (no VAPID keys). In-page alerts still work.','Push-Notifications');testBtn.disabled=true;return;}
-  if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in this browser\\u2019s site settings \\u2014 allow them to enable push.','Push-Notifications');testBtn.disabled=true;return;}
+    setPushHelp(why+' In-page alerts still work.','Web-Push-Notifications');testBtn.disabled=true;return;}
+  if(!serverPush.supported){setTog('pushToggle',false);setPushHelp('Push isn\\u2019t configured on the server (no VAPID keys). In-page alerts still work.','Web-Push-Notifications');testBtn.disabled=true;return;}
+  if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in this browser\\u2019s site settings \\u2014 allow them to enable push.','Web-Push-Notifications');testBtn.disabled=true;return;}
   if(swReg){
     swReg.pushManager.getSubscription().then(function(sub){
       var on=!!sub;setTog('pushToggle',on);

@@ -21,15 +21,6 @@ FULL = ROOT / "CHANGELOG.md"
 RECENT = ROOT / "CHANGELOG-RECENT.md"
 KEEP = 5
 
-# Header for the generated file (do-not-edit + points back at the full history).
-RECENT_HEADER = (
-    "# Changelog (recent)\n"
-    "\n"
-    "The {n} most recent GeneratorPi releases -- this short file is what the in-app updater downloads\n"
-    "on a version check. It is GENERATED from the full history in [CHANGELOG.md](CHANGELOG.md) by\n"
-    "`tools/changelog.py`; do NOT edit it by hand.\n"
-)
-
 
 def split_sections(text):
     """Return (header_before_first_release, [release_section, ...]). A release heading starts with
@@ -46,11 +37,20 @@ def split_sections(text):
 
 
 def render(keep):
-    """Build the CHANGELOG-RECENT.md text from the top `keep` releases of CHANGELOG.md."""
+    """Build the CHANGELOG-RECENT.md text from the top `keep` releases of CHANGELOG.md.
+
+    The in-app updater downloads this file and displays it VERBATIM in the update modal, so the
+    output is shaped for that view:
+      * NO preamble/header -- a "do-not-edit" notice would just render as noise at the top of the
+        modal, so the file starts straight at the newest release heading.
+      * Release sections are separated by a blank line, a '---' rule, and a blank line, so each
+        release is visually delimited from the previous one.
+      * Bullet/paragraph text is copied VERBATIM. CHANGELOG.md must therefore keep each bullet (and
+        each prose paragraph) on a SINGLE line with NO hard wrapping: the updater applies its own
+        word-wrap, and an embedded newline forces a premature break that mangles the formatting."""
     _, sections = split_sections(FULL.read_text())
     top = sections[:keep]
-    body = "\n".join(s.rstrip() for s in top)
-    return RECENT_HEADER.format(n=len(top)) + "\n" + body + "\n"
+    return "\n\n---\n\n".join(s.rstrip() for s in top) + "\n"
 
 
 def main():
