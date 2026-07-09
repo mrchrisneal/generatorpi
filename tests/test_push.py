@@ -410,7 +410,7 @@ class TestPushStatus:
         # Simulate a Pi WITHOUT python3-py-vapid/http-ece/requests: even with a valid key the
         # missing library must be the reported reason -- that exact misdiagnosis (blaming keys
         # when the library was absent) is what this whole change fixes.
-        monkeypatch.setattr(module, "_PUSH_AVAILABLE", False)
+        monkeypatch.setattr(module.store, "_PUSH_AVAILABLE", False)
         assert module.push_status() == (False, "library_missing")
 
     def test_key_validity_is_cached_by_value(self, module, vapid_key):
@@ -617,7 +617,7 @@ class TestSendPushAsync:
                 self._target(*self._args)
 
         monkeypatch.setattr(module.threading, "Thread", FakeThread)
-        monkeypatch.setattr(module, "send_push",
+        monkeypatch.setattr(module.store, "send_push",
                             lambda *a, **k: ran.append((a, k)))
 
         module.send_push_async("Title", "Body", tag="state")

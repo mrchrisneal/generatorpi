@@ -491,8 +491,8 @@ class TestFactoryResetEndpoint:
         module.init_event_store(tmp_path / "events.db")
         yield
         with module._event_lock:
-            c = module._event_conn
-            module._event_conn = None
+            c = module.store._event_conn
+            module.store._event_conn = None
             if c is not None:
                 try:
                     c.close()
@@ -510,10 +510,10 @@ class TestFactoryResetEndpoint:
         module.record_event("start", "seed event")
         module.kv_set("total_run_hours", 12.5)
         with module._event_lock:
-            module._event_conn.execute(
+            module.store._event_conn.execute(
                 "INSERT OR REPLACE INTO subscriptions(endpoint,p256dh,auth,created_ts) "
                 "VALUES('ep','p','a',1)")
-            module._event_conn.commit()
+            module.store._event_conn.commit()
         module.generator_state["total_run_hours"] = 12.5
         module.fuel_state["fill_level"] = 42.0
         module.alerts_state["alert_threshold"] = 33
@@ -532,10 +532,10 @@ class TestFactoryResetEndpoint:
 
         # Store emptied, then the endpoint records exactly one 'factory_reset' event.
         with module._event_lock:
-            ev = [r[0] for r in module._event_conn.execute(
+            ev = [r[0] for r in module.store._event_conn.execute(
                 "SELECT type FROM events").fetchall()]
-            kv = module._event_conn.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
-            subs = module._event_conn.execute(
+            kv = module.store._event_conn.execute("SELECT COUNT(*) FROM kv").fetchone()[0]
+            subs = module.store._event_conn.execute(
                 "SELECT COUNT(*) FROM subscriptions").fetchone()[0]
         assert ev == ["factory_reset"]
         assert kv == 0 and subs == 0

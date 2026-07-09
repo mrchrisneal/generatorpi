@@ -25,8 +25,8 @@ def _restore_store(module):
     """
     yield
     with module._event_lock:
-        conn = module._event_conn
-        module._event_conn = None
+        conn = module.store._event_conn
+        module.store._event_conn = None
         if conn is not None:
             # A test may have swapped in a fake connection (e.g. one whose methods
             # raise); tolerate a missing/failing close() so teardown never errors.
@@ -49,10 +49,10 @@ def event_db(module, tmp_path, _restore_store):
     db = tmp_path / "events.db"
     module.init_event_store(db)
     with module._event_lock:
-        module._event_conn.execute("DELETE FROM events")
+        module.store._event_conn.execute("DELETE FROM events")
         # Reset AUTOINCREMENT so the first insert in the test gets seq=1.
-        module._event_conn.execute("DELETE FROM sqlite_sequence WHERE name='events'")
-        module._event_conn.commit()
+        module.store._event_conn.execute("DELETE FROM sqlite_sequence WHERE name='events'")
+        module.store._event_conn.commit()
     return db
 
 
@@ -85,7 +85,7 @@ class TestInit:
             def close(self):
                 raise RuntimeError("cannot close")
 
-        monkeypatch.setattr(module, "_event_conn", BadClose())
+        monkeypatch.setattr(module.store, "_event_conn", BadClose())
         db = tmp_path / "events.db"
         module.init_event_store(db)  # must not raise despite the failing close()
         assert module.get_latest_seq() >= 1  # startup event was recorded
@@ -240,7 +240,7 @@ class TestDefensive:
             def commit(self):
                 pass
 
-        monkeypatch.setattr(module, "_event_conn", BoomConn())
+        monkeypatch.setattr(module.store, "_event_conn", BoomConn())
         with caplog.at_level(logging.WARNING, logger="generator_control"):
             module.record_event("start", "should be swallowed")  # must not raise
         assert any("Failed to record event" in r.message for r in caplog.records)
@@ -248,7 +248,7 @@ class TestDefensive:
     def test_readers_safe_when_store_uninitialized(self, module, monkeypatch, _restore_store):
         # If the store somehow isn't initialized (conn is None), readers degrade
         # gracefully and record_event drops the event instead of crashing.
-        monkeypatch.setattr(module, "_event_conn", None)
+        monkeypatch.setattr(module.store, "_event_conn", None)
         module.record_event("start", "x")  # must not raise
         assert module.get_events() == []
         assert module.get_latest_seq() == 0
@@ -259,7 +259,7 @@ class TestDefensive:
             def execute(self, *a, **k):
                 raise sqlite3.OperationalError("boom")
 
-        monkeypatch.setattr(module, "_event_conn", BoomConn())
+        monkeypatch.setattr(module.store, "_event_conn", BoomConn())
         assert module.get_events() == []
         assert module.get_latest_seq() == 0
 

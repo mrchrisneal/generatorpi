@@ -133,12 +133,12 @@ class TestKvNeverRaises:
     def test_kv_get_returns_default_when_store_uninitialized(self, module, monkeypatch):
         # With no connection, kv_get logs + returns the default instead of raising.
         # monkeypatch.setattr auto-restores the real connection after the test.
-        monkeypatch.setattr(module, "_event_conn", None)
+        monkeypatch.setattr(module.store, "_event_conn", None)
         assert module.kv_get("total_run_hours", 42.0) == 42.0
 
     def test_kv_set_is_noop_when_store_uninitialized(self, module, monkeypatch):
         # With no connection, kv_set logs a warning and returns without raising.
-        monkeypatch.setattr(module, "_event_conn", None)
+        monkeypatch.setattr(module.store, "_event_conn", None)
         module.kv_set("anything", 1)   # must not raise
 
     def test_kv_get_swallows_db_errors(self, module, monkeypatch):
@@ -146,7 +146,7 @@ class TestKvNeverRaises:
         class BoomConn:
             def execute(self, *a, **k):
                 raise RuntimeError("boom")
-        monkeypatch.setattr(module, "_event_conn", BoomConn())
+        monkeypatch.setattr(module.store, "_event_conn", BoomConn())
         assert module.kv_get("k", "fallback") == "fallback"
 
     def test_kv_set_swallows_db_errors(self, module, monkeypatch):
@@ -154,5 +154,5 @@ class TestKvNeverRaises:
         class BoomConn:
             def execute(self, *a, **k):
                 raise RuntimeError("boom")
-        monkeypatch.setattr(module, "_event_conn", BoomConn())
+        monkeypatch.setattr(module.store, "_event_conn", BoomConn())
         module.kv_set("k", 1)          # must not raise

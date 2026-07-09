@@ -22,47 +22,47 @@ API_KEY = "gaps-test-key"
 # ---------------------------------------------------------------------------
 class TestSubscriptionStoreEdges:
     def test_add_is_noop_without_conn(self, module, monkeypatch):
-        monkeypatch.setattr(module, "_event_conn", None)
+        monkeypatch.setattr(module.store, "_event_conn", None)
         module.add_subscription("e", "p", "a")             # returns quietly, no raise
 
     def test_remove_is_noop_without_conn(self, module, monkeypatch):
-        monkeypatch.setattr(module, "_event_conn", None)
+        monkeypatch.setattr(module.store, "_event_conn", None)
         module.remove_subscription("e")
 
     def test_get_returns_empty_without_conn(self, module, monkeypatch):
-        monkeypatch.setattr(module, "_event_conn", None)
+        monkeypatch.setattr(module.store, "_event_conn", None)
         assert module.get_subscriptions() == []
 
     def test_count_is_zero_without_conn(self, module, monkeypatch):
-        monkeypatch.setattr(module, "_event_conn", None)
+        monkeypatch.setattr(module.store, "_event_conn", None)
         assert module.subscription_count() == 0
 
     def test_add_swallows_db_error(self, module, monkeypatch):
         class _Boom:
             def execute(self, *a, **k):
                 raise RuntimeError("db locked")
-        monkeypatch.setattr(module, "_event_conn", _Boom())
+        monkeypatch.setattr(module.store, "_event_conn", _Boom())
         module.add_subscription("e", "p", "a")             # must not raise into the caller
 
     def test_remove_swallows_db_error(self, module, monkeypatch):
         class _Boom:
             def execute(self, *a, **k):
                 raise RuntimeError("db locked")
-        monkeypatch.setattr(module, "_event_conn", _Boom())
+        monkeypatch.setattr(module.store, "_event_conn", _Boom())
         module.remove_subscription("e")
 
     def test_get_swallows_db_error(self, module, monkeypatch):
         class _Boom:
             def execute(self, *a, **k):
                 raise RuntimeError("db locked")
-        monkeypatch.setattr(module, "_event_conn", _Boom())
+        monkeypatch.setattr(module.store, "_event_conn", _Boom())
         assert module.get_subscriptions() == []
 
     def test_count_swallows_db_error(self, module, monkeypatch):
         class _Boom:
             def execute(self, *a, **k):
                 raise RuntimeError("db locked")
-        monkeypatch.setattr(module, "_event_conn", _Boom())
+        monkeypatch.setattr(module.store, "_event_conn", _Boom())
         assert module.subscription_count() == 0
 
 
@@ -213,7 +213,7 @@ class TestRestartFallbacks:
 # ---------------------------------------------------------------------------
 class TestFactoryResetLogError:
     def test_log_truncate_error_swallowed(self, module, monkeypatch):
-        monkeypatch.setattr(module, "_event_conn", None)   # skip the DB deletes for isolation
+        monkeypatch.setattr(module.store, "_event_conn", None)   # skip the DB deletes for isolation
         real_open = builtins.open
 
         def bad_open(path, *a, **k):
