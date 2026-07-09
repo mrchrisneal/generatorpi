@@ -58,7 +58,7 @@ gc.alerts_state["fuel_enabled"] = True
 # that may already carry generated VAPID keys. Also reset the low-fuel edge flag.
 gc.CONFIG["VAPID_PRIVATE_KEY"] = ""
 gc.CONFIG["VAPID_PUBLIC_KEY"] = ""
-gc._low_fuel_alerted = False
+gc.state._low_fuel_alerted = False
 
 
 # A pristine copy of CONFIG exactly as defined at import time. Used to fully restore
@@ -100,7 +100,7 @@ def reset_globals():
     gc.fuel_state.update(copy.deepcopy(_PRISTINE_FUEL))
     gc.alerts_state.clear()
     gc.alerts_state.update(copy.deepcopy(_PRISTINE_ALERTS))
-    gc._low_fuel_alerted = False
+    gc.state._low_fuel_alerted = False
 
     gc.AUTH_USERS.clear()
     gc._auth_cache.clear()          # isolate the Basic-auth verification cache between tests
@@ -127,7 +127,7 @@ def reset_globals():
     gc.fuel_state.update(copy.deepcopy(_PRISTINE_FUEL))
     gc.alerts_state.clear()
     gc.alerts_state.update(copy.deepcopy(_PRISTINE_ALERTS))
-    gc._low_fuel_alerted = False
+    gc.state._low_fuel_alerted = False
     gc.AUTH_USERS.clear()
     gc._auth_cache.clear()          # isolate the Basic-auth verification cache between tests
     with gc._fail_tracker_lock:

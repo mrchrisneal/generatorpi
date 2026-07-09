@@ -79,7 +79,7 @@ class TestEvaluateLowFuelEdge:
         _set_projection(module, fill_level=10)
         assert module.evaluate_low_fuel() == "push"
         assert len(record_async) == 1
-        assert module._low_fuel_alerted is True
+        assert module.state._low_fuel_alerted is True
 
         # Still below threshold, but already alerted for THIS crossing -> "skip", no
         # second push (edge-trigger, not level-trigger).
@@ -97,7 +97,7 @@ class TestEvaluateLowFuelEdge:
         # Climb back ABOVE threshold + margin (20 + 5 = 25); 30 clears the arm -> "rearm".
         _set_projection(module, fill_level=30)
         assert module.evaluate_low_fuel() == "rearm"
-        assert module._low_fuel_alerted is False
+        assert module.state._low_fuel_alerted is False
         assert len(record_async) == 1  # rearm does not push
 
         # A fresh low crossing after re-arming pushes again.
@@ -114,7 +114,7 @@ class TestEvaluateLowFuelEdge:
         assert module.evaluate_low_fuel() == "push"
         _set_projection(module, fill_level=23)
         assert module.evaluate_low_fuel() == "skip"
-        assert module._low_fuel_alerted is True
+        assert module.state._low_fuel_alerted is True
         assert len(record_async) == 1
 
     def test_at_threshold_boundary_pushes(self, module, tmp_store, record_async):
@@ -150,10 +150,10 @@ class TestEvaluateLowFuelGates:
     ):
         # When the engine isn't running, nothing is draining: skip AND re-arm (clear the
         # flag) so the next real run's first low crossing fires cleanly.
-        module._low_fuel_alerted = True  # pretend a prior crossing armed it
+        module.state._low_fuel_alerted = True  # pretend a prior crossing armed it
         _set_projection(module, fill_level=5, running=False)
         assert module.evaluate_low_fuel() == "skip"
-        assert module._low_fuel_alerted is False
+        assert module.state._low_fuel_alerted is False
         assert len(record_async) == 0
 
     def test_disabled_gate_does_not_touch_arm_flag(
@@ -161,12 +161,12 @@ class TestEvaluateLowFuelGates:
     ):
         # The feature/alerts-off gate returns BEFORE the running/arm logic, so it must
         # leave a previously-set arm flag untouched (only the not-running path clears it).
-        module._low_fuel_alerted = True
+        module.state._low_fuel_alerted = True
         _set_projection(module, fill_level=5)
         with module.state_lock:
             module.alerts_state["fuel_enabled"] = False
         assert module.evaluate_low_fuel() == "skip"
-        assert module._low_fuel_alerted is True
+        assert module.state._low_fuel_alerted is True
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +175,9 @@ class TestEvaluateLowFuelGates:
 class TestRefuelRearm:
     def test_set_fuel_fill_clears_arm_flag(self, module, tmp_store):
         # "Add gas" must re-arm the alert so the next low crossing on the fresh tank pushes.
-        module._low_fuel_alerted = True
+        module.state._low_fuel_alerted = True
         module.set_fuel_fill(100.0)
-        assert module._low_fuel_alerted is False
+        assert module.state._low_fuel_alerted is False
 
     def test_refuel_then_low_pushes_again(self, module, tmp_store, record_async):
         # End-to-end: low -> push -> refuel (re-arms) -> drop low again -> pushes again.
@@ -186,7 +186,7 @@ class TestRefuelRearm:
         assert len(record_async) == 1
 
         module.set_fuel_fill(100.0)          # re-arms
-        assert module._low_fuel_alerted is False
+        assert module.state._low_fuel_alerted is False
 
         _set_projection(module, fill_level=9)
         assert module.evaluate_low_fuel() == "push"
@@ -214,8 +214,8 @@ class TestFuelMonitorLoop:
         # wait() yields False, False, True -> the loop body runs evaluate_low_fuel twice
         # then the stop flag ends it. No real interval elapses.
         calls = []
-        monkeypatch.setattr(module, "evaluate_low_fuel", lambda: calls.append(1))
-        monkeypatch.setattr(module, "_monitor_stop",
+        monkeypatch.setattr(module.fuel, "evaluate_low_fuel", lambda: calls.append(1))
+        monkeypatch.setattr(module.fuel, "_monitor_stop",
                             _FakeStop([False, False, True]))
         module.fuel_monitor_loop()
         assert len(calls) == 2
@@ -226,8 +226,8 @@ class TestFuelMonitorLoop:
         def boom():
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(module, "evaluate_low_fuel", boom)
-        monkeypatch.setattr(module, "_monitor_stop", _FakeStop([False, True]))
+        monkeypatch.setattr(module.fuel, "evaluate_low_fuel", boom)
+        monkeypatch.setattr(module.fuel, "_monitor_stop", _FakeStop([False, True]))
         # Must complete without propagating the RuntimeError.
         module.fuel_monitor_loop()
 
