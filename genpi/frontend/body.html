@@ -1,0 +1,461 @@
+
+<!-- Compact sticky header: slides in after scrolling past the placard; shows the brand +
+     live connection / latency / pending indicator. Metal finish to match the panel. -->
+<div class="stickyhdr" id="stickyHdr">
+  <span class="sh-prog"></span>
+  <span class="rivet l"></span><span class="rivet r"></span>
+  <span class="sh-brand">
+    <span class="sh-title">GeneratorPi</span>
+    <span class="sh-sub {{ 'on' if status.running else 'off' }}" id="shSub">{{ 'Generator ON' if status.running else 'Generator OFF' }}</span>
+  </span>
+  <span class="sh-net ok" id="netInd">
+    <span id="nbState">&mdash;</span>
+    <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></span><span class="nb-ms" id="nbMs"></span></span>
+  </span>
+</div>
+<main class="panel" id="panel" data-running="{{ 'true' if status.running else 'false' }}">
+  <span class="rivet tl"></span><span class="rivet tr"></span>
+  <span class="rivet bl"></span><span class="rivet br"></span>
+
+  <!-- Header placard: brand left, live connection/latency indicator right (mirrors the
+       sticky header's net readout so the top of the page shows ONLINE + ms + the pending
+       spinner + the >1s loading bar; the Generator ON/OFF subtitle is omitted here). -->
+  <div class="placard" id="placard">
+    <span class="ph-prog"><span class="ph-prog-bar"></span></span>
+    <h1>GeneratorPi</h1>
+    <span class="ph-net ok" id="netIndTop">
+      <span id="nbStateTop">&mdash;</span>
+      <span class="sh-net-sub"><span class="nb-pend"><svg class="nb-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg></span><span class="nb-ms" id="nbMsTop"></span></span>
+    </span>
+  </div>
+
+  <div class="body">
+    <!-- ===== LEFT COLUMN ===== -->
+    <div class="col col-left">
+      <!-- Status annunciator (read-only). Heading OUTSIDE the card, flush-left, like DETAIL. -->
+      <div>
+        <div class="section-label">STATUS</div>
+        <div class="annunciator">
+          <div class="lamp"></div>
+          <div class="ann-value" id="statusWord">{{ 'RUNNING' if status.running else 'STOPPED' }}</div>
+        </div>
+      </div>
+
+      <!-- Detail strip (read-only) -->
+      <div>
+        <div class="section-label">DETAIL</div>
+        <div class="detail">
+          <span class="detail-dot"></span>
+          <span id="detailMsg">{{ 'Start sequence completed — verify the unit is running.' if status.running else 'System idle — generator stopped. Flip switch up to start.' }}</span>
+        </div>
+      </div>
+
+      <!-- Hero power switch -->
+      <div class="switch-wrap">
+        <label class="switch">
+          <input type="checkbox" id="powerSwitch"
+                 aria-label="Generator power — flip up to start the engine, down to stop"
+                 {{ 'checked' if status.running else '' }}>
+          <div class="topbevel"></div>
+          <div class="btn"><div class="cap-top"></div><div class="light"></div><div class="dots"></div>
+               <div class="chars"></div><div class="shine"></div><div class="shadow"></div><div class="cap-bot"></div></div>
+        </label>
+      </div>
+
+      <!-- Current-run nixie readout -->
+      <div>
+        <div class="section-label">CURRENT RUN (HH:MM:SS)</div>
+        <div class="nixie" id="uptime">00:00:00</div>
+      </div>
+
+      <!-- Total-runtime odometer -->
+      <div>
+        <div class="section-label">TOTAL RUNTIME (HOURS)</div>
+        <div class="odometer" id="odometer"></div>
+      </div>
+
+      <!-- Settings drawer (app config + manual state override). Lives in the left
+           control column under Total Runtime -- app configuration, distinct from the
+           feature "Modules" drawers in the right column. (id/class stay `adv*` so the
+           existing handlers and CSS keep working; only the visible label is SETTINGS.) -->
+      <div class="drawer adv" id="advDrawer">
+        <button type="button" class="drawer-face" aria-expanded="false" aria-controls="advClip">
+          <span class="face-left"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>SETTINGS</span>
+          <span class="face-right"><span class="caret">▾</span></span>
+        </button>
+        <div class="drawer-clip" id="advClip">
+          <div class="drawer-cavity">
+            <div class="section-label sec-head">MANUAL OVERRIDE</div>
+            <div class="alert-cfg">
+              <div class="warn-copy">These correct the <strong>tracked</strong> state only — they do <strong>not</strong> crank or stop the engine or touch the relay. Use to re-sync after operating the unit by hand.</div>
+              <div class="adv-btns">
+                <button type="button" class="btn3d amber" id="markRunBtn"><span class="led amber"></span>MARK AS RUNNING</button>
+                <button type="button" class="btn3d steel" id="markStopBtn"><span class="led grey"></span>MARK AS STOPPED</button>
+              </div>
+            </div>
+            <div class="section-label sec-head">SYSTEM</div>
+            <div class="alert-cfg">
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>PUSH NOTIFICATIONS</span>
+                <div class="iotoggle" id="pushToggle" role="switch" aria-checked="false" tabindex="0" aria-label="Push notifications on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper" id="pushHelp">Checking push support…</div>
+              <button type="button" class="btn3d cyan" id="testPushBtn" style="width:100%" disabled><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg></span>TEST NOTIFICATION</button>
+              <div class="drawer-divider"></div>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>LOW-FUEL ALERTS</span>
+                <div class="iotoggle" id="alertToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Low-fuel alerts on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="thresh-row">
+                <span class="section-label" style="margin:0">THRESHOLD</span>
+                <input type="range" class="thresh" id="threshSlider" min="5" max="40" step="1" value="20" aria-label="Low-fuel threshold percent">
+                <span class="tval" id="threshVal">20%</span>
+              </div>
+              <div class="drawer-divider"></div>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>FUEL PROJECTION</span>
+                <div class="iotoggle" id="fuelToggle" role="switch" aria-checked="true" tabindex="0" aria-label="Fuel projection feature on or off">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper">Turn the fuel-projection panel and low-fuel alerts on or off for everyone.</div>
+              <div class="drawer-divider"></div>
+              <!-- TOTAL RUNTIME: manual override of the lifetime run-hours odometer. Reuses
+                   the fuel drawer's crt-input + btn3d "SET" styling; the header matches the
+                   sibling .lbl rows (cyan, engraved clock icon, same 12px/.1em face). It's a
+                   direct child of .alert-cfg, so the container's 12px flex-gap spaces the
+                   label/input/helper -- no manual margins. Static row (never touched by the
+                   poll loop) so it has no height-changing surface -- the iOS scroll rule is
+                   satisfied by construction. The endpoint corrects TRACKED state only; it
+                   never actuates the relay. -->
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></span>TOTAL RUNTIME</span>
+              </div>
+              <div class="fuel-io">
+                <input class="crt-input" id="runHoursInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="e.g. 123.4" aria-label="Set total runtime hours">
+                <button type="button" class="btn3d cyan" id="setRunHoursBtn">SET</button>
+              </div>
+              <div class="helper">Manually set the lifetime run-hours odometer — for example, to match the engine's own hour meter.</div>
+            </div>
+            <!-- LOG VIEWER: controls for the EVENT LOG panel in the right column. The
+                 EVENTS<->APP LOG source switch lives here (moved out of the panel header,
+                 which was too crowded), plus the routine-HTTP display filter. Both are
+                 per-browser view preferences persisted in localStorage. -->
+            <div class="section-label sec-head">LOG VIEWER</div>
+            <div class="alert-cfg">
+              <div class="log-setting">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2.2" fill="currentColor" stroke="none"/><circle cx="8" cy="17" r="2.2" fill="currentColor" stroke="none"/></svg></span>LOG SOURCE</span>
+                <div class="logseg" id="logViewToggle" role="group" aria-label="Log source">
+                  <button type="button" data-view="events" class="on">EVENTS</button>
+                  <button type="button" data-view="log">APP LOG</button>
+                </div>
+                <div class="helper" style="margin:0">Switch the EVENT LOG panel between the curated event store and a live tail of the raw application log.</div>
+              </div>
+              <div class="drawer-divider"></div>
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>ROUTINE HTTP</span>
+                <div class="iotoggle" id="httpToggle" role="switch" aria-checked="false" tabindex="0" aria-label="Show routine HTTP traffic in the app log">
+                  <span class="half i">I</span><span class="half o">O</span>
+                </div>
+              </div>
+              <div class="helper">Show routine successful (2xx/3xx) request lines in the APP LOG. Errors (4xx/5xx) are always shown.</div>
+            </div>
+            <!-- RESET: local + server escape hatches. RESET PREFS is browser-local and
+                 harmless; RESTART/FACTORY RESET hit the server (red, confirmation-gated);
+                 UPDATE is greyed until a newer version is published. -->
+            <div class="section-label sec-head">RESET</div>
+            <div class="alert-cfg">
+              <div class="helper">Clears every saved preference on <strong>this browser</strong> — open/closed panels, chart layout, log source &amp; filters. Does <strong>not</strong> affect the generator, the server, or other devices.</div>
+              <button type="button" class="btn3d steel" id="resetPrefsBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESET PREFS</button>
+              <div class="drawer-divider"></div>
+              <div class="helper">Restarts the GeneratorPi service on the server. The page reconnects after a few seconds; the generator and relay are unaffected.</div>
+              <button type="button" class="btn3d red" id="restartBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg></span>RESTART APP</button>
+              <div class="drawer-divider"></div>
+              <div class="helper">Wipes the app's memory — event log, application logs, lifetime run-hours, and fuel/alert settings — back to factory defaults. Your login &amp; server config are <strong>not</strong> touched. Your .env file should remain mostly unchanged. This <strong>cannot be undone</strong>.</div>
+              <button type="button" class="btn3d danger" id="factoryBtn" style="width:100%"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>FACTORY RESET</button>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-base"></div>
+      </div>
+    </div>
+
+    <!-- ===== RIGHT COLUMN ===== -->
+    <div class="col col-right">
+      <!-- System registers -->
+      <div>
+        <div class="section-label">SYSTEM REGISTERS</div>
+        <div class="registers">
+          <div class="reg"><div class="reg-label">LAST COMMAND</div><div class="reg-value" id="regLastCmd">—</div></div>
+          <div class="reg"><div class="reg-label">START ATTEMPTS</div><div class="reg-value" id="regAttempts">0</div></div>
+          <div class="reg"><div class="reg-label">LAST START</div><div class="reg-value" id="regLastStart">—</div></div>
+          <div class="reg"><div class="reg-label">LAST STOP</div><div class="reg-value" id="regLastStop">—</div></div>
+        </div>
+      </div>
+
+      <!-- Event log -->
+      <div>
+        <div class="log-head">
+          <span class="section-label" style="margin:0">EVENT LOG</span>
+          <!-- The EVENTS <-> APP LOG switch lives in Settings > LOG VIEWER (this header
+               was too crowded); here we keep only the title + the live count. -->
+          <span class="log-count" id="logCount">0 EVENTS</span>
+        </div>
+        <div class="log-wrap"><button type="button" class="log-copy" data-copy="log" title="Copy to clipboard"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/></svg></button><div class="log" id="log"></div></div>
+      </div>
+
+      <!-- Modules: the feature drawers below (fuel projection + system perf history).
+           This heading labels the group; each drawer is its own container. The col's
+           20px flex-gap sits between the label and the first drawer on TOP of the
+           label's own 8px margin (~28px); pull it back to 8px (=20-12) so MODULES hugs
+           the drawer like every other header hugs its content. Flex-gap skips
+           display:none items, so this stays 8px even when the Fuel drawer is hidden. -->
+      <div class="section-label" style="margin-bottom:-12px">MODULES</div>
+
+      <!-- Fuel Projection drawer -->
+      <div class="drawer fuel" id="fuelDrawer">
+        <button type="button" class="drawer-face" aria-expanded="false" aria-controls="fuelClip">
+          <span class="face-left"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="9" height="18" rx="1"/><line x1="4" y1="9" x2="13" y2="9"/><path d="M13 8h3l2 2v7a2 2 0 0 0 2 2 2 2 0 0 0 2-2V9l-3-3"/></svg></span>FUEL PROJECTION</span>
+          <span class="face-right"><span id="fuelFaceLevel" style="color:#7ce0b0">—</span><span class="caret">▾</span></span>
+        </button>
+        <div class="drawer-clip" id="fuelClip">
+          <div class="drawer-cavity">
+            <div class="fuel-top">
+              <div class="tank-col">
+                <div class="tank" id="tank">
+                  <div class="tank-fill" id="tankFill"></div>
+                  <div class="tank-line" id="tankLine" style="bottom:20%"></div>
+                </div>
+                <div class="tank-label">TANK</div>
+              </div>
+              <div class="fuel-grid">
+                <div class="fcard"><div class="fcard-label">LEVEL</div><div class="fcard-value" id="fLevel">—</div></div>
+                <div class="fcard"><div class="fcard-label">DRAIN RATE</div><div class="fcard-value" id="fRate">—</div></div>
+                <div class="fcard"><div class="fcard-label" id="fReachesLabel">REACHES 20%</div><div class="fcard-value" id="fReaches" style="color:#ffb347">—</div></div>
+                <div class="fcard"><div class="fcard-label">LOW AT</div><div class="fcard-value" id="fLowAt" style="color:#d8ac60">—</div></div>
+                <div class="fcard"><div class="fcard-label">EMPTY IN</div><div class="fcard-value" id="fEmptyIn" style="color:#ff8a6a">—</div></div>
+                <div class="fcard"><div class="fcard-label">EMPTY AT</div><div class="fcard-value" id="fEmptyAt" style="color:#e08a70">—</div></div>
+              </div>
+            </div>
+
+            <div class="drawer-divider"></div>
+
+            <div>
+              <div class="fuel-io">
+                <input class="crt-input" id="rateInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="drain %/hr" aria-label="Set drain rate percent per hour">
+                <button type="button" class="btn3d cyan" id="setRateBtn">SET</button>
+                <button type="button" class="btn3d steel btn3dsm" id="resetRateBtn" aria-label="Reset drain rate to default">RESET</button>
+              </div>
+              <div class="helper"><strong>DRAIN RATE:</strong> Estimated automatically from readings, or set it here directly. (% per hour)</div>
+            </div>
+
+            <div class="alert-banner" id="alertBanner" role="alert">
+              <span class="alert-dot"></span>LOW FUEL — projected level at or below alert threshold. Refuel soon.
+            </div>
+
+            <div class="drawer-divider"></div>
+
+            <div>
+              <div class="fuel-io">
+                <input class="crt-input" id="readingInput" type="number" step="1" min="0" max="100" inputmode="numeric" placeholder="e.g. 48" aria-label="Record observed level percent">
+                <button type="button" class="btn3d cyan" id="recordBtn">RECORD</button>
+              </div>
+              <div class="helper"><strong>TANK LEVEL OBSERVATION:</strong> Input observed tank level while the generator is running. Each reading refines the linear drain estimate (level = start − rate × run-hours). More readings on one tank → better projection. (% full, 0-100)</div>
+            </div>
+
+            <div class="drawer-divider"></div>
+
+            <div>
+              <div class="fuel-io">
+                <input class="crt-input" id="fillInput" type="number" step="1" min="0" max="100" inputmode="numeric" placeholder="e.g. 100" aria-label="Set gas tank level percent">
+                <button type="button" class="btn3d green" id="fillBtn">SET</button>
+              </div>
+              <div class="helper"><strong>SET TANK LEVEL (ADD/REMOVE GAS):</strong> Resets the baseline level to the new fill; drain rate is retained. (% full, 0-100)</div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-base"></div>
+      </div>
+
+      <!-- SYSTEM drawer: in-memory host perf history, client-rendered CRT charts -->
+      <div class="drawer sys" id="sysDrawer">
+        <button type="button" class="drawer-face" aria-expanded="false" aria-controls="sysClip">
+          <span class="face-left"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="13" rx="1"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><polyline points="6 12 9 9 12 12 15 8 18 11"/></svg></span>SYSTEM</span>
+          <span class="face-right"><span id="sysFaceStat" class="sys-facestat"></span><span class="caret">▾</span></span>
+        </button>
+        <div class="drawer-clip" id="sysClip">
+          <div class="drawer-cavity">
+            <div class="sys-hdr">
+              <span class="sys-win" id="sysWin">
+                <button type="button" data-sec="300">5m</button>
+                <button type="button" data-sec="900">15m</button>
+                <button type="button" data-sec="3600">60m</button>
+              </span>
+              <span class="sys-chip clean" id="sysThrChip">—</span>
+            </div>
+
+            <!-- COMPUTE: CPU% + MEM% (fixed 0-100) -->
+            <div class="sys-panel" data-chart="compute" id="sysChart-compute">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">COMPUTE</span>
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
+                  <span class="sys-leg" data-series="cpu"><span class="sw" style="background:#ffb347;color:#ffb347"></span>CPU</span>
+                  <span class="sys-leg" data-series="mem"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>MEM</span>
+                </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
+                <div class="sys-strip">—</div>
+              </div>
+            </div>
+
+            <!-- LOAD: 1m + 5m (auto max) -->
+            <div class="sys-panel" data-chart="load" id="sysChart-load">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">LOAD</span>
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
+                  <span class="sys-leg" data-series="load1"><span class="sw" style="background:#9fb5ff;color:#9fb5ff"></span>1m</span>
+                  <span class="sys-leg" data-series="load5"><span class="sw" style="background:#eb9fd0;color:#eb9fd0"></span>5m</span>
+                </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
+                <div class="sys-strip">—</div>
+              </div>
+            </div>
+
+            <!-- SENSORS: temp (left °C) + voltage (right V), throttle bands -->
+            <div class="sys-panel" data-chart="vitals" id="sysChart-vitals">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">SENSORS</span>
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
+                  <span class="sys-leg" data-series="temp"><span class="sw" style="background:#ff8a6a;color:#ff8a6a"></span>°C</span>
+                  <span class="sys-leg" data-series="volt"><span class="sw" style="background:#6fd3e0;color:#6fd3e0"></span>V</span>
+                </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
+                <div class="sys-strip">—</div>
+              </div>
+            </div>
+
+            <!-- WLINK: wireless-link RSSI (dBm) + link quality -->
+            <div class="sys-panel" data-chart="link" id="sysChart-link">
+              <div class="sys-panel-face">
+                <span class="sys-panel-title">WLINK</span>
+                <span class="sys-head-right"><span class="sys-head-swap"><span class="sys-legend">
+                  <span class="sys-leg" data-series="rssi"><span class="sw" style="background:#7ce0b0;color:#7ce0b0"></span>dBm</span>
+                  <span class="sys-leg" data-series="qual"><span class="sw" style="background:#ffb347;color:#ffb347"></span>Quality</span>
+                </span>
+                <span class="sys-head-vals"></span></span>
+                <span class="sys-caret" aria-hidden="true">▾</span></span>
+              </div>
+              <div class="sys-panel-body">
+                <div class="sys-screen"><svg class="sysgraph" preserveAspectRatio="none" viewBox="0 0 300 100"></svg><span class="sys-ax tl"></span><span class="sys-ax bl"></span><span class="sys-ax tr"></span><span class="sys-ax br"></span></div>
+                <div class="sys-strip">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-base"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cannot auto-detect note -->
+  <div class="note">
+    <span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></span>
+    <span>This system <strong>cannot auto-detect</strong> the real generator state. Always verify the unit visually and audibly before relying on this readout.</span>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <div class="frow">&copy; 2026 <a href="https://neal.media" target="_blank" rel="noopener">Chris Neal</a> &amp; <a href="https://neal.tools" target="_blank" rel="noopener">Alex Neal</a></div>
+    <div class="frow"><a id="verLink" href="#" role="button" title="Click to check for a new version"><svg class="ver-caution" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>v{{ version }}</a> · <a href="https://github.com/mrchrisneal/generatorpi" target="_blank" rel="noopener">GitHub</a> · <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">AGPL v3</a></div>
+    <!-- Contextual update-status line: appears only during/after update activity --
+         "[spinner] Checking for updates…", "Version up-to-date" (after a manual check),
+         "vX.Y.Z available · Update", or "Update check failed · Check again". Hidden on a
+         normal load when up to date. Server-checked against the repo's raw VERSION; when
+         out of date #verLink above also pulses yellow. Driven by checkUpdate() in JS. -->
+    <div class="frow upd" id="updRow" style="display:none"><span class="upd-spin" aria-hidden="true"></span><span id="updText"></span><span id="updSep"> · </span><a href="#" id="updAction"></a></div>
+  </footer>
+
+  <!-- Start confirmation dialog -->
+  <div class="confirm-overlay" id="confirmOverlay" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="confirm-card">
+      <div class="confirm-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="34" height="34"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9.5" x2="12" y2="13.5"/><circle cx="12" cy="16.9" r="0.9" fill="currentColor" stroke="none"/></svg></div>
+      <h2 id="confirmTitle">START GENERATOR?</h2>
+      <!-- Body + button label are set per-action by showConfirm(); the START defaults are
+           applied when the power switch opens the dialog. This one modal is reused for the
+           destructive Settings actions (restart / factory reset) too. -->
+      <p id="confirmBody">This cranks the real engine. Confirm the area around the unit is clear and it is safe to start.</p>
+      <div class="confirm-btns">
+        <button type="button" class="btn3d steel" id="confirmCancel">CANCEL</button>
+        <button type="button" class="btn3d red" id="confirmStart">START</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Self-update dialog: shows the changelog, then (on Update) a live progress bar while
+       the server downloads/verifies/swaps/restarts. Populated + driven by the updater JS. -->
+  <div class="confirm-overlay" id="updModal" role="dialog" aria-modal="true" aria-labelledby="updModalTitle">
+    <div class="confirm-card upd-card" id="updCard">
+      <h2 id="updModalTitle"><span class="upd-title-spin" aria-hidden="true"></span>UPDATE GENERATORPI</h2>
+      <div class="log-wrap"><button type="button" class="log-copy" data-copy="updChangelog" title="Copy to clipboard"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/></svg></button><div class="upd-scroll" id="updChangelog">Loading changelog…</div></div>
+      <div class="upd-backup-note" id="updBackupNote"></div>
+      <div class="upd-warn" id="updWarn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>
+        <span id="updWarnText">A warning or error occurred during the update — review the log above before proceeding.</span>
+      </div>
+      <!-- Dedicated IMPORTANT box: shown ONLY when the release is not web-installable (built by
+           _showImportant); carries the "cannot be installed" message + optional note(s) + release/repo links. -->
+      <div class="upd-important" id="updImportant">
+        <div class="imp-hdr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.5" r="0.7" fill="currentColor" stroke="none"/></svg>IMPORTANT</div>
+        <div class="imp-body" id="updImportantBody"></div>
+      </div>
+      <div class="upd-ok" id="updOk">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span>Staged and verified — ready to apply. Nothing has changed yet.</span>
+      </div>
+      <div id="updProgressWrap" style="display:none">
+        <div class="upd-bar"><div class="upd-bar-fill" id="updBarFill"></div></div>
+        <div class="upd-progress-msg" id="updProgressMsg"></div>
+      </div>
+      <div id="updWaiting" style="display:none">
+        <div class="upd-waiting">
+          <span class="upd-spin" aria-hidden="true"></span>
+          <div class="upd-waiting-title">Restarting</div>
+          <div class="upd-waiting-timer" id="updWaitTimer">0:00</div>
+        </div>
+        <div id="updWaitBanner" class="upd-banner" role="status"></div>
+      </div>
+      <div class="confirm-btns">
+        <button type="button" class="btn3d steel" id="updCancelBtn">CANCEL</button>
+        <button type="button" class="btn3d danger" id="updDoBtn">UPDATE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post-restart result dialog: shown once on the first load after an update (success or
+       failure) with the captured log. Dismissing it clears the marker server-side for all. -->
+  <div class="confirm-overlay" id="updResultModal" role="dialog" aria-modal="true" aria-labelledby="updResultTitle">
+    <div class="confirm-card upd-card">
+      <h2 id="updResultTitle">UPDATE COMPLETE</h2>
+      <div class="log-wrap"><button type="button" class="log-copy" data-copy="updResultLog" title="Copy to clipboard"><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z"/></svg></button><div class="upd-scroll" id="updResultLog"></div></div>
+      <div id="updResultBanner" class="upd-banner" role="status"></div>
+      <div class="confirm-btns">
+        <button type="button" class="btn3d steel" id="updResultDismiss" style="width:100%">DISMISS</button>
+      </div>
+    </div>
+  </div>
+</main>
