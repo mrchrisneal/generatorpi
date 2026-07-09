@@ -20,8 +20,9 @@ def _mode(path):
 class TestParseEnvFileMissing:
     def test_missing_file_returns_empty_and_no_write(self, module, monkeypatch, tmp_path):
         missing = tmp_path / "nope.env"
-        monkeypatch.setattr(module, "ENV_FILE", missing)
-        monkeypatch.setattr(module, "SCRIPT_DIR", tmp_path)
+        # ENV_FILE/SCRIPT_DIR + parse_env_file moved to genpi.config (#59 Stage 2) -- patch there.
+        monkeypatch.setattr(module.config, "ENV_FILE", missing)
+        monkeypatch.setattr(module.config, "SCRIPT_DIR", tmp_path)
         users = module.parse_env_file()
         assert users == {}
         assert not missing.exists()
@@ -253,7 +254,7 @@ class TestParseEnvFileRewriteFailure:
 # ---------------------------------------------------------------------------
 class TestSettingsSecurity:
     def test_missing_file_is_ok(self, module, monkeypatch, tmp_path):
-        monkeypatch.setattr(module, "ENV_FILE", tmp_path / "absent.env")
+        monkeypatch.setattr(module.config, "ENV_FILE", tmp_path / "absent.env")
         # Must simply return without raising.
         assert module.check_settings_file_security() is None
 
@@ -311,7 +312,7 @@ class TestSettingsSecurity:
         os.chmod(target, 0o600)
         link = tmp_path / "link.env"
         link.symlink_to(target)
-        monkeypatch.setattr(module, "ENV_FILE", link)
+        monkeypatch.setattr(module.config, "ENV_FILE", link)
         with pytest.raises(SystemExit) as exc:
             module.check_settings_file_security()
         assert exc.value.code == 1

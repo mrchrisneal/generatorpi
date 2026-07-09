@@ -185,7 +185,9 @@ class TestVapidAutoGeneration:
         # it logs a warning and leaves push unavailable (keys stay empty).
         def boom(*a, **k):
             raise RuntimeError("crypto backend unavailable")
-        monkeypatch.setattr(module, "Vapid", boom)
+        # VAPID keygen runs inside parse_env_file, which lives in genpi.config now (#59 Stage 2);
+        # patch Vapid THERE (config's binding is the one that function calls).
+        monkeypatch.setattr(module.config, "Vapid", boom)
         env_paths.write_text("")
         module.parse_env_file()                            # must not raise
         assert module.CONFIG["VAPID_PRIVATE_KEY"] == ""    # generation aborted cleanly

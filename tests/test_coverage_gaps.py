@@ -71,16 +71,17 @@ class TestSubscriptionStoreEdges:
 # ---------------------------------------------------------------------------
 class TestReadAppVersion:
     def test_missing_file_falls_back(self, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "SCRIPT_DIR", tmp_path)     # no VERSION file present
+        # _read_app_version + SCRIPT_DIR live in genpi.config now (#59 Stage 2) -- patch there.
+        monkeypatch.setattr(module.config, "SCRIPT_DIR", tmp_path)   # no VERSION file present
         assert module._read_app_version() == "0.0.0"
 
     def test_empty_file_falls_back(self, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "SCRIPT_DIR", tmp_path)
+        monkeypatch.setattr(module.config, "SCRIPT_DIR", tmp_path)
         (tmp_path / "VERSION").write_text("   \n")
         assert module._read_app_version() == "0.0.0"
 
     def test_reads_trimmed_value(self, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "SCRIPT_DIR", tmp_path)
+        monkeypatch.setattr(module.config, "SCRIPT_DIR", tmp_path)
         (tmp_path / "VERSION").write_text("  3.4.5\n")
         assert module._read_app_version() == "3.4.5"
 

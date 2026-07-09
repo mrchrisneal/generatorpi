@@ -163,6 +163,10 @@ def env_paths(module, monkeypatch, tmp_path):
     succeed -- hence patching both to tmp_path. Returns the env-file Path.
     """
     env_file = tmp_path / "generator_control.env"
-    monkeypatch.setattr(module, "SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(module, "ENV_FILE", env_file)
+    # SCRIPT_DIR/ENV_FILE + parse_env_file/check_settings_file_security now live in the
+    # genpi.config submodule (roadmap #59, Stage 2), so patch the paths THERE -- that is the
+    # binding those functions read. Patching the package re-export (module.SCRIPT_DIR) would
+    # NOT be seen by the config-module code that consumes them.
+    monkeypatch.setattr(module.config, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(module.config, "ENV_FILE", env_file)
     return env_file
