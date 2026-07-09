@@ -22,11 +22,22 @@ from pathlib import Path
 # Repo root = parent of this tools/ dir. All manifest paths are relative to it.
 ROOT = Path(__file__).resolve().parent.parent
 
+# The app is the genpi/ PACKAGE (not a single file any more): every code + asset file under
+# it ships and is hash-verified/swapped by the updater. Enumerate it by GLOB so a newly added
+# submodule or frontend asset can NEVER be silently left out of a release -- a missing file would
+# break the in-app update. Sorted for a stable, reproducible manifest ordering; __pycache__ (the
+# compiled .pyc cache) is excluded -- it is rebuilt by `compileall` at install, never shipped.
+_PKG_EXTS = (".py", ".css", ".js", ".html")
+_PACKAGE_FILES = sorted(
+    str(p.relative_to(ROOT))
+    for p in (ROOT / "genpi").rglob("*")
+    if p.is_file() and p.suffix in _PKG_EXTS and "__pycache__" not in p.parts
+)
+
 # The exact set of files that constitute a release -- what the updater downloads + swaps.
 # Keep this list in sync with what a fresh install needs; anything NOT here is preserved
 # untouched on the target during an update.
-SHIPPED_FILES = [
-    "generator_control.py",   # the app (single file)
+SHIPPED_FILES = _PACKAGE_FILES + [
     "requirements.txt",       # pip deps (setup.sh reinstall picks up changes)
     "setup.sh",               # (re)install / systemd wiring
     "update.sh",              # git-pull fallback updater

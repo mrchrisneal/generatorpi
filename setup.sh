@@ -27,7 +27,7 @@ After=network.target
 Type=simple
 User=${CURRENT_USER}
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=/usr/bin/python3 ${SCRIPT_DIR}/generator_control.py
+ExecStart=/usr/bin/python3 -m genpi
 Restart=always
 RestartSec=10
 # KillMode=process: on stop/restart, kill ONLY the main app process, not the whole cgroup.
@@ -121,6 +121,20 @@ do_install() {
     check_dep py_vapid      python3-py-vapid      optional  # Web Push: VAPID JWT signing
     check_dep http_ece      python3-http-ece      optional  # Web Push: aes128gcm payload encryption
     check_dep requests      python3-requests      optional  # Web Push: HTTPS POST to the push service
+
+    # ---- Pre-compile the package (eager .pyc cache + install-time syntax gate) ----
+    # The app is an eagerly-imported package (genpi/): `python3 -m genpi` pulls EVERY
+    # submodule into RAM at startup. Pre-building __pycache__ here means first boot pays
+    # no per-module compile cost (perf on the single-core Pi), and a syntax error in any
+    # shipped module is caught NOW, at install, instead of at service start. Non-fatal:
+    # a failure just means the app compiles lazily on first import (still correct).
+    echo ""
+    echo "Pre-compiling the genpi package (eager .pyc cache)..."
+    if /usr/bin/python3 -m compileall -q "${SCRIPT_DIR}/genpi"; then
+        echo "  [ok]      genpi package compiled"
+    else
+        echo "  [WARN]    compileall reported an issue -- modules will compile on first import"
+    fi
 
     # Generate and install the service file
     generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null

@@ -1,10 +1,15 @@
 {
-  "version": "1.3.4",
+  "version": "1.4.0",
   "files": [
     {
-      "path": "generator_control.py",
-      "sha256": "cb8af311c303abf15beb8018c5a8e51510e77951448f4b4abf9d614afc367f6c",
-      "bytes": 396152
+      "path": "genpi/__init__.py",
+      "sha256": "c4937185c903932fec197ca04483ed3ea0785a0d506e6361308abd7097996a01",
+      "bytes": 397548
+    },
+    {
+      "path": "genpi/__main__.py",
+      "sha256": "a80d6b34c17a0f6248b23b621e884932144114a4be71cfe0a02e7b42e4521b24",
+      "bytes": 1019
     },
     {
       "path": "requirements.txt",
@@ -13,8 +18,8 @@
     },
     {
       "path": "setup.sh",
-      "sha256": "e3b1c84d78f4d87016d6c3acc1cb75a1f75e610442644b50694f3fa7f88a212b",
-      "bytes": 8863
+      "sha256": "2f31df67c5893acd02c7527a4c60a8446ef34f50ef74d46e766e74ed9e5f4d13",
+      "bytes": 9668
     },
     {
       "path": "update.sh",
@@ -23,13 +28,13 @@
     },
     {
       "path": "VERSION",
-      "sha256": "e0a72941ba72e471c37b0bce5e8c292659befc51dbf1c7ceea354b26642c39c3",
+      "sha256": "78b591400c56b7b67b8cb3b2b8a8e65e9093897f02ce0878e6b5405c68620fa7",
       "bytes": 6
     },
     {
       "path": "CHANGELOG-RECENT.md",
-      "sha256": "23035cc791a413367634de7a393388fe098621161da6af21b379911101dee756",
-      "bytes": 7764
+      "sha256": "cfd0897dc6409a6e996391b6cf46f5a77046fb985d879e3b6962c3178d9d8554",
+      "bytes": 7713
     },
     {
       "path": "tools/gp-monitor.py",

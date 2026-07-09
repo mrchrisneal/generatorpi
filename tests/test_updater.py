@@ -67,11 +67,14 @@ class TestDownloadAndVerify:
         with pytest.raises(ValueError, match="hash mismatch"):
             module._download_and_verify(manifest, base="http://x", staging=tmp_path / "s")
 
-    def test_rejects_uncompilable_main(self, module, tmp_path, monkeypatch):
+    def test_rejects_uncompilable_staged_py(self, module, tmp_path, monkeypatch):
+        # A staged package module that hashes fine but won't compile must abort the update
+        # BEFORE any live swap. The check now covers EVERY staged .py (not just the old single
+        # file), so use the real package path to prove a genpi/ submodule is compile-gated.
         bad = b"def (:\n"                                   # syntax error
         monkeypatch.setattr(module, "_http_get_bytes", lambda url, **k: bad)
         manifest = {"version": "2", "files": [
-            {"path": "generator_control.py", "sha256": _sha(bad), "bytes": len(bad)}]}
+            {"path": "genpi/__init__.py", "sha256": _sha(bad), "bytes": len(bad)}]}
         with pytest.raises(ValueError, match="compile"):
             module._download_and_verify(manifest, base="http://x", staging=tmp_path / "s")
 

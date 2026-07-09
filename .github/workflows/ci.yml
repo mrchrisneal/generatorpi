@@ -47,7 +47,7 @@ jobs:
 
       - name: Run tests with coverage (gate)
         run: |
-          python -m pytest tests/ --cov=generator_control \
+          python -m pytest tests/ --cov=genpi \
             --cov-report=json:.cov.json --cov-report=term --cov-fail-under=98 -q
 
       - name: Regenerate manifest.json + CHANGELOG-RECENT.md

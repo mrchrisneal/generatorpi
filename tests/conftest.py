@@ -25,7 +25,7 @@ if str(_APP_DIR) not in sys.path:
 # Import AFTER the gpiozero mock is in place. This triggers the module's import-time
 # side effects: check_settings_file_security() (no env file -> ok), parse_env_file()
 # (no env file -> {} users, no key), logging config, and relay OutputDevice(...) mock.
-import generator_control as gc  # noqa: E402
+import genpi as gc  # noqa: E402
 
 # The suite assumes a pristine, default CONFIG (no key set, key auth enabled, HTTPS on)
 # and no users. But generator_control reads a real generator_control.env at import if

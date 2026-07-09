@@ -128,13 +128,14 @@ port_listening() {
 
 # Byte-compile the app BEFORE we (re)start it, so a syntax error is caught here -- fail-closed
 # -- instead of after the harness launches (or, on restart, after we've already stopped the old
-# server, which would leave the dev box with NOTHING running on broken code). py_compile is fast
-# (one file) and does exactly what the manual pre-restart check did, now automatic.
+# server, which would leave the dev box with NOTHING running on broken code). The app is now the
+# genpi/ package, so compileall byte-compiles EVERY submodule (still fast, and it mirrors the
+# eager-import guarantee: if any module won't compile, we refuse to (re)start).
 preflight_compile() {
     local out
-    if ! out="$("$PY" -m py_compile generator_control.py 2>&1)"; then
+    if ! out="$("$PY" -m compileall -q genpi 2>&1)"; then
         echo "" >&2
-        echo "dev.sh: generator_control.py FAILED to compile -- NOT (re)starting:" >&2
+        echo "dev.sh: the genpi package FAILED to compile -- NOT (re)starting:" >&2
         echo "$out" >&2
         exit 1
     fi

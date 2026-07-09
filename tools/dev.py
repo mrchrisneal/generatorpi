@@ -15,7 +15,7 @@
 #     only. It is a convenience runner, not a hardened deployment.
 #
 # What it does (a clean, argparse-driven local dev runner):
-#   generator_control.py builds an OutputDevice from gpiozero AT IMPORT, so gpiozero is
+#   the genpi package builds an OutputDevice from gpiozero AT IMPORT, so gpiozero is
 #   mocked first. The app is then configured for local dev (known key, plain HTTP by
 #   default, a dev Basic-auth user, a relaxed brute-force limiter, a fast sampler
 #   cadence) and served via the app's REAL _serve() -- the production cheroot path that
@@ -32,7 +32,7 @@ import threading
 import time
 import unittest.mock as _mock
 
-# The repo root (parent of tools/) holds generator_control.py. Add it to sys.path so
+# The repo root (parent of tools/) holds the genpi/ package. Add it to sys.path so
 # the import resolves regardless of the current working directory the launcher used.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO_ROOT)
@@ -42,7 +42,7 @@ sys.path.insert(0, _REPO_ROOT)
 # line is touched and the physical relay can never be actuated from this harness.
 sys.modules["gpiozero"] = _mock.MagicMock()
 
-import generator_control as gc  # noqa: E402  (must follow the gpiozero mock above)
+import genpi as gc  # noqa: E402  (must follow the gpiozero mock above)
 
 
 def _configure_dev(args):

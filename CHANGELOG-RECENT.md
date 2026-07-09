@@ -1,3 +1,12 @@
+## 1.4.0
+Released on July 9, 2026
+
+- **CHORE:** GeneratorPi's single ~6,760-line `generator_control.py` is being split into an eagerly-imported **`genpi/` package** (a long-planned maintainability effort). This release lands the package foundation: the app now runs as `python3 -m genpi`, every module is loaded into RAM at startup, and the package is pre-compiled at install (`compileall`) for a faster first boot. There are **no behavior changes** — identical UI, REST API, and relay/auth/fuel logic (verified byte-identical) — and test coverage stays at 100%.
+- **CHORE:** Updating to this release needs a **reinstall, not the in-app Update button.** Because the systemd entrypoint changed (to `python3 -m genpi`), the in-app updater — which only restarts the existing service — would relaunch the old code and report a false success. Update by pulling and re-running `./setup.sh reinstall` (or `./update.sh`); after this one release, the in-app updater works normally again.
+- **CHORE:** Hardening for the new layout: the self-updater now byte-compiles **every** staged `.py` before swapping (not just the main file), and the release manifest enumerates the whole `genpi/` package automatically, so a newly added module can never be silently left out of an update.
+
+---
+
 ## 1.3.4
 Released on July 9, 2026
 
@@ -38,14 +47,3 @@ Released on July 8, 2026
 The jump was WebKit-specific and left almost no fingerprints. On-device instrumentation showed the page's total height never changed (`scrollHeight` constant), no element ever resized (even sampled once per animation frame), no scroll API was ever called, and the visual viewport never moved — yet `scrollY` still shifted by tens of pixels on each poll. That combination ruled out every "obvious" cause in turn: not a reflow, not the fixed/sticky headers, not the 3D switch's compositing layer, not a CSS animation, and not the existing scroll-anchor net (disabling it changed nothing). The real mechanism: WebKit has no CSS scroll anchoring, and it treats *any* DOM mutation during a poll — even a no-op, such as rewriting a text node to the identical string or re-setting an attribute to its current value — as a change worth a style/layout recalculation, and that recalculation nudges the scroll position when the user is pinned to the bottom of the page.
 
 We isolated it by bisecting the page's timers on a live device: clearing the ~3-second state-poll interval stopped the jump outright, while the 1-second clock tick (which re-renders far less) never triggered it — proving the culprit was the *volume* of redundant writes the state poll made every cycle, not any single element or value. WebKit's own Timelines recording confirmed a burst of style/layout invalidations on each poll with no accompanying size change. The fix routes every render-path write through small guarded helpers (`txt` / `clsIf` / `attrIf` / `styIf` / `htmlIf` / `propIf`) that skip the assignment when the value is unchanged; with nothing mutating while the generator sits idle, there is no recalculation for WebKit to react to. Verified clean on desktop WebKit and modern iOS (iOS 26). A small residual jump can still occur on very old iOS WebKit (e.g. iPadOS 16.7) — documented as a known issue.
-
----
-
-## 1.3.0
-Released on July 8, 2026
-
-- **PERF:** Big CPU drop on the Pi. Web-UI HTTP Basic-auth verification (scrypt) was re-run on *every* request, so an open browser pinned the Raspberry Pi Zero 2 W's core near 100%. Successful verifications are now cached in memory for a short TTL — with a browser connected and polling, CPU fell from ~95% to ~2.5% (measured on hardware). Wrong passwords still re-run the hash (brute-force protection intact) and a password change invalidates the cache immediately.
-- **PERF/FEAT:** New HTTP server (**cheroot**) with real keep-alive and built-in TLS — an HTTPS poll reuses one TLS session instead of a fresh handshake every request. Falls back to the previous server automatically if cheroot isn't installed.
-- **FEAT:** Bundled **gp-monitor**, an on-device Wi-Fi + performance diagnostic tool (in `tools/`), documented on the wiki (Wi-Fi Diagnostics).
-- **DOCS:** New wiki pages (Architecture & Performance, Wi-Fi Diagnostics); a README "Under the Hood" section, Requirements list, and expanded Features; auto-updating version badge.
-- **CHORE:** `setup.sh` installs/validates dependencies via apt (the Pi's system Python has no pip); the changelog is split into the full history (this file) plus a short `CHANGELOG-RECENT.md` that the updater downloads; tag-driven release automation.

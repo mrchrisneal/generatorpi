@@ -611,11 +611,14 @@ class TestDownloadAndVerifyExtra:
         staging = tmp_path / "stg"
         staging.mkdir()
         (staging / "stale.txt").write_text("leftover from a prior run")
+        # Use a PACKAGE path (genpi/__init__.py) so this exercises the real shipped layout: the
+        # download must mkdir -p the "genpi/" subdir under staging, and the generalized compile
+        # check must byte-compile the staged package module (not just a top-level file).
         manifest = {"version": "2", "files": [
-            {"path": "generator_control.py", "sha256": _sha(code), "bytes": len(code)}]}
+            {"path": "genpi/__init__.py", "sha256": _sha(code), "bytes": len(code)}]}
         module._download_and_verify(manifest, base="http://x", staging=staging)
         assert not (staging / "stale.txt").exists()        # stale staging wiped first
-        assert (staging / "generator_control.py").read_bytes() == code   # compiled OK, staged
+        assert (staging / "genpi" / "__init__.py").read_bytes() == code   # subdir created + compiled OK
 
 
 class TestHttpGetBytes:

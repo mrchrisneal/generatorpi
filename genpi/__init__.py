@@ -1,8 +1,11 @@
-# generator_control.py -- Remote start/stop controller for a Powermate PM9400E
-# generator via a Raspberry Pi GPIO relay, exposing a self-contained Flask web UI +
-# REST API. Single-file by design so it deploys and runs light on a Pi. Handles auth
-# (API key + Basic Auth), a durable event log + fuel/runtime state (SQLite), the
-# relay start/stop sequence, and the inline HTML/CSS/JS control panel.
+# genpi/__init__.py -- GeneratorPi application package. Remote start/stop controller for a
+# Powermate PM9400E generator via a Raspberry Pi GPIO relay, exposing a self-contained Flask
+# web UI + REST API that deploys and runs light on a Pi. Historically a single file; being
+# decomposed into an EAGERLY-imported package (roadmap #59) -- this module still holds the bulk
+# of the app and is peeled section-by-section into sibling submodules, each imported at startup
+# so all application code stays resident in RAM. Handles auth (API key + Basic Auth), a durable
+# event log + fuel/runtime state (SQLite), the relay start/stop sequence, and the inline
+# HTML/CSS/JS control panel. Entrypoint: `python3 -m genpi` (see genpi/__main__.py).
 #
 # Copyright (C) 2026 Chris Neal <https://neal.media> and Alex Neal <https://neal.tools>
 # SPDX-License-Identifier: AGPL-3.0-or-later
@@ -77,9 +80,14 @@ except Exception:  # pragma: no cover - import-time only; push libs are present 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-# All configuration lives in generator_control.env (same directory as this script).
-# See generator_control.env.example for format and defaults.
-SCRIPT_DIR = Path(__file__).parent
+# All operator/runtime files -- generator_control.env (credentials), the VERSION file, the TLS
+# cert/key, events.db, and the logs -- live in the PROJECT ROOT: the directory that CONTAINS the
+# genpi/ package, NOT the package dir itself. __file__ is genpi/__init__.py (or a genpi/ submodule),
+# so the root is two levels up. Keeping runtime data at the root (unchanged from the old single-file
+# layout, where this file WAS the root) means the deploy tar, setup.sh, and the self-updater all keep
+# finding the env file + certs exactly where they have always been -- the package split moved code,
+# not operator data. See generator_control.env.example for the env format and defaults.
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = SCRIPT_DIR / "generator_control.env"
 
 # Application version -- the SINGLE SOURCE OF TRUTH is the VERSION file next to this
@@ -5714,8 +5722,8 @@ def dependency_install_command(missing):
 
 def _download_and_verify(manifest, base=None, staging=None):
     """Download every manifest file to a FRESH staging dir and verify its SHA-256. Raises
-    on the FIRST mismatch/failure (nothing live is touched). Also compile-checks the staged
-    generator_control.py -- a file that hashes fine but won't compile would brick the swap.
+    on the FIRST mismatch/failure (nothing live is touched). Also compile-checks EVERY staged
+    .py -- a file that hashes fine but won't compile would brick the swap.
     `base`/`staging` are injectable for tests."""
     base = base or _RAW_BASE
     staging = staging or _UPDATE_STAGING
@@ -5737,8 +5745,8 @@ def _download_and_verify(manifest, base=None, staging=None):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         _update_log(f"  {rel} … {len(data)} bytes")
-    # STAGE 'VERIFYING': re-hash each staged file against the manifest, then compile-check the new
-    # main. All verification is on the staged copies -- nothing live is touched until it passes.
+    # STAGE 'VERIFYING': re-hash each staged file against the manifest, then compile-check every
+    # staged .py. All verification is on the staged copies -- nothing live is touched until it passes.
     _update_log(f"[VERIFYING] SHA-256 of {n} files")
     _update_phase("verifying", "Verifying SHA-256…", 0.66)
     for f in files:
@@ -5747,14 +5755,20 @@ def _download_and_verify(manifest, base=None, staging=None):
         if got != want:
             raise ValueError(f"hash mismatch for {rel}: expected {want[:12]}…, got {got[:12]}…")
         _update_log(f"  {rel} … ok")
-    main_py = staging / "generator_control.py"
-    if main_py.exists():
-        import py_compile
+    # Compile-check EVERY staged .py before the swap is allowed to proceed. The app is now a
+    # PACKAGE (genpi/…), so a single-file check is no longer enough: a submodule that hashes
+    # fine but won't compile (a bad merge, a truncated download that still matched a stale hash)
+    # would break the eager-import at startup and force a post-swap rollback. Catching it HERE --
+    # on the staged copies, before anything live is touched -- keeps the apply safe.
+    import py_compile
+    py_files = [f["path"] for f in files if f["path"].endswith(".py")]
+    for rel in py_files:
         try:
-            py_compile.compile(str(main_py), doraise=True)
+            py_compile.compile(str(staging / rel), doraise=True)
         except py_compile.PyCompileError as e:
-            raise ValueError(f"staged generator_control.py failed to compile: {e}")
-        _update_log("  generator_control.py compiles … ok")
+            raise ValueError(f"staged {rel} failed to compile: {e}")
+    if py_files:
+        _update_log(f"  {len(py_files)} .py file(s) compile … ok")
     return staging
 
 
@@ -5968,7 +5982,7 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url, t_
     """Write a STANDALONE swap+restart+rollback script to /tmp; return its path.
 
     Runs from /tmp -- OUTSIDE the project root -- so it can replace EVERY project file,
-    including generator_control.py (the updater itself). Robustness (post-audit):
+    including the genpi/ package that houses this updater code itself. Robustness (post-audit):
       * The unit is installed with KillMode=process (setup.sh), so a `systemctl restart`
         kills only the OLD main process, NOT this detached child -- fixing the cgroup
         self-kill that previously bricked every update (audit C1).
@@ -5987,7 +6001,7 @@ def _write_bootstrap_script(manifest, version, zip_path, staging, health_url, t_
     # ATOMIC per-file swap (audit NEW-1): copy the staged file to a sibling temp on the SAME
     # filesystem, then `mv` (rename(2)) it over the live file. The live file is therefore only
     # ever replaced all-at-once -- a power loss mid-copy leaves a harmless *.gpnew temp, never a
-    # truncated generator_control.py that would crash-loop the service on reboot.
+    # truncated genpi module that would crash-loop the service on reboot.
     # Also preserve the live file's mode (e.g. +x on setup.sh/update.sh) onto the replacement,
     # best-effort via `chmod --reference` -- otherwise the swap would drop the exec bit like the
     # dev _swap did before its fix. The ( …; true ) subshell can't fail the &&-chain, so mv always
@@ -6104,7 +6118,7 @@ def _run_update():
     """Background worker. DEV (no systemd): download+verify+backup, swap in-process, then
     re-exec -- safe because the running process holds the OLD code in memory until re-exec.
     SYSTEMD: download+verify+backup, then hand swap+restart to a /tmp bootstrap that can
-    replace even generator_control.py and self-heals (rollback + restart) on failure. Errors
+    replace even the genpi/ package itself and self-heals (rollback + restart) on failure. Errors
     before any swap abort cleanly; a failed same-process swap rolls back from the backup zip."""
     manifest = None
     zpath = None
