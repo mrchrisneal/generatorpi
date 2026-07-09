@@ -7,6 +7,9 @@ __pycache__/
 generator_control.env
 generator_control.log*
 events.db*
+# dev.sh launcher runtime state (never committed): the tracked pidfile + the server console log.
+dev.pid
+dev.log
 ssl_cert.pem
 ssl_key.pem
 generator_control.original.py
@@ -25,3 +28,7 @@ backups/
 !/tools/changelog.py
 !/tools/gp-monitor.py
 !/tools/gp-monitor.md
+# dev.py is a LOCAL dev-only launcher (mock GPIO) -- committed to the repo for
+# convenience but DELIBERATELY NOT in SHIPPED_FILES / manifest.json, so it can never
+# be installed onto a Pi by the updater.
+!/tools/dev.py
