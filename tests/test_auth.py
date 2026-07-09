@@ -53,7 +53,7 @@ class TestAuthCache:
             calls["n"] += 1
             return real(stored, pw)
 
-        monkeypatch.setattr(module, "check_password_hash", spy)
+        monkeypatch.setattr(module.auth, "check_password_hash", spy)
         return calls
 
     def test_cache_hit_skips_scrypt(self, module, monkeypatch):
@@ -92,7 +92,7 @@ class TestAuthCache:
 
     def test_ttl_expiry_reruns_scrypt(self, module, monkeypatch):
         module._auth_cache.clear()
-        monkeypatch.setattr(module, "_AUTH_CACHE_TTL", 0.05)
+        monkeypatch.setattr(module.auth, "_AUTH_CACHE_TTL", 0.05)
         module.AUTH_USERS["chris"] = generate_password_hash("s3cret")
         calls = self._spy_scrypt(module, monkeypatch)
         assert module.check_auth("chris", "s3cret") is True      # miss -> scrypt (n=1)
@@ -103,7 +103,7 @@ class TestAuthCache:
 
     def test_ttl_zero_disables_cache(self, module, monkeypatch):
         module._auth_cache.clear()
-        monkeypatch.setattr(module, "_AUTH_CACHE_TTL", 0.0)
+        monkeypatch.setattr(module.auth, "_AUTH_CACHE_TTL", 0.0)
         module.AUTH_USERS["chris"] = generate_password_hash("s3cret")
         calls = self._spy_scrypt(module, monkeypatch)
         assert module.check_auth("chris", "s3cret") is True
@@ -123,7 +123,7 @@ class TestAuthCache:
         # At the hard cap, a new SUCCESS first evicts EXPIRED entries (memory-bound). scrypt is
         # stubbed True so the test isolates the eviction logic, not the (slow) hashing.
         module._auth_cache.clear()
-        monkeypatch.setattr(module, "check_password_hash", lambda h, p: True)
+        monkeypatch.setattr(module.auth, "check_password_hash", lambda h, p: True)
         module.AUTH_USERS["chris"] = module._DUMMY_HASH
         now = module.time.time()
         # Fill exactly to the cap with entries whose expiry is already in the past.
@@ -141,7 +141,7 @@ class TestAuthCache:
         # (cleared) rather than growing unbounded -- the second guard that bounds memory even under
         # sustained distinct-credential load.
         module._auth_cache.clear()
-        monkeypatch.setattr(module, "check_password_hash", lambda h, p: True)
+        monkeypatch.setattr(module.auth, "check_password_hash", lambda h, p: True)
         module.AUTH_USERS["chris"] = module._DUMMY_HASH
         far_future = module.time.time() + 10_000.0
         for i in range(module._AUTH_CACHE_MAX):
