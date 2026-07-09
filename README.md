@@ -30,7 +30,7 @@ GeneratorPi is a self-hosted, secure remote starter for the Powermate PM9400E ge
 * **Security & Isolation**: Automatic hashing of credential configurations, fail-fast permission checks, and silenced access logging.
 * **Monitoring & Event History**: Real-time metrics (CPU temperature, throttling state, load, Wi-Fi signal) alongside a persistent, SQLite-backed event log that's capped to keep disk usage bounded.
 * **Tuned for Single-Core Hardware**: A single-flight, priority-with-fairness poll queue keeps control-critical status fresh without ever dogpiling the weak core, while an ECDSA P-256 certificate with threaded serving cuts TLS handshakes from *seconds* to sub-second on a Raspberry Pi Zero 2 W.
-* **Responsive & Mobile-Friendly**: The self-contained UI is fully responsive, with a single-column layout that reflows cleanly down to 375px-wide screens — control the generator from a phone in the field.
+* **Responsive & Mobile-Friendly**: The self-contained UI is fully responsive, with a single-column layout that reflows cleanly down to 375px-wide screens — control the generator from a phone in the field. No bitmap images anywhere: every graphic is vector-based (inline SVG/CSS), so it stays crisp at any resolution or zoom.
 * **One-Click Self-Updater**: In-app updates verified against a manifest (SHA-256), applied by an atomic file swap with automatic backup, rollback-on-failure, and a live two-stage progress terminal.
 * **Home Assistant Integration**: Exposes the generator as a switch plus sensors, ready to drop into dashboards and automations.
 
