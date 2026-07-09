@@ -2713,8 +2713,14 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 .upd-scroll .tl{white-space:pre-wrap;word-break:break-word}
 .tl-hdr{color:#eafff5;font-weight:700}
 .tl-ok{color:#7effb0}
-.tl-err{color:#ff8a6a;font-weight:700}
-.tl-warn{color:#ffb347;font-weight:700}
+.tl-err{color:#f5826b;font-weight:700}
+.tl-warn{color:#e9d47e;font-weight:700}
+/* "normal" (non-bright) shades for the BODY of a warning/error line -- mirrors the green scheme's
+   bright [SECTION] (tl-hdr) + muted body (tl-msg) relationship, but in amber / red. The [TAG] keeps
+   its bright tl-warn/tl-err; the rest of the line (and whole-line severity-marked detail lines) use
+   these. */
+.tl-warn-b{color:#ddc880}
+.tl-err-b{color:#e88c75}
 .tl-msg{color:#bfe6cf}
 .tl-sub{color:#6fbf90}
 /* Result-modal success/failure banner, shown ABOVE the DISMISS button (replaces the old top note). */
@@ -3994,16 +4000,28 @@ function _ovHide(id){$(id).className='confirm-overlay';setBackgroundInert(false)
 var _termFollow=true;
 function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function _fmtLogLine(line){
+  // Server severity markers (\\u0001 warn / \\u0002 err) colour a WHOLE line that carries no text
+  // label (e.g. the copy-clean install command). Stripped here so they never render or get copied.
+  var mk=line.charCodeAt(0);
+  if(mk===1||mk===2){return '<span class="'+(mk===1?'tl-warn-b':'tl-err-b')+'">'+_esc(line.slice(1))+'</span>';}
   var m=line.match(/^\\[([^\\]]+)\\]\\s?(.*)$/);           // [SECTION] optional-rest
   if(m){
-    var tag=m[1],rest=m[2]||'',tu=tag.toUpperCase(),cls='tl-hdr';
-    if(tu==='ERROR')cls='tl-err';
-    else if(tu==='WARNING'||tu==='REVERTED'||tu==='ROLLBACK')cls='tl-warn';
+    var tag=m[1],rest=m[2]||'',tu=tag.toUpperCase(),cls='tl-hdr',bcls='tl-msg';
+    if(tu==='ERROR'){cls='tl-err';bcls='tl-err-b';}
+    else if(tu==='WARNING'||tu==='REVERTED'||tu==='ROLLBACK'){cls='tl-warn';bcls='tl-warn-b';}
+    // BRIGHT shade on the [TAG]; the rest of the line in the matching NORMAL shade (an "ok" tail
+    // stays green) -- mirrors the green [SECTION]+body scheme, in amber / red.
     var out='<span class="'+cls+'">['+_esc(tag)+']</span>';
-    if(rest){var rc=/^ok\\b/i.test(rest)?'tl-ok':(cls==='tl-err'?'tl-err':'tl-msg');
+    if(rest){var rc=/^ok\\b/i.test(rest)?'tl-ok':bcls;
       out+=' <span class="'+rc+'">'+_esc(rest)+'</span>';}
     return out;
   }
+  // Inline "WARNING:" / "ERROR:" label (possibly indented): bright label + normal-shade remainder,
+  // so a whole warning/error DETAIL line reads in its colour with the label brightest.
+  var w=line.match(/^(\\s*)(WARNING|ERROR):\\s?(.*)$/);
+  if(w){var lead=w[1],lbl=w[2],body=w[3]||'',er=(lbl==='ERROR');
+    return _esc(lead)+'<span class="'+(er?'tl-err':'tl-warn')+'">'+lbl+':</span>'+
+      (body?' <span class="'+(er?'tl-err-b':'tl-warn-b')+'">'+_esc(body)+'</span>':'');}
   if(/^\\s/.test(line))return '<span class="tl-sub">'+_esc(line)+'</span>';   // indented child
   return '<span class="tl-msg">'+_esc(line)+'</span>';                        // plain line
 }
@@ -5538,17 +5556,30 @@ def _update_log_append(text):
             _update_state["log"].append(text)
 
 
+# Severity markers prefixed onto a log line so the terminal colours the WHOLE line (amber for a
+# warning, red for an error) even when it carries no visible "WARNING:"/"ERROR:" label or "[TAG]".
+# _fmtLogLine in the UI strips the marker before rendering, so it never displays or gets copied.
+_SEV_MARK = {"warn": "", "err": ""}
+
+
+def _update_sev(line, sev):
+    """Log a line flagged with a severity marker so the terminal colours the whole line. Does NOT
+    tally -- for label-less detail lines (e.g. the copy-clean install command)."""
+    _update_log(_SEV_MARK.get(sev, "") + line)
+
+
 def _update_warn(line):
-    """Log a line AND tally it as a WARNING against the CURRENT stage, for the end-of-stage
-    colored summary line. The individual line logs in its own style; the summary line is what
-    renders yellow."""
+    """Log a WARNING line AND tally it against the CURRENT stage for the end-of-stage summary. The
+    caller includes the visible 'WARNING:' label (which the terminal colours amber); this logs +
+    counts."""
     _update_log(line)
     with _update_lock:
         _update_state["counts"]["stage2" if _update_state.get("stage") == 2 else "stage1"]["warn"] += 1
 
 
 def _update_err(line):
-    """Log a line AND tally it as an ERROR against the CURRENT stage (see _update_warn)."""
+    """Log an ERROR line AND tally it against the CURRENT stage (see _update_warn; the caller
+    includes the visible 'ERROR:' label, coloured red)."""
     _update_log(line)
     with _update_lock:
         _update_state["counts"]["stage2" if _update_state.get("stage") == 2 else "stage1"]["err"] += 1
@@ -6136,14 +6167,22 @@ def _run_update():
         if not _missing_deps:
             _update_log("  all declared dependencies present … ok")
         else:
+            _any_required = any(d.get("required") for d in _missing_deps)
             for d in _missing_deps:
-                _line = (f"  MISSING ({'REQUIRED' if d.get('required') else 'optional'}): "
-                         f"{d.get('apt', '?')} — {d.get('feature', '')}")
-                # A missing REQUIRED dep is an error; a missing OPTIONAL one (e.g. a Web Push lib)
-                # is a warning -- that feature just stays off. Both feed the end-of-stage summary.
-                (_update_err if d.get("required") else _update_warn)(_line)
-            _update_log("  the updater will NOT install these; install them yourself, then restart:")
-            _update_log(f"    {_deps_cmd}")
+                _req = bool(d.get("required"))
+                # A missing REQUIRED dep is an ERROR (red); a missing OPTIONAL one (e.g. a Web Push
+                # library) is a WARNING (amber) -- that feature just stays off. The visible
+                # WARNING:/ERROR: label drives the terminal colour; both feed the stage tally.
+                _line = (f"  {'ERROR' if _req else 'WARNING'}: Missing "
+                         f"({'required' if _req else 'optional'}) dependency: "
+                         f"{d.get('apt', '?')} ({d.get('feature', '')})")
+                (_update_err if _req else _update_warn)(_line)
+            # Colour the remedy note + copy-clean command with the block's overall severity (a
+            # missing REQUIRED dep makes the whole block red) WITHOUT tallying them as extra items;
+            # the command carries no visible label so it stays clean to select/copy.
+            _sev = "err" if _any_required else "warn"
+            _update_sev("  The updater will NOT install these — run the following command over SSH, then restart the application to resolve:", _sev)
+            _update_sev(f"    {_deps_cmd}", _sev)
         # Two logged stages: download to staging, then verify SHA-256 + compile-check.
         _update_log(f"[DOWNLOADING] {nfiles} files")
         _update_phase("downloading", "Downloading files…", 0.1)

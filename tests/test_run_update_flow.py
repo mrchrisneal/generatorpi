@@ -109,7 +109,9 @@ class TestRunUpdateDependencies:
             "sudo apt install -y python3-absent-opt python3-absent-req"
         log = "\n".join(module._update_state["log"])
         assert "[CHECKING DEPENDENCIES]" in log
-        assert "python3-absent-opt" in log and "python3-absent-req" in log
+        # Missing deps read as coloured WARNING:/ERROR: lines (optional -> warning, required -> error).
+        assert "WARNING: Missing (optional) dependency: python3-absent-opt" in log
+        assert "ERROR: Missing (required) dependency: python3-absent-req" in log
         # End-of-stage-1 summary: 1 optional-missing warning + 1 required-missing error.
         assert "[WARNING] Stage 1: 1 warning encountered" in log
         assert "[ERROR] Stage 1: 1 error encountered" in log

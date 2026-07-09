@@ -104,6 +104,17 @@ class TestStageTallyAndSummary:
         # The lines are also appended to the terminal log.
         assert module._update_state["log"][-3:] == ["  w1", "  w2", "  e1"]
 
+    def test_update_sev_prefixes_marker_without_tallying(self, module):
+        # _update_sev colours a whole (label-less) line via a leading severity marker the UI strips,
+        # and does NOT count -- it's for the remedy note + copy-clean install command.
+        module._update_sev("    sudo apt install -y x", "warn")
+        module._update_sev("  bad", "err")
+        assert module._update_state["log"][-2:] == [
+            module._SEV_MARK["warn"] + "    sudo apt install -y x",
+            module._SEV_MARK["err"] + "  bad",
+        ]
+        assert module._update_state["counts"]["stage1"] == {"warn": 0, "err": 0}
+
     def test_tally_follows_the_current_stage(self, module):
         module._update_warn("  s1")             # stage 1
         module._update_state["stage"] = 2

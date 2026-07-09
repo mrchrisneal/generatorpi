@@ -1,3 +1,10 @@
+## 1.3.4
+Released on July 9, 2026
+
+- **FIX:** The self-updater log now colours the WHOLE warning/error line (amber for warnings, red for errors) instead of only the `[TAG]`, so a problem stands out. Missing dependencies in the Stage-1 check read as clear `WARNING:` / `ERROR:` lines, and the hint tells you to run the shown apt command over SSH and restart the application to resolve. Cosmetic only — no behaviour change.
+
+---
+
 ## 1.3.3
 Released on July 9, 2026
 
@@ -42,10 +49,3 @@ Released on July 8, 2026
 - **FEAT:** Bundled **gp-monitor**, an on-device Wi-Fi + performance diagnostic tool (in `tools/`), documented on the wiki (Wi-Fi Diagnostics).
 - **DOCS:** New wiki pages (Architecture & Performance, Wi-Fi Diagnostics); a README "Under the Hood" section, Requirements list, and expanded Features; auto-updating version badge.
 - **CHORE:** `setup.sh` installs/validates dependencies via apt (the Pi's system Python has no pip); the changelog is split into the full history (this file) plus a short `CHANGELOG-RECENT.md` that the updater downloads; tag-driven release automation.
-
----
-
-## 1.2.3
-
-- **Cleaner Stage-2 update log**: the systemd update path's progress lines now match the rest of the update terminal — no more `[gp-update]` prefix or raw ISO timestamps, and correct coloring. Each step reads as a dim indented `… ok` child under its bright section header, and the run ends with `[DONE] Application successfully updated to vX.Y.Z!`.
-- **Settings polish**: the section headers (MANUAL OVERRIDE, SYSTEM, LOG VIEWER, RESET) are brighter and slightly larger with clearer spacing between sections, and the push-notification button is now labelled "TEST NOTIFICATION".

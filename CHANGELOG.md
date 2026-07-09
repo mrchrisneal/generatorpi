@@ -5,6 +5,13 @@ releases from **CHANGELOG-RECENT.md** (generated from this file by `tools/change
 each release is `## X.Y.Z` with `Released on Month D, YYYY` directly below, and its changes are tagged
 — **FEAT** (new), **PERF** (speed), **FIX** (bug), **SEC** (security), **DOCS**, **CHORE**.
 
+## 1.3.4
+Released on July 9, 2026
+
+- **FIX:** The self-updater log now colours the WHOLE warning/error line (amber for warnings, red for errors) instead of only the `[TAG]`, so a problem stands out. Missing dependencies in the Stage-1 check read as clear `WARNING:` / `ERROR:` lines, and the hint tells you to run the shown apt command over SSH and restart the application to resolve. Cosmetic only — no behaviour change.
+
+---
+
 ## 1.3.3
 Released on July 9, 2026
 
