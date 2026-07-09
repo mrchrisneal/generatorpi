@@ -19,7 +19,6 @@
 # [update-swap verification marker | 2026-07-07] This comment is present in the released copy on
 # GitHub. If it appears on disk after an in-app update, the updater successfully downloaded and
 # swapped this file from GitHub. Harmless; may be kept or dropped in a later release.
-from gpiozero import OutputDevice
 import logging
 import logging.handlers
 import errno
@@ -336,36 +335,17 @@ from .state import (               # noqa: F401  (re-exported for the rest of th
     _live_total_run_hours_locked, _apply_running_transition_locked, set_total_run_hours,
 )
 
-# Prevents overlapping relay sequences (e.g. two simultaneous start requests)
-relay_lock = threading.Lock()
-
 # ============================================================================
-# GPIO SETUP
+# GPIO RELAY  (peeled into genpi/relay.py -- roadmap #59, Stage 6)
 # ============================================================================
-# SunFounder relays are LOW-triggered (active_high=False means on() sends LOW signal)
-relay_start_stop = OutputDevice(CONFIG["RELAY_PIN"], active_high=False, initial_value=False)
-log.info(f"GPIO initialized - pin {CONFIG['RELAY_PIN']} (relay control)")
-
-# ============================================================================
-# RELAY CONTROL FUNCTIONS
-# ============================================================================
-def press_button():
-    """Simulate a momentary button press on the generator."""
-    duration = CONFIG["BUTTON_PRESS_DURATION"]
-    log.debug(f"Pressing relay ({duration}s)")
-    relay_start_stop.on()   # Energize relay (closes contacts)
-    # HARDWARE SAFETY: the off() MUST run even if something raises between on() and
-    # off() (e.g. a KeyboardInterrupt/SystemExit during shutdown while we're asleep,
-    # or a signal-driven exception). Without the finally, an exception here would
-    # leave the relay energized -- i.e. the physical start/stop button held DOWN
-    # indefinitely -- which is exactly the failure mode we must never allow. The
-    # try/finally guarantees the relay is de-energized on every exit path; the
-    # exception still propagates to the caller afterwards.
-    try:
-        time.sleep(duration)
-    finally:
-        relay_start_stop.off()  # De-energize relay (opens contacts) -- ALWAYS runs
-    time.sleep(0.1)         # Small debounce delay (only reached on the normal path)
+# The relay lock, the OutputDevice handle, and press_button now live in genpi/relay.py (LAYER 3:
+# config + logg + gpiozero). SAFETY is unchanged: the relay is created DE-ENERGIZED at import
+# (initial_value=False) and press_button de-energizes it in a finally on EVERY exit path. relay_lock
+# + relay_start_stop are shared objects (re-exported by REFERENCE so the control sequences below, the
+# shutdown close(), and the tests all act on the same lock/device); press_button is re-exported for
+# the control sequences (Stage 6b moves those out too).
+from . import relay
+from .relay import relay_lock, relay_start_stop, press_button   # noqa: F401  (re-exported for control + tests)
 
 # ============================================================================
 # GENERATOR CONTROL LOGIC
