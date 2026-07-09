@@ -85,40 +85,15 @@ if _PUSH_AVAILABLE:                 # libs present in dev/CI; the False path is 
 
 
 # ============================================================================
-# LOGGING
+# LOGGING  (peeled into genpi/logg.py -- roadmap #59, Stage 2)
 # ============================================================================
-log_path = SCRIPT_DIR / CONFIG["LOG_FILE"]
-log_formatter = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
-# Rotating file handler
-file_handler = logging.handlers.RotatingFileHandler(
-    log_path,
-    maxBytes=CONFIG["LOG_MAX_BYTES"],
-    backupCount=CONFIG["LOG_BACKUP_COUNT"],
-)
-file_handler.setFormatter(log_formatter)
-
-# Console handler (so journald still captures output)
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(log_formatter)
-
-log = logging.getLogger("generator_control")
-log.setLevel(getattr(logging, CONFIG["LOG_LEVEL"].upper(), logging.INFO))
-log.addHandler(file_handler)
-log.addHandler(console_handler)
-
-log.info(f"Loaded {len(AUTH_USERS)} user(s): {', '.join(AUTH_USERS.keys()) or 'none'}")
-log.info(f"Log file: {log_path} (max {CONFIG['LOG_MAX_BYTES'] // 1_048_576}MB x {CONFIG['LOG_BACKUP_COUNT']} backups)")
-
-# Suppress Werkzeug's built-in per-request access log. That log prints the full
-# request line -- INCLUDING the "?key=..." query string -- to stdout/journald,
-# which would leak the API key into logs. Our own audit line (in auth_required)
-# records only method + path (never the query string), so we lose nothing useful
-# by silencing Werkzeug's access log while closing the key-leak vector.
-logging.getLogger("werkzeug").setLevel(logging.ERROR)
+# The application logger + its rotating file/console handlers now live in genpi/logg.py (LAYER 1:
+# depends only on genpi.config). Importing it here emits the startup log lines and silences
+# Werkzeug's access log EXACTLY as before; we then re-export `log` (used throughout) and
+# `log_path` (read by the log-viewer + factory-reset routes) for the not-yet-peeled code below
+# and the test suite's gc.<symbol> access.
+from . import logg
+from .logg import log, log_path      # noqa: F401  (re-exported for the rest of this module + tests)
 
 # ============================================================================
 # EVENT STORE (persistent, capped log of generator events)
