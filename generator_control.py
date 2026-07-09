@@ -58,7 +58,7 @@ try:
     from py_vapid.utils import b64urlencode as _vapid_b64
     from cryptography.hazmat.primitives import serialization as _crypto_serialization
     _PUSH_AVAILABLE = True
-except Exception:  # ImportError, or a partially-installed crypto stack
+except Exception:  # pragma: no cover - import-time only; push libs are present in dev/CI, so this ImportError fallback fires only on a Pi missing pywebpush and can't be re-triggered without a module reload
     _PUSH_AVAILABLE = False
 
 # ============================================================================
@@ -1593,7 +1593,7 @@ def evaluate_low_fuel():
             "Low fuel", f"Projected level ~{msg_level}% - refuel soon.", tag="lowfuel"
         )
         return "push"
-    return "skip"
+    return "skip"  # pragma: no cover - unreachable: the only branch that exits the `with` block without returning sets do_push=True, so `if do_push` is always True here
 
 
 # ---------------------------------------------------------------------------
@@ -2168,22 +2168,38 @@ button{font-family:inherit}
 /* ---- hero rocker switch -- CSS adapted from Uiverse.io "empty-snail-69" by Nawsome
    (MIT, (c) 2026 Nawsome; see THIRD-PARTY-NOTICES.md), keyboard-accessible variant ---- */
 .switch-wrap{display:flex;justify-content:center;padding:6px 0}
-.switch{display:block;background:#000;width:150px;height:195px;
+/* -webkit- prefixes on every 3D property below: iPad Safari (older WebKit than the iPhone) FLATTENS
+   `transform-style:preserve-3d` without the prefix, collapsing the rocker's rotateX(-90deg) top/bottom
+   caps edge-on so they vanish. Prefixed + unprefixed keeps the 3D on both. (#40-adjacent, v1.3.1) */
+.switch{display:block;background:linear-gradient(180deg,#b31414 0%,#6f0000 22%,#6f0000 78%,#300000 100%);width:150px;height:195px;
   box-shadow:0 0 10px 2px rgba(0,0,0,.4),0 0 1px 2px #000,inset 0 2px 2px -2px #fff,inset 0 0 2px 15px #47434c,inset 0 0 2px 22px #000;
-  border-radius:6px;padding:20px;perspective:700px;position:relative}
+  border-radius:6px;padding:20px;-webkit-perspective:700px;perspective:700px;position:relative}
 .switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;z-index:3}
-.switch input:checked ~ .btn{transform:translateZ(20px) rotateX(25deg);box-shadow:0 -10px 20px #ff1818}
+.switch input:checked ~ .btn{-webkit-transform:translateZ(20px) rotateX(25deg);transform:translateZ(20px) rotateX(25deg);box-shadow:0 -10px 20px #ff1818}
 .switch input:checked ~ .btn .light{animation:flicker .2s infinite .3s}
 .switch input:checked ~ .btn .shine{opacity:1}
 .switch input:checked ~ .btn .shadow{opacity:0}
 .switch input:focus-visible ~ .btn{outline:3px solid #ffca7a;outline-offset:8px;border-radius:3px}
-.btn{display:block;transition:all .3s cubic-bezier(1,0,1,1);transform-origin:center center -20px;
-  transform:translateZ(20px) rotateX(-25deg);transform-style:preserve-3d;height:100%;position:relative;cursor:pointer;
+/* OFF-state top bevel: old WebKit can't render the 3D top cap (it flattens 3D pseudo/child transforms),
+   which exposed the switch background at the top. Simulate the cap's receding top face with a FLAT
+   clip-path trapezoid that WIDENS toward the top edge. Hidden in the ON state (the lit face fills it),
+   and it sits below the real 3D cap on engines that DO render it. (#70, v1.3.1) */
+.topbevel{position:absolute;left:20px;right:20px;top:20px;height:34px;pointer-events:none;z-index:0;
+  -webkit-clip-path:polygon(-5% 0,105% 0,100% 100%,0 100%);clip-path:polygon(-5% 0,105% 0,100% 100%,0 100%);
+  background:linear-gradient(180deg,rgba(0,0,0,.85) 0%,rgba(0,0,0,.42) 24%,#5a0000 56%,#8a1212 84%,rgba(255,238,238,.82) 100%)}
+.switch input:checked ~ .topbevel{opacity:0}
+.btn{display:block;transition:all .3s cubic-bezier(1,0,1,1);-webkit-transform-origin:center center -20px;transform-origin:center center -20px;
+  -webkit-transform:translateZ(20px) rotateX(-25deg);transform:translateZ(20px) rotateX(-25deg);-webkit-transform-style:preserve-3d;transform-style:preserve-3d;height:100%;position:relative;cursor:pointer;
   background:linear-gradient(#980000 0%,#6f0000 30%,#6f0000 70%,#980000 100%);background-repeat:no-repeat;pointer-events:none}
-.btn::before{content:"";background:linear-gradient(rgba(255,255,255,.8) 10%,rgba(255,255,255,.3) 30%,#650000 75%,#320000) 50% 50%/97% 97%,#b10000;
-  background-repeat:no-repeat;width:100%;height:50px;transform-origin:top;transform:rotateX(-90deg);position:absolute;top:0}
-.btn::after{content:"";background-image:linear-gradient(#650000,#320000);width:100%;height:50px;transform-origin:top;
-  transform:translateY(50px) rotateX(-90deg);position:absolute;bottom:0;box-shadow:0 50px 8px 0 #000,0 80px 20px 0 rgba(0,0,0,.5)}
+/* The 3D top cap + bottom lip are REAL child elements (.cap-top / .cap-bot), NOT ::before/::after.
+   Older WebKit (desktop WebKit build, iPadOS <= ~16) does not render 3D-transformed PSEUDO-elements
+   inside a `transform-style:preserve-3d` parent -- it flattens them, so the rocker looked like a flat
+   red rectangle. Real child elements participate in the parent's 3D context reliably on every engine.
+   (#70, v1.3.1.) */
+.btn>.cap-top{background:linear-gradient(rgba(255,255,255,.8) 10%,rgba(255,255,255,.3) 30%,#650000 75%,#320000) 50% 50%/97% 97%,#b10000;
+  background-repeat:no-repeat;width:100%;height:50px;-webkit-transform-origin:top;transform-origin:top;-webkit-transform:rotateX(-90deg);transform:rotateX(-90deg);position:absolute;top:0}
+.btn>.cap-bot{background-image:linear-gradient(#650000,#320000);width:100%;height:50px;-webkit-transform-origin:top;transform-origin:top;
+  -webkit-transform:translateY(50px) rotateX(-90deg);transform:translateY(50px) rotateX(-90deg);position:absolute;bottom:0;box-shadow:0 50px 8px 0 #000,0 80px 20px 0 rgba(0,0,0,.5)}
 .light{opacity:0;animation:light-off 1s;position:absolute;width:100%;height:100%;background-image:radial-gradient(#ffc97e,#ff1818 40%,transparent 70%)}
 .dots{position:absolute;width:100%;height:100%;background-image:radial-gradient(transparent 30%,rgba(101,0,0,.7) 70%);background-size:10px 10px}
 .chars{position:absolute;width:100%;height:100%;background:linear-gradient(#fff,#fff) 50% 20%/5% 20%,radial-gradient(circle,transparent 50%,#fff 52%,#fff 70%,transparent 72%) 50% 80%/33% 25%;background-repeat:no-repeat}
@@ -2353,8 +2369,11 @@ button{font-family:inherit}
 }
 .fcard{padding:10px 12px;border-radius:8px;background:linear-gradient(160deg,#0b1214,#04080a);
   border:1px solid #08161a;box-shadow:inset 0 2px 7px rgba(0,0,0,.7)}
-.fcard-label{font:600 12px var(--mono);letter-spacing:.08em;color:#4f7d8a;margin-bottom:5px}
-.fcard-value{font:700 16px var(--mono);color:#8fd6e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fcard-label{font:600 12px var(--mono);letter-spacing:.08em;color:#4f7d8a;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Height-stable rendering: tabular-nums keeps digit width constant + a reserved line-height means a
+   value swap (e.g. PAUSED <-> 3h 20m) can NEVER change the row height. iOS Safari has no scroll
+   anchoring, so any height change above the fold jumps the page. See CLAUDE.md "Height-stable rendering". */
+.fcard-value{font:700 16px var(--mono);color:#8fd6e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;line-height:1.35;min-height:1.35em}
 .fuel-io{display:flex;gap:9px;align-items:stretch}
 .crt-input{flex:1 1 auto;min-width:0;padding:0 12px;height:48px;border-radius:8px;border:1px solid #000;
   background:radial-gradient(120% 130% at 50% -10%,#0d1210,#050806 75%);
@@ -2363,6 +2382,10 @@ button{font-family:inherit}
 .crt-input::placeholder{color:#3f7d64}
 .crt-input:focus{outline:3px solid #ffca7a;outline-offset:2px}
 .helper{font:500 12px var(--mono);color:#ada79d;line-height:1.55;margin-top:9px}
+/* Height-stable rendering: the push-status help text swaps between short and multi-line messages as
+   push state settles. Reserve ~2 lines so that swap can't change the Settings panel height and jump the
+   page on iOS (no scroll anchoring there). See CLAUDE.md "Height-stable rendering". */
+#pushHelp{min-height:3.1em}
 .helper strong{color:#d8d2c6;font-weight:700;letter-spacing:.03em}  /* bold field-name lead-in on helper text */
 /* Centered hairline divider between form rows in the drawers: ~30% width, 1px, faded
    ends, with 10px of margin above and below the line. */
@@ -2855,7 +2878,7 @@ function updateOdometer(hours){
   // The lifetime odometer only ever INCREMENTS. Ignore any lower value (e.g. the live
   // uptime tick overshooting, then a delayed/slow state response pulling it back) so the
   // wheels never spin backward or roll all the way around -- they only climb forward.
-  if(_lastOdoHours!=null && hours < _lastOdoHours) return;
+  if(_lastOdoHours!=null && hours <= _lastOdoHours) return;   /* #40: also skip when UNCHANGED (no redundant transform write) */
   _lastOdoHours=hours;
   var intPart=Math.min(9999,Math.floor(hours));var ds=('0000'+intPart).slice(-4);
   for(var i=0;i<4;i++){setReel(odoReels[i],parseInt(ds.charAt(i),10)*ODO_CELL);}
@@ -2863,25 +2886,42 @@ function updateOdometer(hours){
 }
 
 /* ---------- state render ---------- */
+/* Idempotent DOM writers -- write ONLY when the value actually changes. The state poll
+   fires every few seconds and re-renders the whole panel; on WebKit (no scroll anchoring)
+   even a NO-OP mutation (rewriting a text node to the same string, re-setting an attribute
+   to its current value) triggers a style/layout recalc that nudges the scroll position when
+   the user is parked at the footer -- the #40 jump. Skipping identical writes removes the
+   mutation entirely (and saves DOM work on the single-core Pi). Every poll-path write goes
+   through these. */
+function txt(el,v){ if(el&&el.textContent!==v)el.textContent=v; }               // textContent read-back is exact
+function clsIf(el,v){ if(el&&el.className!==v)el.className=v; }                    // className read-back is exact
+function attrIf(el,k,v){ if(el&&el.getAttribute(k)!==v)el.setAttribute(k,v); }   // getAttribute read-back is exact
+/* style + innerHTML READ-BACK is normalized by the browser ('#ff5a4a' -> 'rgb(...)', HTML re-serialized),
+   so comparing against the live property would never match and we'd write every time -- defeating the guard.
+   Cache the RAW value we last set on the element and compare against that instead. */
+function styIf(el,k,v){ if(el){var kk='_gs_'+k; if(el[kk]!==v){el[kk]=v;el.style[k]=v;} } }
+function htmlIf(el,v){ if(el&&el._gh!==v){el._gh=v;el.innerHTML=v;} }
+function propIf(el,k,v){ if(el&&el[k]!==v)el[k]=v; }
 function cmdLabel(c){return {start:'START',stop:'STOP',mark_run:'MARK RUN',mark_stop:'MARK STOP'}[c]||DASH;}
 function applyState(s){
   if(!s)return; state=s; clockOffset=s.server_now*1000-Date.now();
-  panel.setAttribute('data-running',s.running?'true':'false');
-  $('statusWord').textContent=s.running?'RUNNING':'STOPPED';
-  var sub=$('shSub');if(sub){sub.textContent=s.running?'Generator ON':'Generator OFF';sub.className='sh-sub '+(s.running?'on':'off');}
-  $('detailMsg').textContent=s.running?('Start sequence completed '+DASH+' verify the unit is running.'):('System idle '+DASH+' generator stopped. Flip switch up to start.');
-  $('regLastCmd').textContent=cmdLabel(s.last_command);
-  $('regAttempts').textContent=s.start_attempts;
+  attrIf(panel,'data-running',s.running?'true':'false');
+  txt($('statusWord'),s.running?'RUNNING':'STOPPED');
+  var sub=$('shSub');if(sub){txt(sub,s.running?'Generator ON':'Generator OFF');clsIf(sub,'sh-sub '+(s.running?'on':'off'));}
+  txt($('detailMsg'),s.running?('Start sequence completed '+DASH+' verify the unit is running.'):('System idle '+DASH+' generator stopped. Flip switch up to start.'));
+  txt($('regLastCmd'),cmdLabel(s.last_command));
+  txt($('regAttempts'),''+s.start_attempts);
   var ls=parseISO(s.last_start_time),lp=parseISO(s.last_stop_time);
-  $('regLastStart').textContent=ls?fmtStamp(ls,false):DASH;
-  $('regLastStop').textContent=lp?fmtStamp(lp,false):DASH;
-  if(!busy&&!confirmOpen){$('powerSwitch').checked=s.running;}
-  if(s.fuel){$('rateInput').placeholder=s.fuel.drain_rate+' %/hr';}
+  txt($('regLastStart'),ls?fmtStamp(ls,false):DASH);
+  txt($('regLastStop'),lp?fmtStamp(lp,false):DASH);
+  if(!busy&&!confirmOpen){propIf($('powerSwitch'),'checked',s.running);}
+  if(s.fuel){propIf($('rateInput'),'placeholder',s.fuel.drain_rate+' %/hr');}
   var a=s.alerts||{}; setToggle(a.alerts_on!==false);
-  if(document.activeElement!==$('threshSlider')){$('threshSlider').value=a.alert_threshold||20;$('threshVal').textContent=(a.alert_threshold||20)+'%';}
+  if(document.activeElement!==$('threshSlider')){var _tv=(a.alert_threshold||20);
+    if(+$('threshSlider').value!==_tv)$('threshSlider').value=_tv;txt($('threshVal'),_tv+'%');}
   // Fuel feature enable/disable: hide the whole Fuel drawer + reflect the toggle.
   var fEnabled=s.fuel_enabled!==false;
-  $('fuelDrawer').style.display=fEnabled?'':'none';
+  styIf($('fuelDrawer'),'display',fEnabled?'':'none');
   setTog('fuelToggle',fEnabled);
   // Web push server state (vapid key + whether the server can send).
   pushApplyState(s.push||{});
@@ -2896,26 +2936,26 @@ function applyState(s){
 function setSysFaceStat(sys){
   var el=$('sysFaceStat');if(!el)return;
   var c=sys.cpu;
-  if(c==null){el.style.display='none';el.innerHTML='';return;}
-  el.style.display='';
-  el.innerHTML='<span style="color:#ffb347">CPU '+Math.round(c)+'%</span>';
+  if(c==null){styIf(el,'display','none');htmlIf(el,'');return;}
+  styIf(el,'display','');
+  htmlIf(el,'<span style="color:#ffb347">CPU '+Math.round(c)+'%</span>');
 }
-function setTog(id,on){$(id).setAttribute('aria-checked',on?'true':'false');}
-function tick(){if(!state)return;$('uptime').textContent=fmtClock(uptimeSecs());updateOdometer(liveTotalHours());renderFuel();}
+function setTog(id,on){var el=$(id),v=on?'true':'false';if(el&&el.getAttribute('aria-checked')!==v)el.setAttribute('aria-checked',v);}   /* idempotent: skip identical aria writes (#40) */
+function tick(){if(!state)return;txt($('uptime'),fmtClock(uptimeSecs()));updateOdometer(liveTotalHours());renderFuel();}
 function renderFuel(){
   var f=fuel();if(!f)return;var lvl=projectedLevel();var thr=alertCfg().alert_threshold;var running=state.running;
-  var levelEl=$('fLevel');levelEl.textContent=Math.round(lvl)+'%';
-  levelEl.style.color=lvl<=thr?'#ff5a4a':(lvl<=thr+15?'#ffb347':'#7ce0b0');
-  var faceLvl=$('fuelFaceLevel');faceLvl.textContent=Math.round(lvl)+'%';faceLvl.style.color=levelEl.style.color;
-  $('fRate').textContent=f.drain_rate.toFixed(1)+' %/hr';
-  $('fReachesLabel').textContent='REACHES '+thr+'%';
+  var col=lvl<=thr?'#ff5a4a':(lvl<=thr+15?'#ffb347':'#7ce0b0');
+  var levelEl=$('fLevel');txt(levelEl,Math.round(lvl)+'%');styIf(levelEl,'color',col);
+  var faceLvl=$('fuelFaceLevel');txt(faceLvl,Math.round(lvl)+'%');styIf(faceLvl,'color',col);
+  txt($('fRate'),f.drain_rate.toFixed(1)+' %/hr');
+  txt($('fReachesLabel'),'REACHES '+thr+'%');
   var toThr=hoursTo(thr),toEmpty=hoursTo(0);
-  $('fReaches').textContent=running?(toThr!=null?fmtDur(toThr):DASH):'PAUSED';
-  $('fEmptyIn').textContent=running?(toEmpty!=null?fmtDur(toEmpty):DASH):'PAUSED';
-  $('fLowAt').textContent=(running&&toThr!=null)?clock12(new Date(Date.now()+toThr*3600000)):(running?DASH:'STOPPED');
-  $('fEmptyAt').textContent=(running&&toEmpty!=null)?clock12(new Date(Date.now()+toEmpty*3600000)):(running?DASH:'STOPPED');
-  var tank=$('tank');$('tankFill').style.height=lvl+'%';tank.className='tank'+(lvl<=thr?' low':'');$('tankLine').style.bottom=thr+'%';
-  $('alertBanner').className='alert-banner'+((alertCfg().alerts_on!==false&&lvl<=thr)?' show':'');
+  txt($('fReaches'),running?(toThr!=null?fmtDur(toThr):DASH):'PAUSED');
+  txt($('fEmptyIn'),running?(toEmpty!=null?fmtDur(toEmpty):DASH):'PAUSED');
+  txt($('fLowAt'),(running&&toThr!=null)?clock12(new Date(Date.now()+toThr*3600000)):(running?DASH:'STOPPED'));
+  txt($('fEmptyAt'),(running&&toEmpty!=null)?clock12(new Date(Date.now()+toEmpty*3600000)):(running?DASH:'STOPPED'));
+  styIf($('tankFill'),'height',lvl+'%');clsIf($('tank'),'tank'+(lvl<=thr?' low':''));styIf($('tankLine'),'bottom',thr+'%');
+  clsIf($('alertBanner'),'alert-banner'+((alertCfg().alerts_on!==false&&lvl<=thr)?' show':''));
 }
 
 /* ---------- event log ---------- */
@@ -3144,7 +3184,7 @@ function toggleSpin(id,on,p){
   p.catch(function(){}).then(function(){if(half)half.classList.remove('loading');});
   return p;
 }
-function setToggle(on){$('alertToggle').setAttribute('aria-checked',on?'true':'false');}
+function setToggle(on){attrIf($('alertToggle'),'aria-checked',on?'true':'false');}
 function toggleAlerts(){var on=$('alertToggle').getAttribute('aria-checked')==='true';toggleSpin('alertToggle',!on,post('/api/alerts',{enabled:!on}).then(refresh));}
 $('alertToggle').addEventListener('click',toggleAlerts);
 $('alertToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleAlerts();}});
@@ -3231,7 +3271,7 @@ var WIKI='https://github.com/mrchrisneal/generatorpi/wiki';
 // learn how to enable push successfully. Built via DOM nodes (not innerHTML) so the message
 // can never inject markup, and a plain textContent fast-path for the no-link (success) cases.
 function setPushHelp(t,wikiPage){var el=$('pushHelp');
-  if(!wikiPage){el.textContent=t;return;}
+  if(!wikiPage){if(el.textContent!==t)el.textContent=t;return;}   /* idempotent: skip identical text-node rewrite (#40) */
   el.textContent=t+' ';
   var a=document.createElement('a');a.href=WIKI+'/'+wikiPage;a.target='_blank';a.rel='noopener';
   a.textContent='Setup guide \\u2197';el.appendChild(a);}
@@ -3472,16 +3512,16 @@ function netRender(){
   else if(ms>=5000){cls='vslow';state='VERY SLOW';}    // orange: very slow
   else if(ms>=1000){cls='slow';state='SLOW';}          // yellow: connected but slow
   else{cls='ok';state='ONLINE';}                        // green: under 1s
-  ind.className='sh-net '+cls;
+  clsIf(ind,'sh-net '+cls);
   var hdr=$('stickyHdr');if(hdr)hdr.classList.toggle('syncing',NET.pending>0);
-  $('nbState').textContent=state;
-  $('nbMs').textContent=(ms!=null&&!reconnecting)?(ms+' ms'):'';
+  txt($('nbState'),state);
+  txt($('nbMs'),(ms!=null&&!reconnecting)?(ms+' ms'):'');
   // Mirror the same state onto the top placard indicator so the top-of-page header shows
   // ONLINE + ms + the pending spinner too (kept in sync from the one NET source).
   var indTop=$('netIndTop');
-  if(indTop){indTop.className='ph-net '+cls;
-    $('nbStateTop').textContent=state;
-    $('nbMsTop').textContent=(ms!=null&&!reconnecting)?(ms+' ms'):'';}
+  if(indTop){clsIf(indTop,'ph-net '+cls);
+    txt($('nbStateTop'),state);
+    txt($('nbMsTop'),(ms!=null&&!reconnecting)?(ms+' ms'):'');}
   var pc=$('placard');if(pc)pc.classList.toggle('syncing',NET.pending>0);
 }
 // Reveal the sticky header once scrolled past the placard.
@@ -3659,6 +3699,27 @@ initDrawer('sysDrawer','sys',function(open){
 registerSW();
 refresh();
 setInterval(function(){if(!busy)refresh();},refreshMs);
+
+/* iOS/Safari scroll-anchor net (#40, v1.3.1). WebKit has no `overflow-anchor`, so a genuine
+   above-the-fold height change while the user is parked at the footer would jump + clip the page.
+   Chrome/Firefox anchor natively -> install ONLY where it's absent so we never double-compensate.
+   A ResizeObserver on <body> catches a height change and shifts scroll by the delta to hold the
+   visual position. SECONDARY net only: the actual #40 jump was root-caused to spurious NO-OP DOM
+   writes on the state poll (WebKit reacts to a re-write even when the value is unchanged) and fixed
+   by the idempotent render helpers (txt/clsIf/attrIf/styIf/htmlIf/propIf) above -- that jump had NO
+   height change, so this observer never fired for it. This stays as belt-and-suspenders for any
+   real future above-fold height change on WebKit. */
+(function(){
+  if(!window.ResizeObserver) return;
+  try{ if(window.CSS && CSS.supports && CSS.supports('overflow-anchor','auto')) return; }catch(e){}
+  var de=document.documentElement, lastH=de.scrollHeight;
+  new ResizeObserver(function(){
+    var h=de.scrollHeight, dh=h-lastH; lastH=h;
+    if(Math.abs(dh)<1) return;
+    var y=window.scrollY||window.pageYOffset||0;
+    if(y>0) window.scrollTo(0, y+dh);
+  }).observe(document.body);
+})();
 /* ---------- footer update check ---------- */
 /* Ask the server (which can reach GitHub; the page's CSP can't) for the latest published
    version. ONLY when a newer one exists do we reveal the footer update banner (+ pulse the
@@ -4036,8 +4097,9 @@ HTML_TEMPLATE_BODY = """
           <input type="checkbox" id="powerSwitch"
                  aria-label="Generator power — flip up to start the engine, down to stop"
                  {{ 'checked' if status.running else '' }}>
-          <div class="btn"><div class="light"></div><div class="dots"></div>
-               <div class="chars"></div><div class="shine"></div><div class="shadow"></div></div>
+          <div class="topbevel"></div>
+          <div class="btn"><div class="cap-top"></div><div class="light"></div><div class="dots"></div>
+               <div class="chars"></div><div class="shine"></div><div class="shadow"></div><div class="cap-bot"></div></div>
         </label>
       </div>
 
@@ -5846,7 +5908,7 @@ def _run_update():
 # missing/unwritable backups/ dir is a hard stop here rather than a nasty surprise mid-update.
 try:
     _ensure_backup_dir()
-except OSError as _e:
+except OSError as _e:  # pragma: no cover - import-time fail-fast; the backups dir is writable in dev/CI, so this hard-stop branch isn't reachable without a module reload against a broken filesystem
     log.critical(
         f"Cannot create or write the backups directory ({_BACKUP_DIR}): {_e}. Fix the "
         f"permissions and restart -- refusing to run without a working rollback path."
@@ -5858,7 +5920,7 @@ except OSError as _e:
 # code imported + started cleanly, so promote it to 'success'. If the new code had failed to
 # import we'd never get here and the marker would stay 'restarting' (honest -- not a false
 # success). The systemd path writes its own result from the bootstrap, so leave those alone.
-try:
+try:  # pragma: no cover - import-time-only marker promotion (runs in the fresh process after a dev self-update re-exec); no 'restarting' marker exists during tests and it can't be re-triggered without a full module reload
     if _UPDATE_RESULT.exists():
         _r = json.loads(_UPDATE_RESULT.read_text())
         if _r.get("status") == "restarting":
@@ -5884,7 +5946,7 @@ try:
                 )
             except Exception:                             # noqa: BLE001 -- log tail is best-effort
                 pass
-except Exception as _e:                                    # noqa: BLE001 -- non-fatal
+except Exception as _e:                                    # pragma: no cover - import-time-only guard around the marker-promotion block above; unreachable in tests (no marker) and not re-triggerable without a module reload
     log.warning(f"could not promote update result marker: {_e}")
 
 
@@ -6287,5 +6349,5 @@ def main():
         relay_start_stop.close()
         log.info("Shutdown complete")
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover - CLI entrypoint guard; main() itself is covered by TestMain
     main()

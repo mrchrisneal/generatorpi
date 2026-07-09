@@ -4,6 +4,46 @@ The 5 most recent GeneratorPi releases -- this short file is what the in-app upd
 on a version check. It is GENERATED from the full history in [CHANGELOG.md](CHANGELOG.md) by
 `tools/changelog.py`; do NOT edit it by hand.
 
+## 1.3.1
+Released on July 8, 2026
+
+- **FIX:** Eliminated an iOS/Safari-only scroll jump. Parked at the bottom of the page with the Fuel
+  Projection or Settings drawer open, every background poll (~every 3s) nudged the page upward and
+  clipped the footer; desktop browsers were never affected. The entire live-render path is now
+  *idempotent* — it writes to the DOM only when a value actually changed — which removes the trigger
+  completely (and does less work each poll, a small win on the Pi's single core).
+- **FIX:** Rocker switch renders correctly on older WebKit (desktop Safari / older iPadOS). The 3D top
+  cap and bottom lip use CSS 3D transforms that old WebKit flattens, which exposed the switch's black
+  background as voids above and below the red face. The exposed area is now backed by the button colour,
+  and the top gets a flat trapezoidal bevel highlight on engines that can't render the real 3D cap;
+  modern Safari, Chrome, and Firefox are visually unchanged.
+- **CHORE:** Test coverage of `generator_control.py` is now **100%**, and CI hard-fails below 98%
+  (`--cov-fail-under=98`) so coverage can never silently regress.
+- **CHORE:** The local dev launcher (`dev.sh`) byte-compiles the app before every (re)start and refuses
+  to launch on a syntax error, so a restart never leaves the dev box down on broken code.
+
+### Root-cause & debugging notes — the iOS scroll jump
+
+The jump was WebKit-specific and left almost no fingerprints. On-device instrumentation showed the
+page's total height never changed (`scrollHeight` constant), no element ever resized (even sampled once
+per animation frame), no scroll API was ever called, and the visual viewport never moved — yet `scrollY`
+still shifted by tens of pixels on each poll. That combination ruled out every "obvious" cause in turn:
+not a reflow, not the fixed/sticky headers, not the 3D switch's compositing layer, not a CSS animation,
+and not the existing scroll-anchor net (disabling it changed nothing). The real mechanism: WebKit has no
+CSS scroll anchoring, and it treats *any* DOM mutation during a poll — even a no-op, such as rewriting a
+text node to the identical string or re-setting an attribute to its current value — as a change worth a
+style/layout recalculation, and that recalculation nudges the scroll position when the user is pinned to
+the bottom of the page.
+
+We isolated it by bisecting the page's timers on a live device: clearing the ~3-second state-poll
+interval stopped the jump outright, while the 1-second clock tick (which re-renders far less) never
+triggered it — proving the culprit was the *volume* of redundant writes the state poll made every cycle,
+not any single element or value. WebKit's own Timelines recording confirmed a burst of style/layout
+invalidations on each poll with no accompanying size change. The fix routes every render-path write
+through small guarded helpers (`txt` / `clsIf` / `attrIf` / `styIf` / `htmlIf` / `propIf`) that skip the
+assignment when the value is unchanged; with nothing mutating while the generator sits idle, there is no
+recalculation for WebKit to react to. Verified clean on desktop WebKit and modern iOS (iOS 26). A small
+residual jump can still occur on very old iOS WebKit (e.g. iPadOS 16.7) — documented as a known issue.
 ## 1.3.0
 Released on July 8, 2026
 
@@ -46,14 +86,3 @@ Released on July 8, 2026
 - **Update timing**: the update log now reports how long the apply took — e.g. "Update finished in
   4.2 seconds" (or "Update failed after N seconds" on a rollback) — right before the final result,
   on both the in-process and systemd update paths.
-## 1.2.0
-
-- **Documentation**: a full GitHub wiki (installation, configuration, hardware & wiring, REST API,
-  self-updater, TLS & security, Home Assistant integration, fuel projection, troubleshooting, FAQ),
-  a slimmed README that links into it, and status badges (build, coverage, license, version).
-- **CI pipeline**: GitHub Actions runs the full test suite on every push, regenerates the update
-  manifest, and refreshes the coverage badge automatically.
-- **Updater**: preserves the executable bit on shell scripts across an update swap, and shows a
-  loading spinner beside "Loading changelog…" in the update modal.
-- Consolidates the 1.1.x self-updater hardening — reliable non-systemd restart, detailed two-stage
-  progress with a live "Restarting" view, and robust API-based restart detection — into this release.

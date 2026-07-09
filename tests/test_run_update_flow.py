@@ -171,6 +171,96 @@ class TestRunUpdateDev:
         assert "[ROLLBACK]" in "\n".join(module._update_state["log"])
 
 
+class TestRunUpdateBestEffortCleanup:
+    """The updater's cleanup/log-tail branches are best-effort: a failure there must never crash
+    the run or leave it in a bad state. These force the OSErrors those `except` blocks swallow."""
+
+    def test_revert_gate_staging_cleanup_error_is_swallowed(self, module, monkeypatch, tmp_path):
+        # REVERT at the staged gate wipes the staging dir; if that rmtree fails, swallow it and
+        # still finish the revert cleanly (nothing was applied).
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        module._UPDATE_STAGING.mkdir()                     # exists -> the revert path tries rmtree
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: "dev host")
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "revert")
+        monkeypatch.setattr(module.shutil, "rmtree",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("dir busy")))
+        _prime_state(module)
+
+        module._run_update()                               # must not raise despite rmtree failing
+
+        assert module._update_state["phase"] == "failed"
+        assert "[REVERTED]" in "\n".join(module._update_state["log"])
+
+    def test_systemd_seed_log_write_error_is_swallowed(self, module, monkeypatch, tmp_path):
+        # The systemd path seeds the shared log file before launching the bootstrap; an OSError
+        # writing it is non-fatal -- the bootstrap still launches and the run proceeds.
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: None)   # use the service
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "proceed")
+        monkeypatch.setattr(module, "_write_bootstrap_script", lambda *a, **k: str(tmp_path / "b.sh"))
+        popen = mock.Mock()
+        monkeypatch.setattr(module.subprocess, "Popen", popen)
+
+        class _BadLog:                                     # write_text raises; mkdir happens on _BACKUP_DIR
+            def write_text(self, *a, **k):
+                raise OSError("read-only fs")
+        monkeypatch.setattr(module, "_UPDATE_LOG", _BadLog())
+        _prime_state(module)
+
+        module._run_update()                               # must not raise despite the seed write failing
+
+        popen.assert_called_once()                         # bootstrap still launched
+        assert module._update_state["systemd"] is True
+        assert module._update_state["phase"] == "restarting"
+
+    def test_bootstrap_preexec_sets_niceness_and_swallows_oserror(self, module, monkeypatch, tmp_path):
+        # The systemd bootstrap is launched with a preexec_fn that lowers CPU priority (os.nice(5))
+        # in the child. Capture it and drive both its success and its OSError (swallowed) paths.
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: None)
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "proceed")
+        monkeypatch.setattr(module, "_write_bootstrap_script", lambda *a, **k: str(tmp_path / "b.sh"))
+        popen = mock.Mock()
+        monkeypatch.setattr(module.subprocess, "Popen", popen)
+        _prime_state(module)
+
+        module._run_update()
+
+        preexec = popen.call_args.kwargs["preexec_fn"]     # the child-side niceness hook
+        nice_calls = []
+        monkeypatch.setattr(module.os, "nice", lambda n: nice_calls.append(n))
+        preexec()
+        assert nice_calls == [5]                            # +5 = polite but prompt for the swap
+        monkeypatch.setattr(module.os, "nice",
+                            mock.Mock(side_effect=OSError("not permitted")))
+        preexec()                                           # OSError must be swallowed, not raised
+
+    def test_error_path_staging_cleanup_error_is_swallowed(self, module, monkeypatch, tmp_path):
+        # A hard error before any swap parks the run, then discards staging; if that discard fails,
+        # swallow it and still land in the reverted/failed state.
+        manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        module._UPDATE_STAGING.mkdir()                     # exists -> error path tries to discard it
+        monkeypatch.setattr(module, "_make_backup",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("backup failed")))
+        monkeypatch.setattr(module, "_service_skip_reason", lambda: "dev host")
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "revert")
+        monkeypatch.setattr(module.shutil, "rmtree",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("cannot remove")))
+        rollback = mock.Mock()
+        monkeypatch.setattr(module, "_rollback", rollback)
+        _prime_state(module)
+
+        module._run_update()                               # must not raise despite cleanup failing
+
+        rollback.assert_not_called()                       # nothing swapped -> nothing to roll back
+        assert module._update_state["phase"] == "failed"
+        assert "backup failed" in module._update_state["error"]
+
+
 class TestRunUpdateDecisionAndErrors:
     def test_revert_at_staged_gate_applies_nothing(self, module, monkeypatch, tmp_path):
         manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}

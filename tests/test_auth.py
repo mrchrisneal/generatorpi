@@ -119,6 +119,39 @@ class TestAuthCache:
             assert isinstance(k, bytes)
             assert b"SuperSecretPw!" not in k
 
+    def test_full_cache_purges_expired_before_insert(self, module, monkeypatch):
+        # At the hard cap, a new SUCCESS first evicts EXPIRED entries (memory-bound). scrypt is
+        # stubbed True so the test isolates the eviction logic, not the (slow) hashing.
+        module._auth_cache.clear()
+        monkeypatch.setattr(module, "check_password_hash", lambda h, p: True)
+        module.AUTH_USERS["chris"] = module._DUMMY_HASH
+        now = module.time.time()
+        # Fill exactly to the cap with entries whose expiry is already in the past.
+        for i in range(module._AUTH_CACHE_MAX):
+            module._auth_cache[b"stale-%d" % i] = now - 1.0
+        assert len(module._auth_cache) == module._AUTH_CACHE_MAX
+        assert module.check_auth("chris", "pw") is True
+        # Expired entries were purged (len fell below the cap, so no hard-reset), and only the
+        # single fresh success remains -- the opaque digest key, not any of the stale sentinels.
+        assert len(module._auth_cache) == 1
+        assert all(not k.startswith(b"stale-") for k in module._auth_cache)
+
+    def test_full_cache_of_live_entries_is_hard_reset(self, module, monkeypatch):
+        # If the cache is full of NON-expired entries, purging frees nothing, so it is hard-reset
+        # (cleared) rather than growing unbounded -- the second guard that bounds memory even under
+        # sustained distinct-credential load.
+        module._auth_cache.clear()
+        monkeypatch.setattr(module, "check_password_hash", lambda h, p: True)
+        module.AUTH_USERS["chris"] = module._DUMMY_HASH
+        far_future = module.time.time() + 10_000.0
+        for i in range(module._AUTH_CACHE_MAX):
+            module._auth_cache[b"live-%d" % i] = far_future
+        assert len(module._auth_cache) == module._AUTH_CACHE_MAX
+        assert module.check_auth("chris", "pw") is True
+        # Nothing was expired, so the whole map was cleared, then the new success added.
+        assert len(module._auth_cache) == 1
+        assert all(not k.startswith(b"live-") for k in module._auth_cache)
+
 
 # ---------------------------------------------------------------------------
 # check_api_key -- exercised through a request context

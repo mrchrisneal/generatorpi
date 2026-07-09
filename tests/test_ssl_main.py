@@ -1,8 +1,10 @@
 # test_ssl_main.py -- SSL cert helpers (_cert_expires_within, ensure_ssl_cert) and
 # the main() entry point. subprocess.run is always mocked, so openssl is never
 # invoked and no real certs are generated. _serve is mocked so no server binds.
+import errno
 import subprocess
 import threading
+import time as _t
 from unittest import mock
 
 import pytest
@@ -291,3 +293,98 @@ class TestServeAndRestart:
         assert done.wait(2), "restart thread never ran"
         assert calls == ["close", "execv"], f"socket must close BEFORE execv, got {calls}"
         monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+
+    def test_restart_cheroot_stop_exception_is_logged_and_defers(self, module, monkeypatch):
+        # If cheroot's stop() raises, the restart thread must SWALLOW it (logged as a warning) and
+        # still NOT exec in this thread -- the main thread owns the exec after serve() returns.
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)
+        fake_srv = mock.Mock(spec=["stop", "socket"])   # has .stop -> cheroot branch
+        fake_srv.stop.side_effect = RuntimeError("stop boom")
+        monkeypatch.setattr(module, "_WSGI_SERVER", fake_srv)
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+        execv = mock.Mock()
+        monkeypatch.setattr(module.os, "execv", execv)
+        warnings = []
+        monkeypatch.setattr(module.log, "warning", lambda m, *a, **k: warnings.append(m))
+        module._schedule_process_restart(delay=0)
+        for _ in range(400):                            # wait for the restart thread's warning
+            if warnings:
+                break
+            _t.sleep(0.005)
+        assert any("cheroot stop()" in w for w in warnings), warnings
+        assert module._RESTART_REQUESTED is True        # flag still set before the failed stop()
+        execv.assert_not_called()                       # never exec in this thread on the cheroot path
+        monkeypatch.setattr(module, "_RESTART_REQUESTED", False)   # isolation
+
+
+class TestServeWerkzeugFallback:
+    """The proven pre-cheroot werkzeug server (`_serve_werkzeug`) used when cheroot is absent.
+    make_server is always mocked so nothing binds a real port; serve_forever returns immediately
+    so the call doesn't block. Covers the bind-retry loop, the fail-fast on non-address errors,
+    and the retries-exhausted surface."""
+
+    def _fake_server(self):
+        srv = mock.Mock(socket=mock.Mock())
+        srv.serve_forever.return_value = None           # returns at once instead of blocking
+        return srv
+
+    def test_binds_serves_then_clears_handle(self, module, monkeypatch):
+        import werkzeug.serving
+        srv = self._fake_server()
+        monkeypatch.setattr(werkzeug.serving, "make_server", mock.Mock(return_value=srv))
+        module._serve_werkzeug("127.0.0.1", 5999)
+        srv.serve_forever.assert_called_once()
+        srv.socket.set_inheritable.assert_called_once_with(False)   # drop FD across a future exec
+        assert module._WSGI_SERVER is None              # handle cleared in the finally
+
+    def test_retries_eaddrinuse_then_binds(self, module, monkeypatch):
+        import werkzeug.serving
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+        srv = self._fake_server()
+        attempts = []
+
+        def make(*a, **k):
+            attempts.append(1)
+            if len(attempts) < 3:                       # first two binds fail on a draining port
+                raise OSError(errno.EADDRINUSE, "address in use")
+            return srv
+        monkeypatch.setattr(werkzeug.serving, "make_server", make)
+        module._serve_werkzeug("127.0.0.1", 5999)
+        assert len(attempts) == 3                        # rode out two EADDRINUSE, then bound
+        srv.serve_forever.assert_called_once()
+
+    def test_non_address_oserror_surfaces_immediately(self, module, monkeypatch):
+        # A permission/cert error (not EADDRINUSE/EADDRNOTAVAIL) must NOT be buried under 10 retries.
+        import werkzeug.serving
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+        attempts = []
+
+        def make(*a, **k):
+            attempts.append(1)
+            raise OSError(errno.EACCES, "permission denied")
+        monkeypatch.setattr(werkzeug.serving, "make_server", make)
+        with pytest.raises(OSError) as exc:
+            module._serve_werkzeug("127.0.0.1", 5999)
+        assert exc.value.errno == errno.EACCES
+        assert len(attempts) == 1                        # surfaced on the first try, no retries
+
+    def test_retries_exhausted_raises_last_error(self, module, monkeypatch):
+        import werkzeug.serving
+        monkeypatch.setattr(module.time, "sleep", lambda s: None)
+
+        def make(*a, **k):
+            raise OSError(errno.EADDRINUSE, "still in use")
+        monkeypatch.setattr(werkzeug.serving, "make_server", make)
+        with pytest.raises(OSError) as exc:
+            module._serve_werkzeug("127.0.0.1", 5999)
+        assert exc.value.errno == errno.EADDRINUSE       # the for/else surfaces the last bind error
+
+    def test_set_inheritable_failure_is_swallowed(self, module, monkeypatch):
+        # set_inheritable is best-effort (CLOEXEC-on-exec is the real guarantee); a failure here
+        # must not stop the server from coming up.
+        import werkzeug.serving
+        srv = self._fake_server()
+        srv.socket.set_inheritable.side_effect = OSError("cannot set")
+        monkeypatch.setattr(werkzeug.serving, "make_server", mock.Mock(return_value=srv))
+        module._serve_werkzeug("127.0.0.1", 5999)        # must not raise
+        srv.serve_forever.assert_called_once()

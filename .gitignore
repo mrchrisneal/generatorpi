@@ -18,6 +18,10 @@ scratchpads/
 # Self-updater runtime dirs (never committed): rollback backups + download staging.
 backups/
 .update_staging/
+# Local dev/debug artifacts (never committed): Playwright MCP screenshot output + any
+# exported browser dev-tools timeline recordings used while debugging the UI.
+.playwright-mcp/
+*-recording*.json
 
 # tools/: ignore the whole directory by DEFAULT so local/dev-only tools (e.g. the gitignored
 # PII/secret scanner, scratch scripts) never get committed to the PUBLIC repo, then WHITELIST

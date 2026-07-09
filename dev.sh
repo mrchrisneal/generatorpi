@@ -126,6 +126,20 @@ port_listening() {
     ss -tlnH "( sport = :${PORT} )" 2>/dev/null | grep -q .
 }
 
+# Byte-compile the app BEFORE we (re)start it, so a syntax error is caught here -- fail-closed
+# -- instead of after the harness launches (or, on restart, after we've already stopped the old
+# server, which would leave the dev box with NOTHING running on broken code). py_compile is fast
+# (one file) and does exactly what the manual pre-restart check did, now automatic.
+preflight_compile() {
+    local out
+    if ! out="$("$PY" -m py_compile generator_control.py 2>&1)"; then
+        echo "" >&2
+        echo "dev.sh: generator_control.py FAILED to compile -- NOT (re)starting:" >&2
+        echo "$out" >&2
+        exit 1
+    fi
+}
+
 # -----------------------------------------------------------------------------
 # Subcommands
 # -----------------------------------------------------------------------------
@@ -134,6 +148,7 @@ cmd_start() {
     # Preflight: the interpreter + harness must exist (fail-closed with a clear message).
     [ -x "$PY" ] || die "missing venv interpreter: $PY (create it, e.g. python3 -m venv .venv)"
     [ -f "$HARNESS" ] || die "missing harness: $HARNESS"
+    preflight_compile          # refuse to launch broken code (auto byte-compile check)
 
     # Refuse to double-start on the same port (belt: pidfile/pgrep AND the listen socket).
     local existing
@@ -225,6 +240,9 @@ cmd_stop() {
 }
 
 cmd_restart() {
+    # Validate the code compiles BEFORE we stop the running server, so a syntax error never
+    # leaves the dev box down on broken code (cmd_start re-checks, but this is the safe gate).
+    preflight_compile
     # The "find the existing process and kill it, then relaunch" flow.
     cmd_stop
     cmd_start
