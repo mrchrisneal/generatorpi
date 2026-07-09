@@ -278,33 +278,33 @@ class TestLogTailReaders:
 class TestSystemMetricSoftFails:
     def test_read_cpu_times_none_when_not_cpu_line(self, module, monkeypatch):
         monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO("intr 1 2 3\n"))
-        assert module._read_cpu_times() is None
+        assert module.sysmon._read_cpu_times() is None
 
     def test_cpu_pct_seeds_then_computes_delta(self, module, monkeypatch):
         seq = [(1000, 900), (1100, 950)]
-        monkeypatch.setattr(module, "_read_cpu_times", lambda: seq.pop(0))
+        monkeypatch.setattr(module.sysmon, "_read_cpu_times", lambda: seq.pop(0))
         monkeypatch.setattr(module, "_prev_cpu", None)
-        assert module._cpu_pct() is None                    # first call only seeds the baseline
-        assert module._cpu_pct() == 50.0                    # second call yields the delta
+        assert module.sysmon._cpu_pct() is None                    # first call only seeds the baseline
+        assert module.sysmon._cpu_pct() == 50.0                    # second call yields the delta
 
     def test_read_mem_pct_none_without_available(self, module, monkeypatch):
         fake = "MemTotal: 1000 kB\nMemFree: 100 kB\n"       # no MemAvailable line
         monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO(fake))
-        assert module._read_mem_pct() is None
+        assert module.sysmon._read_mem_pct() is None
 
     def test_read_mem_pct_none_on_parse_error(self, module, monkeypatch):
         fake = "MemTotal: notanumber kB\nMemAvailable: 5 kB\n"
         monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO(fake))
-        assert module._read_mem_pct() is None
+        assert module.sysmon._read_mem_pct() is None
 
     def test_auto_temp_path_returns_cached(self, module, monkeypatch):
         monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "")
-        monkeypatch.setattr(module, "_temp_path_cache", "/cached/zone/temp")
-        assert module._auto_temp_path() == "/cached/zone/temp"
+        monkeypatch.setattr(module.sysmon, "_temp_path_cache", "/cached/zone/temp")
+        assert module.sysmon._auto_temp_path() == "/cached/zone/temp"
 
     def test_auto_temp_path_skips_unreadable_zone(self, module, monkeypatch):
         monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "")
-        monkeypatch.setattr(module, "_temp_path_cache", None)
+        monkeypatch.setattr(module.sysmon, "_temp_path_cache", None)
         import glob
         monkeypatch.setattr(glob, "glob", lambda p: ["/sys/class/thermal/thermal_zone0/type"])
 
@@ -312,36 +312,36 @@ class TestSystemMetricSoftFails:
             raise OSError("permission denied")              # type file unreadable -> skip zone
         monkeypatch.setattr(builtins, "open", bad_open)
         # No cpu-like zone matched -> falls back to the first zone's temp file.
-        assert module._auto_temp_path() == "/sys/class/thermal/thermal_zone0/temp"
+        assert module.sysmon._auto_temp_path() == "/sys/class/thermal/thermal_zone0/temp"
 
     def test_auto_temp_path_glob_error_falls_back_to_default(self, module, monkeypatch):
         monkeypatch.setitem(module.CONFIG, "SYSTEM_TEMP_PATH", "")
-        monkeypatch.setattr(module, "_temp_path_cache", None)
+        monkeypatch.setattr(module.sysmon, "_temp_path_cache", None)
         import glob
 
         def boom(p):
             raise RuntimeError("sysfs exploded")
         monkeypatch.setattr(glob, "glob", boom)
-        assert module._auto_temp_path() == "/sys/class/thermal/thermal_zone0/temp"
+        assert module.sysmon._auto_temp_path() == "/sys/class/thermal/thermal_zone0/temp"
 
     def test_read_wifi_none_pair_when_iface_not_found(self, module, monkeypatch):
         monkeypatch.setitem(module.CONFIG, "SYSTEM_WIFI_IFACE", "wlan9")
         fake = ("hdr1\nhdr2\n"
                 " wlan0: 0000   40.  -70.  -256   0 0 0\n")
         monkeypatch.setattr(builtins, "open", lambda *a, **k: io.StringIO(fake))
-        assert module._read_wifi() == (None, None)          # named iface absent -> soft null
+        assert module.sysmon._read_wifi() == (None, None)          # named iface absent -> soft null
 
     def test_vcgencmd_none_on_nonzero_return(self, module, monkeypatch):
         import subprocess
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **k: mock.Mock(returncode=1, stdout="x"))
-        assert module._vcgencmd("get_throttled") is None
+        assert module.sysmon._vcgencmd("get_throttled") is None
 
     def test_vcgencmd_strips_stdout_on_success(self, module, monkeypatch):
         import subprocess
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **k: mock.Mock(returncode=0, stdout=" throttled=0x0 \n"))
-        assert module._vcgencmd("get_throttled") == "throttled=0x0"
+        assert module.sysmon._vcgencmd("get_throttled") == "throttled=0x0"
 
 
 class TestSystemMonitorLoop:
@@ -360,7 +360,7 @@ class TestSystemMonitorLoop:
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("thermal read blew up")
-        monkeypatch.setattr(module, "_sample_system", sample)
+        monkeypatch.setattr(module.sysmon, "_sample_system", sample)
         module.system_monitor_loop()
         assert calls["n"] == 2                              # both iterations ran; error swallowed
 
