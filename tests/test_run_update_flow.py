@@ -893,7 +893,7 @@ class TestUpdateCheckLoop:
         events = []
         monkeypatch.setattr(module, "record_event", lambda *a, **k: events.append(a))
         pushes = []
-        monkeypatch.setattr(module, "send_push_async", lambda *a, **k: pushes.append(a))
+        monkeypatch.setattr(module.store, "send_push_async", lambda *a, **k: pushes.append(a))
         module.update_check_loop()
         assert waits == [30, 3600]                         # 30s warm-up, then hourly
         assert len(pushes) == 1 and len(events) == 1       # exactly one announcement

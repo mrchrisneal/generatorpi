@@ -348,126 +348,13 @@ from . import relay
 from .relay import relay_lock, relay_start_stop, press_button   # noqa: F401  (re-exported for control + tests)
 
 # ============================================================================
-# GENERATOR CONTROL LOGIC
+# GENERATOR CONTROL LOGIC  (peeled into genpi/control.py -- roadmap #59, Stage 6)
 # ============================================================================
-def start_generator():
-    """Start the generator with PM9400E one-touch sequence:
-    1. Press once to prime
-    2. Wait for prime delay
-    3. Press again to start
-    4. Repeat if retries configured
-
-    The relay_lock prevents overlapping sequences if multiple requests arrive.
-    """
-    # Acquire relay lock (non-blocking) -- reject if a sequence is already running
-    if not relay_lock.acquire(blocking=False):
-        log.warning("Start rejected: relay sequence already in progress")
-        # Record the rejection so the event log shows the attempt was refused.
-        record_event("start_rejected", "relay sequence already in progress")
-        return {"success": False, "message": "A relay sequence is already in progress"}
-
-    try:
-        with state_lock:
-            if generator_state["running"]:
-                # Reject a start when we already believe the generator is running.
-                record_event("start_rejected", "generator already marked as running")
-                return {"success": False, "message": "Generator already marked as running"}
-            generator_state["last_command"] = "start"
-            generator_state["start_attempts"] = 0
-
-        max_retries = CONFIG["MAX_START_RETRIES"]
-        prime_delay = CONFIG["PRIME_DELAY"]
-        retry_delay = CONFIG["RETRY_DELAY"]
-
-        log.info("Initiating generator start sequence")
-        # Durable record that a start sequence began (paired with start_complete).
-        record_event("start", "Start sequence initiated")
-
-        for attempt in range(1, max_retries + 1):
-            with state_lock:
-                generator_state["start_attempts"] = attempt
-                generator_state["message"] = f"Start attempt {attempt}/{max_retries}"
-
-            log.info(f"Start attempt {attempt}/{max_retries}")
-
-            # PM9400E sequence: prime press
-            log.info("Pressing button to prime")
-            press_button()
-
-            # Wait for prime/auto-choke
-            log.info(f"Waiting {prime_delay}s for prime...")
-            time.sleep(prime_delay)
-
-            # PM9400E sequence: start press
-            log.info("Pressing button to start")
-            press_button()
-
-            with state_lock:
-                generator_state["last_start_time"] = datetime.now().isoformat()
-
-            log.info(f"Start sequence {attempt} completed")
-
-            if attempt < max_retries:
-                log.info(f"Waiting {retry_delay}s before next attempt...")
-                time.sleep(retry_delay)
-
-        # Mark as running (assume success -- no auto-detect available). The
-        # transition helper stamps current_run_started_at so the uptime/odometer
-        # start ticking from now.
-        with state_lock:
-            _apply_running_transition_locked(True)
-            generator_state["message"] = (
-                f"Start sequence completed ({max_retries} attempt(s)). "
-                "Verify generator manually."
-            )
-
-        log.info("Start sequence finished")
-        # Durable record that the start sequence completed (paired with the
-        # "start" initiate event above).
-        record_event("start_complete", f"Start sequence completed ({max_retries} attempt(s))")
-        # Notify subscribed devices (off-thread; no-op if push unavailable).
-        send_push_async("Generator started", "Start sequence completed. Verify the unit is running.", tag="state")
-        return {
-            "success": True,
-            "message": (
-                f"Start sequence completed ({max_retries} attempt(s)). "
-                "Please verify generator is running."
-            ),
-        }
-    finally:
-        relay_lock.release()
-
-
-def stop_generator():
-    """Stop the generator by simulating stop button press.
-
-    The relay_lock prevents overlapping with a start sequence.
-    """
-    # Acquire relay lock (non-blocking) -- reject if a sequence is already running
-    if not relay_lock.acquire(blocking=False):
-        log.warning("Stop rejected: relay sequence already in progress")
-        return {"success": False, "message": "A relay sequence is already in progress"}
-
-    try:
-        log.info("Stopping generator")
-
-        # Press the button first, then update state (so state reflects reality)
-        press_button()
-
-        with state_lock:
-            generator_state["last_command"] = "stop"
-            # Transition banks this run's elapsed time into total_run_hours + persists.
-            _apply_running_transition_locked(False)
-            generator_state["last_stop_time"] = datetime.now().isoformat()
-            generator_state["message"] = "Stop command sent"
-
-        # Durable record of the stop command.
-        record_event("stop", "Stop command sent")
-        send_push_async("Generator stopped", "Stop command sent.", tag="state")
-        log.info("Stop button pressed")
-        return {"success": True, "message": "Stop button pressed. Generator should be stopping."}
-    finally:
-        relay_lock.release()
+# The generator start/stop sequences now live in genpi/control.py (LAYER 4: relay + state + store +
+# config + logg). They drive the relay ONLY through press_button and are reachable ONLY from the
+# authenticated /api/start | /api/stop routes below. Re-exported for those routes + the tests.
+from . import control
+from .control import start_generator, stop_generator   # noqa: F401  (re-exported for the routes below + tests)
 
 # ============================================================================
 # FUEL PROJECTION MODEL (linear drain: level = fill_level - drain_rate * run-hours)
@@ -531,7 +418,7 @@ def evaluate_low_fuel():
     # Send OUTSIDE the lock (send_push_async only spawns a thread, but keep the pattern).
     if do_push:
         record_event("fuel", f"Low fuel alert: projected level ~{msg_level}%")
-        send_push_async(
+        store.send_push_async(
             "Low fuel", f"Projected level ~{msg_level}% - refuel soon.", tag="lowfuel"
         )
         return "push"
@@ -1156,7 +1043,7 @@ def api_set_running():
     record_event("set_running", f"State manually set to {'RUNNING' if running else 'STOPPED'}")
     # Notify subscribed devices of the manual state change (distinct copy from a real
     # start/stop so it's clear no engine action occurred).
-    send_push_async(
+    store.send_push_async(
         "Marked as running" if running else "Marked as stopped",
         "Tracked state was set manually (no relay action).",
         tag="state",
@@ -2779,7 +2666,7 @@ def update_check_loop():
             pushed = True                             # exactly one update push per restart
             log.info(f"Update available: v{latest} (installed v{APP_VERSION})")
             record_event("update", f"Update available: v{latest} (installed v{APP_VERSION})")
-            send_push_async(
+            store.send_push_async(
                 "Update available",
                 f"GeneratorPi v{latest} is available (you have v{APP_VERSION}).",
                 tag="update",
@@ -2970,7 +2857,7 @@ def api_push_test():
         return jsonify({"success": False, "message": "push not available on server"}), 503
     if subscription_count() == 0:
         return jsonify({"success": False, "message": "no subscriptions"}), 409
-    send_push_async("Test notification", "Push notifications are working.", tag="test")
+    store.send_push_async("Test notification", "Push notifications are working.", tag="test")
     record_event("push", "Test notification sent")
     log.info(f"Test push sent by {caller_identity()}")
     return jsonify({"success": True})

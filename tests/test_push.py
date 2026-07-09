@@ -328,7 +328,7 @@ class TestPushTestEndpoint:
         # Available + >=1 subscription -> 200, and it fires send_push_async. Patch the
         # async sender so NOTHING real is dispatched; just record that it was invoked.
         calls = []
-        monkeypatch.setattr(module, "send_push_async",
+        monkeypatch.setattr(module.store, "send_push_async",
                             lambda *a, **k: calls.append((a, k)))
         module.add_subscription("ep-1", "p", "a")
         resp = client.post(_q("/api/push/test"))
@@ -647,7 +647,7 @@ class TestPushTriggers:
     def record_async(self, module, monkeypatch):
         """Patch send_push_async to record its calls without dispatching anything."""
         calls = []
-        monkeypatch.setattr(module, "send_push_async",
+        monkeypatch.setattr(module.store, "send_push_async",
                             lambda *a, **k: calls.append((a, k)))
         return calls
 

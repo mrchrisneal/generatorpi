@@ -46,7 +46,7 @@ def tmp_store(module, tmp_path):
 def record_async(module, monkeypatch):
     """Patch send_push_async to record calls instead of dispatching a real push."""
     calls = []
-    monkeypatch.setattr(module, "send_push_async",
+    monkeypatch.setattr(module.store, "send_push_async",
                         lambda *a, **k: calls.append((a, k)))
     return calls
 
