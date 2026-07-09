@@ -43,14 +43,20 @@ def render(keep):
     output is shaped for that view:
       * NO preamble/header -- a "do-not-edit" notice would just render as noise at the top of the
         modal, so the file starts straight at the newest release heading.
-      * Release sections are separated by a blank line, a '---' rule, and a blank line, so each
-        release is visually delimited from the previous one.
+      * Release sections are separated by a blank line, a '---' rule, and a blank line. CHANGELOG.md
+        now ALSO carries that rule between its entries, so a section split out of it ends with a
+        trailing '---'; we STRIP that before re-joining, otherwise RECENT would show a DOUBLED rule.
       * Bullet/paragraph text is copied VERBATIM. CHANGELOG.md must therefore keep each bullet (and
         each prose paragraph) on a SINGLE line with NO hard wrapping: the updater applies its own
         word-wrap, and an embedded newline forces a premature break that mangles the formatting."""
     _, sections = split_sections(FULL.read_text())
-    top = sections[:keep]
-    return "\n\n---\n\n".join(s.rstrip() for s in top) + "\n"
+    cleaned = []
+    for s in sections[:keep]:
+        body = s.rstrip().split("\n")
+        if body and body[-1].strip() == "---":       # drop the inter-entry rule carried in from CHANGELOG.md
+            body.pop()
+        cleaned.append("\n".join(body).rstrip())
+    return "\n\n---\n\n".join(cleaned) + "\n"
 
 
 def main():

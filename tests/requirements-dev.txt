@@ -5,6 +5,10 @@ flask
 werkzeug
 pytest
 pytest-cov
-# Web Push: the send path is mocked in tests, but the import must resolve so the
-# push code + VAPID key generation are importable/exercised.
-pywebpush
+# Web Push: the network POST is mocked in tests, but these imports must resolve so the
+# real VAPID signing + aes128gcm encryption path (py-vapid + http-ece) and the send code are
+# importable/exercised. requests is mocked at module.requests.post. (We use these directly
+# rather than the pywebpush wrapper, which has no Raspberry Pi OS apt package.)
+py-vapid
+http-ece
+requests

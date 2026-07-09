@@ -27,6 +27,7 @@ import threading
 import collections
 import subprocess
 import hmac
+import base64
 import json
 import math
 import ipaddress
@@ -36,6 +37,7 @@ import ssl               # TLS version floor on the cheroot server's SSL adapter
 import sqlite3
 import re              # manifest version charset validation (self-updater)
 import hashlib         # SHA-256 verification of downloaded release files (self-updater)
+import importlib.util  # find_spec: check a manifest-declared dep is importable (no side-effect import)
 import shutil          # staging dir management for the self-updater
 import stat            # preserve file permission bits (exec bit) across an update swap
 import shlex           # safe quoting when generating the swap/restart shell script
@@ -49,17 +51,28 @@ from datetime import datetime
 from pathlib import Path
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# Web Push is OPTIONAL: the controller must still run on a Pi that doesn't have
-# pywebpush installed (push simply becomes unavailable server-side). Import is guarded
-# so a missing dependency degrades gracefully instead of crashing at startup.
+# Web Push is OPTIONAL: the controller must still run on a Pi without the push libraries
+# (push simply becomes unavailable server-side). We send pushes OURSELVES using three small
+# libraries -- py-vapid (signs the VAPID JWT auth header), http-ece (RFC 8188 "aes128gcm"
+# payload encryption), and requests (the HTTPS POST to the push service). All three are
+# packaged for Raspberry Pi OS as python3-py-vapid / python3-http-ece / python3-requests, so
+# the device stays 100% apt-only (no pip, no source builds). This deliberately AVOIDS the
+# `pywebpush` wrapper, which is NOT available as an apt package on Raspberry Pi OS. The import
+# is guarded so a missing dependency degrades gracefully instead of crashing at startup, and
+# push_status() reports EXACTLY which piece is missing so the UI can say why push is off.
 try:
-    from pywebpush import webpush, WebPushException
     from py_vapid import Vapid
     from py_vapid.utils import b64urlencode as _vapid_b64
     from cryptography.hazmat.primitives import serialization as _crypto_serialization
+    from cryptography.hazmat.primitives.asymmetric import ec as _crypto_ec
+    import http_ece
+    import requests
     _PUSH_AVAILABLE = True
-except Exception:  # pragma: no cover - import-time only; push libs are present in dev/CI, so this ImportError fallback fires only on a Pi missing pywebpush and can't be re-triggered without a module reload
+    _PUSH_LIB_HINT = ""
+except Exception:  # pragma: no cover - import-time only; push libs are present in dev/CI, so this fallback fires only on a device missing python3-py-vapid/http-ece/requests and can't be re-triggered without a module reload
     _PUSH_AVAILABLE = False
+    # Operator-facing hint (surfaced in the UI) naming exactly what to install.
+    _PUSH_LIB_HINT = "python3-py-vapid, python3-http-ece and python3-requests"
 
 # ============================================================================
 # CONFIGURATION
@@ -276,7 +289,7 @@ def parse_env_file():
 
     # Auto-provision a VAPID keypair for Web Push, same pattern as the API key: when
     # push support is installed and no private key is set yet, generate a keypair and
-    # persist it here. If pywebpush/crypto isn't installed, this is skipped entirely and
+    # persist it here. If the push libraries aren't installed, this is skipped entirely and
     # push stays unavailable (the app still runs fine).
     if _PUSH_AVAILABLE and not CONFIG["VAPID_PRIVATE_KEY"]:
         try:
@@ -726,7 +739,8 @@ def remove_subscription(endpoint):
 
 
 def get_subscriptions():
-    """Return all push subscriptions as pywebpush-shaped dicts. Never raises."""
+    """Return all push subscriptions as browser PushSubscription dicts (endpoint +
+    keys{p256dh, auth}) -- the shape the send path encrypts + POSTs to. Never raises."""
     try:
         with _event_lock:
             if _event_conn is None:
@@ -755,53 +769,153 @@ def subscription_count():
         return 0
 
 
+# VAPID key validity is cached BY KEY VALUE so push_status() -- called on every state poll
+# -- only pays the parse cost when the configured key actually changes (normally once, at
+# startup). A blank key short-circuits before any crypto.
+_vapid_valid_cache = {"key": None, "ok": False}
+
+
+def _vapid_key_valid():
+    """True iff the configured VAPID private key parses via Vapid.from_raw. Result cached by
+    key value so the poll path never re-runs the parse for an unchanged key."""
+    priv = CONFIG.get("VAPID_PRIVATE_KEY") or ""
+    if not priv:
+        return False
+    if _vapid_valid_cache["key"] != priv:
+        _vapid_valid_cache["key"] = priv
+        try:
+            Vapid.from_raw(priv.encode("utf-8"))
+            _vapid_valid_cache["ok"] = True
+        except Exception:
+            _vapid_valid_cache["ok"] = False
+    return _vapid_valid_cache["ok"]
+
+
+def push_status():
+    """Explain whether Web Push can be sent AND, if not, exactly why -- so the UI can show an
+    accurate cause instead of a one-size-fits-all "no VAPID keys" message. Returns
+    (supported: bool, reason: str) where reason is one of:
+      * "ok"              -- libraries present and a valid VAPID keypair is configured.
+      * "library_missing" -- the py-vapid / http-ece / requests libraries aren't installed.
+      * "no_keys"         -- libraries present but no VAPID keypair (auto-gen skipped/failed,
+                             e.g. the settings file wasn't writable at first start).
+      * "invalid_keys"    -- a VAPID key is configured but does not parse (e.g. hand-edited)."""
+    if not _PUSH_AVAILABLE:
+        return False, "library_missing"
+    if not CONFIG.get("VAPID_PRIVATE_KEY") or not CONFIG.get("VAPID_PUBLIC_KEY"):
+        return False, "no_keys"
+    if not _vapid_key_valid():
+        return False, "invalid_keys"
+    return True, "ok"
+
+
 def push_available():
-    """True when Web Push can actually be sent: the library is importable AND a VAPID
-    private key is configured. Used by the UI + guards on the send path."""
+    """True when Web Push can be ATTEMPTED: the libraries are importable AND a VAPID private
+    key is PRESENT. Deliberately a cheap presence check, NOT full key validity -- the send
+    path (send_push) still guards Vapid.from_raw and fails gracefully on a malformed key, and
+    push_status() does the full validity check to drive the UI's "invalid_keys" reason. Guards
+    send_push / send_push_async and the /api/push/test endpoint."""
     return bool(_PUSH_AVAILABLE and CONFIG.get("VAPID_PRIVATE_KEY"))
+
+
+def _b64url_decode(value):
+    """Decode a base64url value that may be missing '=' padding -- browser subscription keys
+    (p256dh / auth) are sent unpadded. Re-pads to a multiple of 4, then decodes to bytes."""
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    return base64.urlsafe_b64decode(value + b"=" * (-len(value) % 4))
+
+
+# How long a push service should hold a message for a briefly-OFFLINE device before dropping
+# it. A bounded TTL (vs the old drop-immediately 0) means a low-fuel / start / stop alert still
+# arrives after a short dead zone, without delivering day-stale state much later.
+PUSH_TTL_SECONDS = 3600   # 1 hour
+
+
+def _deliver_push(sub, payload, vapid, subject):
+    """Encrypt `payload` (bytes) for ONE subscription and POST it to its push service,
+    returning the HTTP status code. Reimplements what pywebpush.webpush() did, using the
+    apt-available primitives directly (so the Pi needs no pip):
+
+      * A FRESH ephemeral P-256 sender key is generated per message (never reused).
+      * http_ece.encrypt(..., version="aes128gcm") performs RFC 8188 payload encryption from
+        that sender key + the subscription's p256dh (receiver key) and auth secret. In
+        aes128gcm the salt and the sender public key are carried INSIDE the body, so no
+        Crypto-Key / Encryption headers are required -- only Content-Encoding: aes128gcm.
+      * vapid.sign(claims) yields the "Authorization: vapid t=<jwt>,k=<pubkey>" header, with
+        aud = the push endpoint's ORIGIN and a 12-hour expiry (well within the spec's 24h cap).
+
+    Raises on a transport error (requests) -- the caller handles/logs it per subscription."""
+    keys = sub.get("keys") or {}
+    receiver_key = _b64url_decode(keys.get("p256dh", ""))   # the browser's public key (raw point)
+    auth_key = _b64url_decode(keys.get("auth", ""))         # the browser's auth secret
+    # One-time ECDH sender key -> forward secrecy; http_ece embeds its public half in the body.
+    server_key = _crypto_ec.generate_private_key(_crypto_ec.SECP256R1())
+    encrypted = http_ece.encrypt(
+        payload,
+        private_key=server_key,
+        dh=receiver_key,
+        auth_secret=auth_key,
+        version="aes128gcm",
+    )
+    endpoint = sub["endpoint"]
+    u = urlparse(endpoint)
+    # A fresh signed JWT per send: aud MUST be the push service origin; exp is bounded.
+    claims = {
+        "sub": subject,
+        "aud": f"{u.scheme}://{u.netloc}",
+        "exp": int(time.time()) + 12 * 60 * 60,
+    }
+    headers = dict(vapid.sign(claims))
+    headers["content-encoding"] = "aes128gcm"
+    headers["ttl"] = str(PUSH_TTL_SECONDS)
+    # timeout=(connect, read): a black-hole or slow push endpoint must never hang the daemon
+    # send thread forever -- bound both phases so a stuck service fails fast and we move on.
+    # allow_redirects=False (defense in depth): a real push service answers the POST DIRECTLY
+    # (201) and never redirects. Following a 3xx would let an authenticated subscriber register
+    # a redirector endpoint that bounces this POST to an internal address (127.0.0.1 /
+    # 169.254.169.254), side-stepping the IP-literal SSRF check on /api/push/subscribe. A
+    # redirect is therefore treated as a failed send (its 3xx status is logged, never pruned).
+    resp = requests.post(
+        endpoint, data=encrypted, headers=headers, timeout=(5, 10), allow_redirects=False
+    )
+    return resp.status_code
 
 
 def send_push(title, body, tag=None):
     """Send a Web Push notification to every subscribed browser.
 
-    MUST NOT raise into its caller (it is fired from state-transition paths + a
-    monitor thread). No-ops when push is unavailable or there are no subscriptions.
-    A 404/410 from a push service means the subscription is dead -> prune it.
+    MUST NOT raise into its caller (it is fired from state-transition paths + a monitor
+    thread). No-ops when push is unavailable or there are no subscriptions. A 404/410 from a
+    push service means the subscription is dead -> prune it; any other per-subscription error
+    is logged and skipped so one bad endpoint can't stop the rest.
     """
     if not push_available():
         return
     subs = get_subscriptions()
     if not subs:
         return
-    payload = json.dumps({"title": title, "body": body, "tag": tag or "generatorpi"})
+    payload = json.dumps({"title": title, "body": body, "tag": tag or "generatorpi"}).encode("utf-8")
     subject = CONFIG.get("VAPID_SUBJECT") or "mailto:admin@localhost"
     try:
-        # One Vapid instance signs a fresh JWT (with the correct per-endpoint audience)
-        # on every webpush() call, so it's safe to build once and reuse across sends.
+        # One Vapid instance signs a fresh JWT (fresh aud/exp) for each send below, so build
+        # it once and reuse it across every subscription.
         vapid = Vapid.from_raw(CONFIG["VAPID_PRIVATE_KEY"].encode("utf-8"))
     except Exception as e:
         log.warning(f"Invalid VAPID key, cannot send push: {e}")
         return
     for sub in subs:
         try:
-            # pywebpush MUTATES vapid_claims (adds aud/exp), so pass a FRESH dict each call.
-            # timeout=(connect, read): a black-hole or slow push endpoint must not hang
-            # the daemon send thread forever -- bound both the connect and read phases so
-            # a stuck service fails fast and we move on to the next subscription.
-            webpush(
-                subscription_info=sub,
-                data=payload,
-                vapid_private_key=vapid,
-                vapid_claims={"sub": subject},
-                timeout=(5, 10),
-            )
-        except WebPushException as e:
-            status = getattr(getattr(e, "response", None), "status_code", None)
+            status = _deliver_push(sub, payload, vapid, subject)
             if status in (404, 410):
+                # 404 Not Found / 410 Gone: the browser unsubscribed -> drop the dead record.
                 log.info(f"Pruning dead push subscription ({status})")
                 remove_subscription(sub["endpoint"])
-            else:
-                log.warning(f"Web push failed (status={status}): {e}")
+            elif status > 202:
+                log.warning(f"Web push failed (status={status})")
+        except requests.RequestException as e:
+            # Network/transport failure to the push service (timeout, DNS, TLS, connreset).
+            log.warning(f"Web push transport error: {e}")
         except Exception as e:
             log.warning(f"Web push error: {e}")
 
@@ -3331,14 +3445,21 @@ $('resetPrefsBtn').addEventListener('click',function(){
    the toggle shows an "unavailable" helper and the in-page banner still covers alerts. */
 var swReg=null;
 var pushSupported=('serviceWorker' in navigator)&&('PushManager' in window)&&('Notification' in window)&&(window.isSecureContext===true);
-var serverPush={supported:false,vapidKey:''};
+var serverPush={supported:false,vapidKey:'',reason:''};
 // Wiki base for "how to enable" deep-links surfaced when push can't be turned on.
 var WIKI='https://github.com/mrchrisneal/generatorpi/wiki';
 // Set the push helper text. With a wikiPage, append a "Setup guide" link so the user can
 // learn how to enable push successfully. Built via DOM nodes (not innerHTML) so the message
 // can never inject markup, and a plain textContent fast-path for the no-link (success) cases.
 function setPushHelp(t,wikiPage){var el=$('pushHelp');
-  if(!wikiPage){if(el.textContent!==t)el.textContent=t;return;}   /* idempotent: skip identical text-node rewrite (#40) */
+  if(!wikiPage){if(el.textContent!==t)el.textContent=t;el._ph=null;return;}   /* idempotent no-link path (#40) */
+  /* Idempotent LINK path: cache the (message+page) signature and skip the rebuild when it's
+     unchanged, so the per-poll refreshPushUI() never re-mutates the DOM for a steady state --
+     that redundant rewrite was exactly the #40 WebKit scroll-jump trigger, and the broken-push
+     state (which hits this path) refreshes on every poll. */
+  var sig=t+'\\u0000'+wikiPage;
+  if(el._ph===sig)return;
+  el._ph=sig;
   el.textContent=t+' ';
   var a=document.createElement('a');a.href=WIKI+'/'+wikiPage;a.target='_blank';a.rel='noopener';
   a.textContent='Setup guide \\u2197';el.appendChild(a);}
@@ -3349,7 +3470,7 @@ function urlB64ToUint8(base64){
   for(var i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);
   return out;
 }
-function pushApplyState(p){serverPush.supported=!!p.supported;serverPush.vapidKey=p.vapid_public_key||'';refreshPushUI();}
+function pushApplyState(p){serverPush.supported=!!p.supported;serverPush.vapidKey=p.vapid_public_key||'';serverPush.reason=p.reason||'';refreshPushUI();}
 function refreshPushUI(){
   // A push flow just settled -> clear any spinner on the push-toggle halves.
   var _pt=$('pushToggle');if(_pt){var _hl=_pt.querySelectorAll('.half.loading');for(var _i=0;_i<_hl.length;_i++)_hl[_i].classList.remove('loading');}
@@ -3358,7 +3479,15 @@ function refreshPushUI(){
     // Surface WHY it's unavailable (the two real causes) + a link to the enable guide.
     var why=(window.isSecureContext!==true)?'Push needs a secure (HTTPS) connection on this device.':'This browser doesn\\u2019t support web push.';
     setPushHelp(why+' In-page alerts still work.','Web-Push-Notifications');testBtn.disabled=true;return;}
-  if(!serverPush.supported){setTog('pushToggle',false);setPushHelp('Push isn\\u2019t configured on the server (no VAPID keys). In-page alerts still work.','Web-Push-Notifications');testBtn.disabled=true;return;}
+  if(!serverPush.supported){setTog('pushToggle',false);
+    /* Cause-specific reason from the server (push_status) instead of a misleading blanket
+       "no VAPID keys": distinguish the missing library, un-generated keys, and bad keys. */
+    var r=serverPush.reason,sm;
+    if(r==='library_missing') sm='Server push support isn\\u2019t installed \\u2014 the py-vapid / http-ece libraries are missing on the server.';
+    else if(r==='no_keys') sm='The server has push support but no VAPID keys yet \\u2014 they auto-generate on startup, so check the server log and that the settings file is writable.';
+    else if(r==='invalid_keys') sm='The server\\u2019s VAPID keys are invalid \\u2014 clear the VAPID_* lines in the settings file and restart to regenerate them.';
+    else sm='Push isn\\u2019t configured on the server.';
+    setPushHelp(sm+' In-page alerts still work.','Web-Push-Notifications');testBtn.disabled=true;return;}
   if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in this browser\\u2019s site settings \\u2014 allow them to enable push.','Web-Push-Notifications');testBtn.disabled=true;return;}
   if(swReg){
     swReg.pushManager.getSubscription().then(function(sub){
@@ -3894,6 +4023,11 @@ function _renderTerm(el,logArr){
 $('updChangelog').addEventListener('scroll',function(){
   var el=this;_termFollow=(el.scrollHeight-el.scrollTop-el.clientHeight)<6;
 });
+// One-time scroll-to-bottom at each STAGE END so the colored warning/error summary lines (the last
+// log lines of the stage) are visible even if the user had scrolled up mid-stage. _lastUpdPhase
+// makes it fire once per stage-boundary transition, not on every poll.
+var _lastUpdPhase='';
+function _updScrollEnd(el){if(el){el.scrollTop=el.scrollHeight;_termFollow=true;}}
 // Title spinner while actively working; caution banner (error/abort) or success banner (staged
 // ok) beneath the log. Only one banner shows at a time.
 function _updWorking(on){var c=$('updCard');if(c)c.classList.toggle('working',!!on);}
@@ -3931,7 +4065,7 @@ function openUpdateModal(){
   $('updProgressWrap').style.display='none';
   doBtn.className='btn3d danger';doBtn.textContent='PROCEED';doBtn.dataset.role='';doBtn.disabled=false;doBtn.style.display='';
   cancel.className='btn3d steel';cancel.textContent='CANCEL';cancel.dataset.role='';cancel.disabled=false;cancel.style.display='';
-  _updWorking(false);_updWarn(false);_updOk(false);
+  _updWorking(false);_updWarn(false);_updOk(false);_lastUpdPhase='';
   _ovShow('updModal');doBtn.focus();
   api('/api/update/changelog').then(function(d){
     if(d&&d.changelog){cl.textContent=d.changelog;}
@@ -4005,6 +4139,10 @@ function _pollUpdate(){
   api('/api/update/status').then(function(s){
     if(!s){_updPoll=setTimeout(_pollUpdate,refreshMs);return;}
     var cl=$('updChangelog');cl.style.display='';_renderTerm(cl,s.log);
+    if(s.phase!==_lastUpdPhase){                            // a stage boundary was crossed
+      if(s.phase==='awaiting'||s.phase==='restarting'){_updScrollEnd(cl);}   // end of Stage 1 / Stage 2
+      _lastUpdPhase=s.phase;
+    }
     var working=['checking','downloading','verifying','backing_up','swapping','restarting'].indexOf(s.phase)>=0;
     _updWorking(working);
     if(working){_updWarn(false);_updOk(false);}         // no banners while actively working
@@ -4868,8 +5006,12 @@ def api_state():
     snap["sys"] = {"cpu": _last_sys["cpu"] if _last_sys else None}
     # Web Push info for the client: whether the server can send (library + VAPID key),
     # the public key the browser needs to subscribe, and how many devices are subscribed.
+    # push_status() gives both the boolean AND a machine reason ("library_missing" /
+    # "no_keys" / "invalid_keys" / "ok") so the UI can explain EXACTLY why push is off.
+    _push_ok, _push_reason = push_status()
     snap["push"] = {
-        "supported": push_available(),
+        "supported": _push_ok,
+        "reason": _push_reason,
         "vapid_public_key": CONFIG.get("VAPID_PUBLIC_KEY", ""),
         "subscriptions": subscription_count(),
     }
@@ -5365,7 +5507,13 @@ _SERVICE_UNIT = Path("/etc/systemd/system/generator_control.service")
 # Live progress the UI polls. phase: idle/checking/downloading/verifying/backing_up/
 # swapping/restarting/done/failed. Its own lock (touched from the worker thread).
 _update_state = {"phase": "idle", "message": "", "progress": 0.0, "error": None,
-                 "version": None, "systemd": None, "log": [], "decide": None}
+                 "version": None, "systemd": None, "log": [], "decide": None,
+                 # Stage-1 dependency check results (populated during [CHECKING DEPENDENCIES]).
+                 # missing_deps: [{apt, feature, required}, ...]; deps_install_cmd: the apt one-liner.
+                 "missing_deps": [], "deps_install_cmd": "",
+                 # Which stage the worker is in (1 = pre-apply checks, 2 = apply/swap/restart) + a
+                 # per-stage tally of warning/error lines -> the end-of-stage colored summary lines.
+                 "stage": 1, "counts": {"stage1": {"warn": 0, "err": 0}, "stage2": {"warn": 0, "err": 0}}}
 _update_lock = threading.Lock()
 # Decision gate: when the run hits an error/warning it parks on phase "awaiting" and BLOCKS on
 # this event until the user clicks REVERT or PROCEED (default REVERT on timeout). One update runs
@@ -5388,6 +5536,36 @@ def _update_log_append(text):
             _update_state["log"][-1] += text
         else:
             _update_state["log"].append(text)
+
+
+def _update_warn(line):
+    """Log a line AND tally it as a WARNING against the CURRENT stage, for the end-of-stage
+    colored summary line. The individual line logs in its own style; the summary line is what
+    renders yellow."""
+    _update_log(line)
+    with _update_lock:
+        _update_state["counts"]["stage2" if _update_state.get("stage") == 2 else "stage1"]["warn"] += 1
+
+
+def _update_err(line):
+    """Log a line AND tally it as an ERROR against the CURRENT stage (see _update_warn)."""
+    _update_log(line)
+    with _update_lock:
+        _update_state["counts"]["stage2" if _update_state.get("stage") == 2 else "stage1"]["err"] += 1
+
+
+def _stage_summary(stage):
+    """Emit up to TWO colored summary lines as the LAST lines of a stage: a yellow [WARNING] count
+    (only if any warnings were tallied) and a red [ERROR] count (only if any errors). Zero of a kind
+    -> no line for it, so a clean stage adds nothing. Purely additive to the existing warning banner
+    + log; the UI also one-time-scrolls to the bottom when a stage ends so these can't be missed."""
+    with _update_lock:
+        c = _update_state["counts"].get(f"stage{stage}", {"warn": 0, "err": 0})
+        w, e = c["warn"], c["err"]
+    if w:
+        _update_log(f"[WARNING] Stage {stage}: {w} warning{'' if w == 1 else 's'} encountered")
+    if e:
+        _update_log(f"[ERROR] Stage {stage}: {e} error{'' if e == 1 else 's'} encountered")
 
 
 def _await_decision(message, allow_proceed, proceed_label="PROCEED"):
@@ -5454,6 +5632,53 @@ def _http_get_bytes(url, timeout=30, max_bytes=12_000_000):
 def _update_phase(name, msg, prog, error=None):
     with _update_lock:
         _update_state.update(phase=name, message=msg, progress=round(prog, 3), error=error)
+
+
+def check_manifest_dependencies(manifest):
+    """Return the manifest-DECLARED runtime dependencies that are NOT importable on THIS device.
+
+    The manifest carries a `dependencies` list (module import-name, apt package, feature,
+    required-ness). During update Stage 1 the updater checks each so it can warn the operator --
+    with a copy-able install command -- about anything missing BEFORE the apply, WITHOUT ever
+    installing it (auto-apt on a headless box would need broad privileged access + can hang the
+    update). Importability is checked with importlib.util.find_spec, which resolves the module
+    WITHOUT importing/executing it (no side effects, safe to run mid-update). An older manifest
+    with no `dependencies` key -> [] (nothing to check). A find_spec that raises (a broken/partial
+    install, e.g. a namespace-package shadow) is treated as MISSING, fail-safe."""
+    missing = []
+    for dep in manifest.get("dependencies") or []:
+        mod = dep.get("module")
+        # Only plain TOP-LEVEL module names are ever passed to find_spec. A dotted name ("a.b")
+        # would make find_spec IMPORT the parent package ("a"), executing its __init__ -- so
+        # restricting to a single identifier keeps this fully side-effect-free even against a
+        # hostile/garbled manifest. Every real declared dep is top-level, so this never skips one.
+        if not isinstance(mod, str) or not mod.isidentifier():
+            continue
+        try:
+            present = importlib.util.find_spec(mod) is not None
+        except Exception:
+            present = False   # ImportError/ValueError from a broken install -> treat as missing
+        if not present:
+            missing.append(dep)
+    return missing
+
+
+# Valid Debian/apt package-name charset. dependency_install_command only ever emits names matching
+# this, so a hostile/garbled manifest cannot smuggle shell metacharacters into the copy-able install
+# one-liner. The app never RUNS the command, but a user might paste it -- defense in depth.
+_APT_PKG_RE = re.compile(r"^[a-z0-9][a-z0-9+.\-]*$")
+
+
+def dependency_install_command(missing):
+    """Build the copy-able apt one-liner that installs the given missing dependencies. Packages are
+    deduped + sorted for a stable, tidy command, and ONLY well-formed apt package names (see
+    _APT_PKG_RE) are included so a garbled/hostile manifest can't inject shell metacharacters into a
+    string a user might paste. Returns "" when nothing installable is missing."""
+    pkgs = sorted({d.get("apt") for d in missing
+                   if isinstance(d.get("apt"), str) and _APT_PKG_RE.match(d.get("apt"))})
+    if not pkgs:
+        return ""
+    return "sudo apt install -y " + " ".join(pkgs)
 
 
 def _download_and_verify(manifest, base=None, staging=None):
@@ -5854,6 +6079,12 @@ def _run_update():
     zpath = None
     swapped = False
     t_apply = None                                        # set when Stage 2 (apply/swap) actually begins
+    with _update_lock:                                    # fresh per-run stage + warn/err tally + dep
+        _update_state["stage"] = 1                        # results (belt-and-suspenders: self-contained
+        _update_state["counts"] = {"stage1": {"warn": 0, "err": 0},  # even if a caller skipped the
+                                   "stage2": {"warn": 0, "err": 0}}   # api_update_start reset)
+        _update_state["missing_deps"] = []
+        _update_state["deps_install_cmd"] = ""
     try:
         # Terminal log format: bracketed [SECTION] headers (bright, left-aligned) get ' ok' or an
         # error tacked on when their step finishes; detail lines are indented two spaces.
@@ -5886,6 +6117,33 @@ def _run_update():
         _update_log("[CHECKING SYSTEM]")
         _update_phase("checking", "Validating permissions + free space…", 0.06)
         _preflight_check(manifest, log=_update_log)      # logs each sub-check; aborts on first failure
+        # Stage-1 DEPENDENCY CHECK: the manifest DECLARES the runtime deps this release needs. Report
+        # any not importable on THIS device + a copy-able apt one-liner so the operator can install
+        # them. The updater NEVER installs them itself (auto-apt on a headless box needs broad
+        # privileged access + can hang the update). This is a WARNING, not a gate -- a missing
+        # OPTIONAL dep just means that feature (e.g. Web Push) stays off until it's installed.
+        _update_log("[CHECKING DEPENDENCIES]")
+        _update_phase("checking", "Checking declared dependencies…", 0.07)
+        _missing_deps = check_manifest_dependencies(manifest)
+        _deps_cmd = dependency_install_command(_missing_deps)
+        with _update_lock:
+            _update_state["missing_deps"] = [
+                {"apt": d.get("apt", ""), "feature": d.get("feature", ""),
+                 "required": bool(d.get("required"))}
+                for d in _missing_deps
+            ]
+            _update_state["deps_install_cmd"] = _deps_cmd
+        if not _missing_deps:
+            _update_log("  all declared dependencies present … ok")
+        else:
+            for d in _missing_deps:
+                _line = (f"  MISSING ({'REQUIRED' if d.get('required') else 'optional'}): "
+                         f"{d.get('apt', '?')} — {d.get('feature', '')}")
+                # A missing REQUIRED dep is an error; a missing OPTIONAL one (e.g. a Web Push lib)
+                # is a warning -- that feature just stays off. Both feed the end-of-stage summary.
+                (_update_err if d.get("required") else _update_warn)(_line)
+            _update_log("  the updater will NOT install these; install them yourself, then restart:")
+            _update_log(f"    {_deps_cmd}")
         # Two logged stages: download to staging, then verify SHA-256 + compile-check.
         _update_log(f"[DOWNLOADING] {nfiles} files")
         _update_phase("downloading", "Downloading files…", 0.1)
@@ -5901,6 +6159,7 @@ def _run_update():
         _update_log("[STAGED]")
         _update_log_append(" ok")
         _update_log(f"  v{version} ready to apply — nothing has changed yet")
+        _stage_summary(1)          # colored warning/error count lines (if any) as the last Stage-1 lines
         _update_phase("staged", f"Ready to apply v{version}.", 0.85)
         choice = _await_decision(
             f"Ready to apply v{version}.", allow_proceed=True, proceed_label="UPDATE")
@@ -5914,6 +6173,8 @@ def _run_update():
             _update_phase("failed", "Update canceled before applying.", 0.0)
             return
         _update_log(f"[APPLYING] stage 2 — installing v{version}")
+        with _update_lock:                               # subsequent warn/err lines tally to Stage 2
+            _update_state["stage"] = 2
         t_apply = time.time()                            # start timing the apply (past the go/no-go gate)
         if not _svc_skip:
             with _update_lock:
@@ -5972,6 +6233,9 @@ def _run_update():
                 if got != want:
                     raise ValueError(f"post-swap hash mismatch for {rel}")
                 _update_log(f"  {rel} … ok")
+            # In-process Stage 2 only. The systemd path's Stage 2 runs in the detached bootstrap
+            # (its own colored [DONE]/[ROLLBACK]/[WATCHDOG] lines), so it has no in-app summary here.
+            _stage_summary(2)          # colored Stage-2 warning/error counts (if any) before re-exec
             _update_log("[RESTARTING] in-process re-exec")
             _update_log("  releasing the listening socket, then re-exec'ing this process")
             with _update_lock:
@@ -6086,7 +6350,9 @@ def api_update_start():
         if _update_state["phase"] not in ("idle", "done", "failed"):
             return jsonify({"success": False, "message": "An update is already in progress."}), 409
         _update_state.update(phase="checking", message="Starting…", progress=0.0,
-                             error=None, systemd=_deployment_has_systemd(), log=[], decide=None)
+                             error=None, systemd=_deployment_has_systemd(), log=[], decide=None,
+                             missing_deps=[], deps_install_cmd="", stage=1,
+                             counts={"stage1": {"warn": 0, "err": 0}, "stage2": {"warn": 0, "err": 0}})
     log.warning(f"Self-update requested by {caller_identity()}@{request.remote_addr}")
     threading.Thread(target=_run_update, daemon=True, name="self-update").start()
     return jsonify({"success": True})

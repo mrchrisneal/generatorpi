@@ -80,7 +80,7 @@ PM9400E generator — see [Hardware & Wiring](../../wiki/Hardware-&-Wiring).
 | `python3-gpiozero`, `python3-lgpio` | GPIO relay control |
 | `python3-cryptography` | TLS / password hashing |
 | `python3-cheroot` | HTTP server with keep-alive + TLS (app falls back to a no-keep-alive server if absent) |
-| `python3-pywebpush` *(optional)* | Web Push notifications |
+| `python3-py-vapid`, `python3-http-ece`, `python3-requests` *(optional)* | Web Push notifications |
 | `openssl` | self-signed certificate generation |
 
 `setup.sh install` validates and installs these automatically. Versions are also pinned in

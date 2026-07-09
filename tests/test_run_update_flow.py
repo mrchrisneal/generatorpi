@@ -79,6 +79,98 @@ def _wire_stage1(module, monkeypatch, tmp_path, manifest, live_files):
     return zpath
 
 
+class TestRunUpdateDependencies:
+    def test_stage1_reports_missing_dependencies_with_install_command(
+        self, module, monkeypatch, tmp_path
+    ):
+        # A manifest that DECLARES a dependency not importable on this device: Stage 1 lists each
+        # missing one, tallies a warning (optional) / error (required), stashes a copy-able apt
+        # one-liner, and the end-of-stage-1 summary emits colored count lines. REVERT at the gate so
+        # nothing is applied -- the updater must NEVER install anything itself.
+        manifest = {"version": "2.0.0",
+                    "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}],
+                    "dependencies": [
+                        {"module": "os", "apt": "python3-os", "required": True, "feature": "core"},
+                        {"module": "totally_absent_xyz", "apt": "python3-absent-opt",
+                         "required": False, "feature": "Web Push"},
+                        {"module": "also_absent_req", "apt": "python3-absent-req",
+                         "required": True, "feature": "critical"},
+                    ]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "revert")  # stop at the gate
+        _prime_state(module)
+
+        module._run_update()
+
+        # The two ABSENT modules are captured (present "os" is not); with a deterministic command.
+        apts = {d["apt"] for d in module._update_state["missing_deps"]}
+        assert apts == {"python3-absent-opt", "python3-absent-req"}
+        assert module._update_state["deps_install_cmd"] == \
+            "sudo apt install -y python3-absent-opt python3-absent-req"
+        log = "\n".join(module._update_state["log"])
+        assert "[CHECKING DEPENDENCIES]" in log
+        assert "python3-absent-opt" in log and "python3-absent-req" in log
+        # End-of-stage-1 summary: 1 optional-missing warning + 1 required-missing error.
+        assert "[WARNING] Stage 1: 1 warning encountered" in log
+        assert "[ERROR] Stage 1: 1 error encountered" in log
+
+    def test_stage1_all_dependencies_present_is_clean(
+        self, module, monkeypatch, tmp_path
+    ):
+        # When every declared dependency is importable, Stage 1 logs the clean "ok" line and adds
+        # NO warning/error summary lines (a clean stage stays quiet).
+        manifest = {"version": "2.0.0",
+                    "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}],
+                    "dependencies": [
+                        {"module": "os", "apt": "python3-os", "required": True, "feature": "core"},
+                        {"module": "json", "apt": "python3-json", "required": False, "feature": "x"},
+                    ]}
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "revert")
+        _prime_state(module)
+
+        module._run_update()
+
+        assert module._update_state["missing_deps"] == []
+        log = "\n".join(module._update_state["log"])
+        assert "all declared dependencies present" in log
+        assert "[WARNING] Stage 1" not in log and "[ERROR] Stage 1" not in log
+
+
+class TestManifestForwardCompat:
+    def test_unknown_manifest_keys_and_fields_are_ignored(
+        self, module, monkeypatch, tmp_path
+    ):
+        # FORWARD-COMPAT CONTRACT: a manifest may grow NEW top-level keys and NEW fields inside its
+        # file / dependency entries in future releases. An EXISTING updater must read only what it
+        # understands (all via .get()) and silently ignore the rest -- never fail. This locks that
+        # in so a future refactor can't slip in strict schema validation that would break old
+        # installs. Prove a manifest stuffed with unknown keys still runs Stage 1 to the gate and
+        # computes the dependency check correctly from the fields it knows.
+        manifest = {
+            "version": "2.0.0",
+            "min_updater_version": "99.0",                 # unknown top-level key (future)
+            "signature": {"alg": "ed25519", "sig": "…"},   # unknown top-level dict (future)
+            "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1,
+                       "mode": "0644", "note": "future per-file field"}],   # unknown file fields
+            "dependencies": [
+                {"module": "os", "apt": "python3-os", "required": True, "feature": "core",
+                 "min_version": "1.0", "extra": {"nested": True}},          # unknown dep fields
+                {"module": "totally_absent_fc", "apt": "python3-absent-fc",
+                 "required": False, "feature": "x", "future": [1, 2, 3]},
+            ],
+        }
+        _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
+        monkeypatch.setattr(module, "_await_decision", lambda *a, **k: "revert")
+        _prime_state(module)
+
+        module._run_update()                               # must NOT raise on the unknown keys/fields
+
+        # Reached the go/no-go and reverted cleanly, having computed deps from the KNOWN fields only.
+        assert module._update_state["phase"] == "failed"   # canceled at the gate (nothing applied)
+        assert {d["apt"] for d in module._update_state["missing_deps"]} == {"python3-absent-fc"}
+
+
 class TestRunUpdateSystemd:
     def test_systemd_path_launches_bootstrap(self, module, monkeypatch, tmp_path):
         # A managed (systemd) deployment hands the swap+restart to a detached /tmp bootstrap.

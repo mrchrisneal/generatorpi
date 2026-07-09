@@ -37,6 +37,24 @@ SHIPPED_FILES = [
 ]
 
 
+# Runtime dependencies this release needs, DECLARED in the manifest so the in-app updater can
+# check them during Stage 1 (before the apply) and tell the operator exactly what to install --
+# it never installs them itself (that would need broad privileged apt access on a headless box).
+# `module` is the import name (checked via importlib.util.find_spec, no side effects); `apt` is
+# the Raspberry Pi OS package; `required` False = an optional feature that degrades gracefully.
+# Keep in sync with setup.sh's check_dep calls (install-time) -- same set, same packages.
+DEPENDENCIES = [
+    {"module": "flask",        "apt": "python3-flask",        "required": True,  "feature": "web server + REST API"},
+    {"module": "gpiozero",     "apt": "python3-gpiozero",     "required": True,  "feature": "GPIO relay control"},
+    {"module": "lgpio",        "apt": "python3-lgpio",        "required": True,  "feature": "GPIO backend (lgpio)"},
+    {"module": "cryptography", "apt": "python3-cryptography", "required": True,  "feature": "TLS certificate, VAPID keys, password hashing"},
+    {"module": "cheroot",      "apt": "python3-cheroot",      "required": False, "feature": "HTTP keep-alive server (faster HTTPS)"},
+    {"module": "py_vapid",     "apt": "python3-py-vapid",     "required": False, "feature": "Web Push notifications"},
+    {"module": "http_ece",     "apt": "python3-http-ece",     "required": False, "feature": "Web Push notifications"},
+    {"module": "requests",     "apt": "python3-requests",     "required": False, "feature": "Web Push notifications"},
+]
+
+
 def _sha256(path):
     """Streaming SHA-256 of a file (64 KiB chunks) so a large file never loads whole."""
     h = hashlib.sha256()
@@ -57,7 +75,7 @@ def build_manifest(root=ROOT, files=SHIPPED_FILES):
             print(f"WARN: {rel} not found -- skipping", file=sys.stderr)
             continue
         entries.append({"path": rel, "sha256": _sha256(p), "bytes": p.stat().st_size})
-    return {"version": version, "files": entries}
+    return {"version": version, "files": entries, "dependencies": DEPENDENCIES}
 
 
 def main():

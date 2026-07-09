@@ -1,3 +1,15 @@
+## 1.3.3
+Released on July 9, 2026
+
+- **FIX:** Web Push notifications now work on Raspberry Pi OS. The app previously relied on the `pywebpush` library, which has no Raspberry Pi OS package and can't be installed on the Pi's pip-free system Python, so push silently never worked on-device. It now sends notifications itself using three apt-available libraries — **py-vapid** (VAPID signing), **http-ece** (aes128gcm payload encryption), and **requests** — so the device stays 100% apt-only. Install them with `sudo apt install python3-py-vapid python3-http-ece python3-requests`; a VAPID keypair is auto-generated on first start.
+- **FIX:** The push status now tells you *why* it's off instead of a misleading blanket "no VAPID keys" — it distinguishes the server libraries not being installed, no VAPID keypair yet, and an invalid key, each with the right guidance and a link to the setup guide.
+- **FEAT:** The in-app updater now checks the release's declared dependencies during Stage 1 and, if any are missing on the device, lists them with a copy-able `sudo apt install …` one-liner so you can install them before applying. It never auto-installs anything — the update swaps files + restarts, so run the shown command (or `./setup.sh reinstall`) to add new dependencies.
+- **FEAT:** The update log now ends each stage with a colored count of any warnings (yellow) and errors (red) encountered, so a problem can't be missed, and scrolls to the newest lines at each stage boundary.
+- **SEC:** Web Push requests now refuse HTTP redirects (defense in depth against a redirector endpoint) and use a bounded time-to-live, so an alert still arrives if your phone was briefly offline.
+- **CHORE:** The updater's in-app changelog renders cleaner — no preamble, a horizontal rule between releases, and no mid-sentence line breaks. Test coverage of `generator_control.py` stays at 100%.
+
+---
+
 ## 1.3.2
 Released on July 8, 2026
 
@@ -37,9 +49,3 @@ Released on July 8, 2026
 
 - **Cleaner Stage-2 update log**: the systemd update path's progress lines now match the rest of the update terminal — no more `[gp-update]` prefix or raw ISO timestamps, and correct coloring. Each step reads as a dim indented `… ok` child under its bright section header, and the run ends with `[DONE] Application successfully updated to vX.Y.Z!`.
 - **Settings polish**: the section headers (MANUAL OVERRIDE, SYSTEM, LOG VIEWER, RESET) are brighter and slightly larger with clearer spacing between sections, and the push-notification button is now labelled "TEST NOTIFICATION".
-
----
-
-## 1.2.2
-
-- **Much faster HTTPS on the Pi**: three changes cut per-request time on a Raspberry Pi Zero 2 W from seconds to well under a second under load. (1) The self-signed certificate now uses an **ECDSA P-256** key instead of RSA-2048 — the TLS handshake is far cheaper on a weak ARM core. (2) The server now handles requests **concurrently** (threaded) instead of one at a time, so a slow handshake no longer blocks every other request. (3) The frontend poll queue now **ages** waiting requests so a constantly-refreshing `state` poll can no longer starve `events`/`system` — every endpoint gets its turn. Existing installs regenerate the cert as ECDSA on next start (browsers will prompt once to trust the new self-signed certificate).

@@ -94,7 +94,7 @@ do_install() {
     # Raspberry Pi OS's system Python has NO pip, so ALL deps come from apt (python3-*). Validate each
     # required module is importable; install any that are missing. cheroot gives the app HTTP keep-alive
     # (a big CPU win on the Pi Zero 2 W -- without it the app falls back to the werkzeug server, minus
-    # keep-alive); pywebpush is OPTIONAL (push notifications).
+    # keep-alive); the Web Push libraries (py-vapid + http-ece + requests) are OPTIONAL.
     echo ""
     echo "Checking Python dependencies (installed via apt -- the system Python has no pip)..."
     # $1 = import name, $2 = apt package, $3 = "optional" (anything else = required)
@@ -114,7 +114,13 @@ do_install() {
     check_dep lgpio         python3-lgpio
     check_dep cryptography  python3-cryptography
     check_dep cheroot       python3-cheroot                 # HTTP keep-alive server
-    check_dep pywebpush     python3-pywebpush     optional  # push notifications (optional)
+    # Web Push (all OPTIONAL). The app sends pushes itself using these three -- there is NO
+    # apt package for the `pywebpush` wrapper on Raspberry Pi OS, so we use its building blocks
+    # directly (all apt-available): py-vapid signs the VAPID JWT, http-ece encrypts the payload
+    # (aes128gcm), and requests makes the HTTPS POST. cryptography is pulled in above.
+    check_dep py_vapid      python3-py-vapid      optional  # Web Push: VAPID JWT signing
+    check_dep http_ece      python3-http-ece      optional  # Web Push: aes128gcm payload encryption
+    check_dep requests      python3-requests      optional  # Web Push: HTTPS POST to the push service
 
     # Generate and install the service file
     generate_service_file | sudo tee "${SERVICE_FILE}" > /dev/null

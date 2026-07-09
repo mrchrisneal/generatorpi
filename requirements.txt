@@ -7,8 +7,13 @@ gpiozero
 # the system Python has no pip; the >=10 floor accepts what apt ships. setup.sh installs it. (If cheroot
 # is missing at runtime the app falls back to the werkzeug server, minus keep-alive.)
 cheroot>=10,<12
-# Web Push notifications (optional at runtime -- the app degrades gracefully if it's
-# missing, but push is unavailable without it). Pulls in py-vapid + http-ece +
-# cryptography. On Raspberry Pi OS install cryptography via apt (python3-cryptography)
-# to avoid a source build; see the README "Web Push notifications" section.
-pywebpush
+# Web Push notifications (optional at runtime -- the app degrades gracefully if these are
+# missing, but push is unavailable without them). The app sends pushes ITSELF using these
+# three libraries instead of the `pywebpush` wrapper, which has NO Raspberry Pi OS apt package:
+# py-vapid signs the VAPID JWT, http-ece does the RFC 8188 aes128gcm payload encryption, and
+# requests makes the HTTPS POST. On Raspberry Pi OS install via apt (python3-py-vapid,
+# python3-http-ece, python3-requests -- these pull cryptography as python3-cryptography, no
+# source build). See the wiki "Web Push Notifications" page.
+py-vapid
+http-ece
+requests
