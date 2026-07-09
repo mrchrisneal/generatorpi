@@ -1371,6 +1371,61 @@ def _apply_running_transition_locked(new_running):
     generator_state["running"] = new_running
 
 
+# Sanity ceiling for a MANUALLY-set lifetime odometer. The analog odometer display
+# saturates at 9999.9 h and storage above that is harmless, but an absurd value (a
+# fat-fingered paste, or abuse) is rejected outright. A real generator's lifetime is
+# orders of magnitude below this, so the cap only ever trips on garbage.
+MAX_TOTAL_RUN_HOURS = 1_000_000.0
+
+
+def set_total_run_hours(hours):
+    """Manually override the lifetime run-hours odometer and persist it. This is a
+    TRACKED-STATE correction only (like MARK RUNNING) -- it NEVER touches the relay or
+    the generator. Clamps to [0, MAX_TOTAL_RUN_HOURS], rounds to 3 decimals, and returns
+    (old_live_total, new_total) for the audit log.
+
+    Two invariants are held under a single state_lock:
+
+      * The LIVE odometer (base + current-run elapsed) reads EXACTLY `hours` the instant
+        this returns. If a run is in progress we re-stamp current_run_started_at to now,
+        so the persisted base is ALWAYS the non-negative value the operator entered --
+        never a transient negative that a mid-run restart could persist. The consequence
+        is that the current run's uptime clock restarts from 0; that is intentional (the
+        baseline is being redefined), and the helper copy advises setting it while stopped.
+
+      * The FUEL gauge does NOT lurch. fuel_state['fill_run_hours'] is an absolute point
+        on this same odometer, so the projection's run-since-fill = live - fill_run_hours
+        would jump if we moved the odometer alone. We shift fill_run_hours by the same
+        delta (clamped >= 0) so the PHYSICAL run-hours-since-fill -- and thus the projected
+        tank level -- is preserved across the correction.
+    """
+    # Clamp + quantize BEFORE taking the lock (pure arithmetic; keep the lock section tiny).
+    hours = round(max(0.0, min(MAX_TOTAL_RUN_HOURS, float(hours))), 3)
+    with state_lock:
+        # Snapshot the physical run-hours-since-fill the fuel model depends on, using the
+        # live total (base + any in-progress run) so a running engine is accounted for.
+        old_live = _live_total_run_hours_locked()
+        run_since_fill = max(0.0, old_live - fuel_state["fill_run_hours"])
+        # Set the lifetime base to exactly the requested value.
+        generator_state["total_run_hours"] = hours
+        if generator_state["running"]:
+            # Re-baseline the in-progress run to NOW: live == hours immediately, and the
+            # banked base stays == hours (non-negative, restart-safe). Uptime resets to 0.
+            generator_state["current_run_started_at"] = time.time()
+        # Re-anchor the fuel fill so run-since-fill (hence the projected level) is unchanged.
+        # Clamp >= 0 so a very small `hours` (below run_since_fill) can't store a negative
+        # fill mark; in that corner the gauge shifts rather than going nonsensical.
+        fuel_state["fill_run_hours"] = max(0.0, hours - run_since_fill)
+        fuel_snapshot = dict(fuel_state)
+        # Persist BOTH mutated stores IN-LOCK so an overlapping writer can't race a stale
+        # snapshot to the kv store (same atomicity + lock-order rationale as the fuel
+        # helpers: the only ordering that ever occurs is state_lock -> _event_lock, so
+        # there is no inversion and no deadlock).
+        kv_set("total_run_hours", generator_state["total_run_hours"])
+        kv_set("fuel_state", fuel_snapshot)
+    return old_live, hours
+
+
 # Restore durable state now that the kv store + these globals exist.
 load_persisted_state()
 
@@ -3171,6 +3226,18 @@ btnBusy('markStopBtn',function(){return post('/api/set_running',{running:false})
 function numVal(id){var v=parseFloat($(id).value);return isFinite(v)?v:null;}
 btnBusy('setRateBtn',function(){var v=numVal('rateInput');if(v==null)return;return post('/api/fuel/rate',{rate:v}).then(function(){$('rateInput').value='';refresh();});});
 btnBusy('resetRateBtn',function(){return post('/api/fuel/rate/reset').then(function(){$('rateInput').value='';refresh();});});
+/* TOTAL RUNTIME override: POST the entered hours, then clear the field and refresh. The
+   odometer only ever rolls FORWARD (updateOdometer skips any value <= _lastOdoHours), so a
+   correction to a LOWER value would otherwise be ignored; reset _lastOdoHours to null so the
+   next render re-seeds the wheels to the new value (up OR down) cleanly.
+   RACE FIX: we must fold the confirmed new total into `state` BEFORE re-seeding, because
+   refresh() fetches /api/state asynchronously and the 1s tick() keeps running meanwhile. On
+   the slow Pi link a tick can land in that window and, with _lastOdoHours just nulled, re-seed
+   it from the STALE (old, higher) state -- then the real lower value arrives and is skipped as
+   "backward", leaving the wheels stuck until reload. Applying d.total_run_hours (and, when
+   running, re-stamping the run clock to now like the server does) makes any intervening tick
+   compute the new value. Guarded on a numeric field so a degraded/empty response is a no-op. */
+btnBusy('setRunHoursBtn',function(){var v=numVal('runHoursInput');if(v==null||v<0)return;return post('/api/runtime/hours',{hours:v}).then(function(d){$('runHoursInput').value='';if(state&&d&&typeof d.total_run_hours==='number'){state.total_run_hours=d.total_run_hours;if(state.running)state.current_run_started_at=nowSec();}_lastOdoHours=null;refresh();});});
 btnBusy('recordBtn',function(){var v=numVal('readingInput');if(v==null)return;return post('/api/fuel/reading',{level:v}).then(function(){$('readingInput').value='';refresh();});});
 btnBusy('fillBtn',function(){var v=numVal('fillInput');if(v==null)return;return post('/api/fuel/fill',{level:v}).then(function(){$('fillInput').value='';refresh();});});
 
@@ -4164,6 +4231,23 @@ HTML_TEMPLATE_BODY = """
                 </div>
               </div>
               <div class="helper">Turn the fuel-projection panel and low-fuel alerts on or off for everyone.</div>
+              <div class="drawer-divider"></div>
+              <!-- TOTAL RUNTIME: manual override of the lifetime run-hours odometer. Reuses
+                   the fuel drawer's crt-input + btn3d "SET" styling; the header matches the
+                   sibling .lbl rows (cyan, engraved clock icon, same 12px/.1em face). It's a
+                   direct child of .alert-cfg, so the container's 12px flex-gap spaces the
+                   label/input/helper -- no manual margins. Static row (never touched by the
+                   poll loop) so it has no height-changing surface -- the iOS scroll rule is
+                   satisfied by construction. The endpoint corrects TRACKED state only; it
+                   never actuates the relay. -->
+              <div class="alert-cfg-row">
+                <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg></span>TOTAL RUNTIME</span>
+              </div>
+              <div class="fuel-io">
+                <input class="crt-input" id="runHoursInput" type="number" step="0.1" min="0" inputmode="decimal" placeholder="e.g. 123.4" aria-label="Set total runtime hours">
+                <button type="button" class="btn3d cyan" id="setRunHoursBtn">SET</button>
+              </div>
+              <div class="helper">Manually set the lifetime run-hours odometer — for example, to match the engine's own hour meter.</div>
             </div>
             <!-- LOG VIEWER: controls for the EVENT LOG panel in the right column. The
                  EVENTS<->APP LOG source switch lives here (moved out of the panel header,
@@ -4689,6 +4773,26 @@ def api_set_running():
     )
     log.info(f"State manually set to {'RUNNING' if running else 'STOPPED'} by {caller_identity()}")
     return jsonify({"success": True, "running": running})
+
+@app.route('/api/runtime/hours', methods=['POST'])
+@auth_required
+def api_runtime_hours():
+    """Manually set the lifetime run-hours odometer. Body: {"hours": float >= 0}.
+
+    A TRACKED-STATE correction only (like MARK RUNNING) -- it NEVER cranks or stops the
+    engine and never touches the relay. The value is clamped/quantized + persisted by
+    set_total_run_hours(); the fuel projection is preserved across the change. A bad or
+    absent body is a 400 (never a 500), consistent with the other numeric endpoints."""
+    value, err = _json_number(request.get_json(silent=True), "hours")
+    if err:
+        return jsonify({"success": False, "message": err}), 400
+    old_live, new_total = set_total_run_hours(value)
+    # Durable audit trail of the manual odometer correction (old -> new). Uses the
+    # MANUAL-tagged "set_running" event type so it reads alongside the other manual
+    # overrides in the event log. %g keeps whole numbers clean (250 not 250.000000).
+    record_event("set_running", f"Total run-hours set to {new_total:g} h (was {old_live:g} h)")
+    log.info(f"Total run-hours set to {new_total:g} h (was {old_live:g} h) by {caller_identity()}")
+    return jsonify({"success": True, "total_run_hours": new_total})
 
 @app.route('/api/events', methods=['GET'])
 @auth_required

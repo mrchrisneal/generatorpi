@@ -5,6 +5,19 @@ releases from **CHANGELOG-RECENT.md** (generated from this file by `tools/change
 each release is `## X.Y.Z` with `Released on Month D, YYYY` directly below, and its changes are tagged
 — **FEAT** (new), **PERF** (speed), **FIX** (bug), **SEC** (security), **DOCS**, **CHORE**.
 
+## 1.3.2
+Released on July 8, 2026
+
+- **FEAT:** New **TOTAL RUNTIME** control in Settings ▸ SYSTEM lets you manually set (override) the
+  lifetime run-hours odometer — for example, to match the engine's own hour meter — and it is saved to
+  disk. Like the MARK RUNNING / MARK STOPPED overrides, it corrects the **tracked** value only: it never
+  cranks or stops the engine and never touches the relay. The fuel projection is preserved across the
+  change (the tank gauge doesn't jump), and setting it while the generator is running re-baselines the
+  current run so the odometer reads your value immediately.
+- **CHORE:** New tests cover the override end-to-end — the run-hours math, disk persistence across a
+  restart, input validation, authentication + CSRF, and a relay-safety check — keeping app line coverage
+  at 100%.
+
 ## 1.3.1
 Released on July 8, 2026
 

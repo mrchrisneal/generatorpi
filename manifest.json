@@ -1,10 +1,10 @@
 {
-  "version": "1.3.1",
+  "version": "1.3.2",
   "files": [
     {
       "path": "generator_control.py",
-      "sha256": "e3f72e728ee66363f5c3172d1b8ad4b3bfdc37a2ee25b0c6d16d5a50e86cfd9c",
-      "bytes": 369737
+      "sha256": "28a5468b1185350bf050a0e331152bb3c33808ac27ddd52d41dcd3c09766d947",
+      "bytes": 377299
     },
     {
       "path": "requirements.txt",
@@ -23,13 +23,13 @@
     },
     {
       "path": "VERSION",
-      "sha256": "10e2e117b01523891ca271a615ae36e9d5e52348fd7d642f66727602c1b8dcbe",
+      "sha256": "33158972a53877b421cfe2598b8d93cab169963a4964b45ee889e85349979018",
       "bytes": 6
     },
     {
       "path": "CHANGELOG-RECENT.md",
-      "sha256": "4d57e2f619c2e4ce1ae09cf6dcfbda8d5d732d0ce53e19adc55b1cee0d5e08e9",
-      "bytes": 6526
+      "sha256": "d1c93c234ed48de7482cca3e7009f3afd3e7f77daa84a676ceaf15ca7ed05243",
+      "bytes": 7098
     },
     {
       "path": "tools/gp-monitor.py",
