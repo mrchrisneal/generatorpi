@@ -107,7 +107,7 @@ def reset_globals():
 
     with gc._fail_tracker_lock:
         gc._fail_tracker.clear()
-    gc._last_cleanup = time.monotonic()
+    gc.ratelimit._last_cleanup = time.monotonic()
 
     # Ensure no relay sequence lock is being held from a prior (failed) test.
     if gc.relay_lock.locked():

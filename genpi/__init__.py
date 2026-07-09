@@ -292,84 +292,19 @@ def ensure_ssl_cert():
 
 
 # ============================================================================
-# RATE LIMITING (brute force / enumeration protection)
+# RATE LIMITING  (peeled into genpi/ratelimit.py -- roadmap #59, Stage 5)
 # ============================================================================
-# Tracks failed auth attempts per IP. After RATE_LIMIT_MAX_FAILURES consecutive
-# failures, the IP is locked out for RATE_LIMIT_LOCKOUT_SECONDS. A successful
-# login resets the counter for that IP. Stale entries are purged periodically.
-
-# _fail_tracker[ip] = {"count": int, "locked_until": float or None, "last_attempt": float}
-_fail_tracker = {}
-_fail_tracker_lock = threading.Lock()
-_last_cleanup = time.monotonic()
-
-
-def _cleanup_tracker():
-    """Remove expired lockouts and stale entries from the failure tracker."""
-    global _last_cleanup
-    now = time.monotonic()
-    cleanup_interval = CONFIG["RATE_LIMIT_CLEANUP_SECONDS"]
-    if now - _last_cleanup < cleanup_interval:
-        return
-    _last_cleanup = now
-    expired = [
-        ip for ip, entry in _fail_tracker.items()
-        if (entry["locked_until"] is not None and entry["locked_until"] <= now)
-        or (now - entry["last_attempt"] > cleanup_interval)
-    ]
-    for ip in expired:
-        del _fail_tracker[ip]
-    if expired:
-        log.debug(f"Rate limiter cleanup: purged {len(expired)} stale entries")
-
-
-def is_rate_limited(ip):
-    """Check if an IP is currently locked out. Returns seconds remaining or 0."""
-    with _fail_tracker_lock:
-        _cleanup_tracker()
-        entry = _fail_tracker.get(ip)
-        if not entry or entry["locked_until"] is None:
-            return 0
-        remaining = entry["locked_until"] - time.monotonic()
-        if remaining <= 0:
-            # Lockout expired, reset
-            del _fail_tracker[ip]
-            return 0
-        return remaining
-
-
-def record_failure(ip):
-    """Record a failed auth attempt. Returns (locked_out, fail_count)."""
-    with _fail_tracker_lock:
-        # Enforce hard cap -- if at limit and this is a new IP, evict the oldest entry
-        max_ips = CONFIG["RATE_LIMIT_MAX_TRACKED_IPS"]
-        if ip not in _fail_tracker and len(_fail_tracker) >= max_ips:
-            oldest_ip = min(_fail_tracker, key=lambda k: _fail_tracker[k]["last_attempt"])
-            del _fail_tracker[oldest_ip]
-            log.debug(f"Rate limiter at capacity ({max_ips}), evicted oldest entry")
-
-        entry = _fail_tracker.get(ip, {"count": 0, "locked_until": None, "last_attempt": 0})
-        entry["count"] += 1
-        entry["last_attempt"] = time.monotonic()
-        max_failures = CONFIG["RATE_LIMIT_MAX_FAILURES"]
-
-        if entry["count"] >= max_failures:
-            lockout = CONFIG["RATE_LIMIT_LOCKOUT_SECONDS"]
-            entry["locked_until"] = time.monotonic() + lockout
-            _fail_tracker[ip] = entry
-            return True, entry["count"]
-
-        _fail_tracker[ip] = entry
-        return False, entry["count"]
-
-
-def record_success(ip):
-    """Reset the failure counter for an IP after a successful login."""
-    with _fail_tracker_lock:
-        if ip in _fail_tracker:
-            del _fail_tracker[ip]
-
-
+# The per-IP failed-auth tracker + lockout logic now lives in genpi/ratelimit.py (LAYER 2: depends
+# on config + logg). We re-export it for auth_required below and the test suite. The tracker map +
+# its lock are shared by REFERENCE (conftest clears their CONTENTS between tests); _last_cleanup is a
+# SCALAR rebound by _cleanup_tracker (and the ratelimit tests), so its readers/rebinds reference
+# ratelimit._last_cleanup directly -- the conftest reset + test_ratelimit patch it as
+# module.ratelimit._last_cleanup.
+from . import ratelimit
+from .ratelimit import (          # noqa: F401  (re-exported for auth_required below + tests)
+    is_rate_limited, record_failure, record_success, _cleanup_tracker,
+    _fail_tracker, _fail_tracker_lock,
+)
 # ============================================================================
 # AUTHENTICATION
 # ============================================================================

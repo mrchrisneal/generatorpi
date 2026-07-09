@@ -98,7 +98,7 @@ class TestCleanupTracker:
         # If less than the cleanup interval has passed since the last cleanup,
         # _cleanup_tracker returns immediately and touches nothing.
         module.CONFIG["RATE_LIMIT_CLEANUP_SECONDS"] = 600
-        module._last_cleanup = time.monotonic()  # just now
+        module.ratelimit._last_cleanup = time.monotonic()  # just now
         with module._fail_tracker_lock:
             module._fail_tracker["keep"] = {
                 "count": 1, "locked_until": None, "last_attempt": 0.0,
@@ -110,7 +110,7 @@ class TestCleanupTracker:
         module.CONFIG["RATE_LIMIT_CLEANUP_SECONDS"] = 600
         now = time.monotonic()
         # Force the interval to have elapsed so cleanup actually runs.
-        module._last_cleanup = now - 601
+        module.ratelimit._last_cleanup = now - 601
         with module._fail_tracker_lock:
             # Expired lockout -> purged.
             module._fail_tracker["expired_lock"] = {
@@ -132,7 +132,7 @@ class TestCleanupTracker:
     def test_active_lockout_not_purged(self, module):
         module.CONFIG["RATE_LIMIT_CLEANUP_SECONDS"] = 600
         now = time.monotonic()
-        module._last_cleanup = now - 601
+        module.ratelimit._last_cleanup = now - 601
         with module._fail_tracker_lock:
             # Active lockout (locked_until in the future) and recent -> kept.
             module._fail_tracker["active"] = {
