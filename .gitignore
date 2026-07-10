@@ -5,6 +5,11 @@ __pycache__/
 .pytest_cache/
 .env
 generator_control.env
+# The env file is rewritten atomically via tempfile.mkstemp(prefix=".env_tmp_") in the SCRIPT_DIR
+# (see genpi/config.py). That temp briefly holds PLAINTEXT secrets; if the process dies between
+# write and rename a stray one can linger, and the plain `.env` rule above does NOT match it. Ignore
+# it explicitly so a secret-bearing temp can never be accidentally tracked/committed (belt-and-suspenders).
+.env_tmp_*
 generator_control.log*
 events.db*
 # dev.sh launcher runtime state (never committed): the tracked pidfile + the server console log.
@@ -12,6 +17,12 @@ dev.pid
 dev.log
 ssl_cert.pem
 ssl_key.pem
+# Belt-and-suspenders for TLS material + local backups: the app's cert/key are always *.pem and the
+# repo ships NONE, so ignore any operator-renamed cert/key (SSL_CERT_FILE/SSL_KEY_FILE can point at a
+# custom name) plus any *.bak an editor/operator leaves behind. Keeps device secrets + local snapshots
+# untracked -> reset --hard (the hardened update.sh) never touches them, and they can't be committed.
+*.pem
+*.bak
 generator_control.original.py
 CLAUDE.md
 scratchpads/
