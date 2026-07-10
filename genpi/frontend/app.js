@@ -1174,10 +1174,21 @@ function _updScrollEnd(el){if(el){el.scrollTop=el.scrollHeight;_termFollow=true;
 // Title spinner while actively working; caution banner (error/abort) or success banner (staged
 // ok) beneath the log. Only one banner shows at a time.
 function _updWorking(on){var c=$('updCard');if(c)c.classList.toggle('working',!!on);}
-function _updWarn(on,text){var w=$('updWarn');if(w)w.classList.toggle('show',!!on);
+function _updWarn(on,text,isErr){var w=$('updWarn');
+  if(w){w.classList.toggle('show',!!on);w.classList.toggle('upd-err',!!on&&!!isErr);}  // isErr -> red, else amber
   if(on&&text){var t=$('updWarnText');if(t)t.textContent=text;}
   if(on){_updOk(false);}}
 function _updOk(on){var o=$('updOk');if(o)o.classList.toggle('show',!!on);if(on){var w=$('updWarn');if(w)w.classList.remove('show');}}
+// Staged go/no-go banner: GREEN "ready to apply" ONLY when the stages were clean; otherwise recolor the
+// caution banner AMBER (warnings only) or RED (any error) and name the counts -- so a staged-with-problems
+// release never reads as an all-clear. Counts come from _update_state.counts.stage1/stage2 {warn,err}.
+function _updStaged(counts){counts=counts||{};var s1=counts.stage1||{},s2=counts.stage2||{};
+  var err=(s1.err||0)+(s2.err||0),warn=(s1.warn||0)+(s2.warn||0);
+  if(err+warn===0){_updOk(true);return;}                 // clean -> green check "ready to apply"
+  var parts=[];
+  if(err)parts.push(err+' error'+(err===1?'':'s'));
+  if(warn)parts.push(warn+' warning'+(warn===1?'':'s'));
+  _updWarn(true,'Staged and verified — '+parts.join(' and ')+' occurred. Nothing has changed yet.',err>0);}
 // Copy any log/terminal window to the clipboard (the COPY button top-right of a .log-wrap).
 // innerText keeps the rendered line breaks; falls back to textarea+execCommand off secure ctx.
 document.addEventListener('click',function(e){
@@ -1305,7 +1316,7 @@ function _showDecision(s){
   }else{doBtn.style.display='none';}
   _showImportant(blocked?(s.important_notes||[]):null,s.version);   // dedicated IMPORTANT box (blocked only)
   _updWorking(false);                                   // not actively working while parked
-  if(allow){_updOk(true);}                              // clean staged go/no-go -> green ready banner
+  if(allow){_updStaged(s.counts);}                      // staged go/no-go -> green if clean, else amber/red w/ counts
   else if(blocked){_updWarn(false);_updOk(false);}      // not-installable: the IMPORTANT box carries the message
   else{_updWarn(true,'A warning or error occurred during the update — review the log above before proceeding.');}
 }

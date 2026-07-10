@@ -580,6 +580,10 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
   font:600 12px/1.4 var(--mono);color:#ffcf8a}
 .upd-warn.show{display:flex}
 .upd-warn svg{flex:0 0 auto;width:18px;height:18px;color:#ffb347}
+/* Error variant (RED): a STAGED run that hit any ERROR uses this instead of the amber tone (warnings
+   alone stay amber). Same shape, error-toned to match the IMPORTANT box's severity palette. */
+.upd-warn.upd-err{background:linear-gradient(180deg,#241210,#180b09);border-color:rgba(245,130,107,.55);color:#f3b0a4}
+.upd-warn.upd-err svg{color:#f5826b}
 /* Success/ready banner (green, checkmark) shown at a clean staged go/no-go. */
 .upd-ok{display:none;align-items:center;gap:10px;margin:-6px 0 14px;padding:10px 13px;
   border-radius:9px;background:linear-gradient(180deg,#0e2216,#08160e);border:1px solid #1c5a34;
