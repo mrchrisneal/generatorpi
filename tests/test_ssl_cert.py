@@ -15,8 +15,8 @@ def ssl_paths(module, monkeypatch, tmp_path):
     the real ssl_cert.pem/ssl_key.pem next to the script."""
     cert = tmp_path / "c.pem"
     key = tmp_path / "k.pem"
-    monkeypatch.setattr(module, "SSL_CERT_PATH", cert)
-    monkeypatch.setattr(module, "SSL_KEY_PATH", key)
+    monkeypatch.setattr(module.ssl_cert, "SSL_CERT_PATH", cert)
+    monkeypatch.setattr(module.ssl_cert, "SSL_KEY_PATH", key)
     return cert, key
 
 
@@ -81,7 +81,7 @@ class TestEnsureAutoMode:
         # No cert on disk -> self-signed generation is invoked.
         module.CONFIG["SSL_CERT_MODE"] = "auto"
         called = {}
-        monkeypatch.setattr(module, "_generate_self_signed",
+        monkeypatch.setattr(module.ssl_cert, "_generate_self_signed",
                             lambda: called.setdefault("gen", True))
         module.ensure_ssl_cert()
         assert called.get("gen") is True
@@ -90,9 +90,9 @@ class TestEnsureAutoMode:
         # Cert exists and is NOT expiring -> no regeneration.
         cert, key = ssl_paths
         cert.write_text("x"); key.write_text("y")
-        monkeypatch.setattr(module, "_cert_expires_within", lambda days: False)
+        monkeypatch.setattr(module.ssl_cert, "_cert_expires_within", lambda days: False)
         gen = {"n": 0}
-        monkeypatch.setattr(module, "_generate_self_signed",
+        monkeypatch.setattr(module.ssl_cert, "_generate_self_signed",
                             lambda: gen.__setitem__("n", gen["n"] + 1))
         module.ensure_ssl_cert()
         assert gen["n"] == 0
@@ -101,9 +101,9 @@ class TestEnsureAutoMode:
         # Cert exists but IS expiring -> regenerate.
         cert, key = ssl_paths
         cert.write_text("x"); key.write_text("y")
-        monkeypatch.setattr(module, "_cert_expires_within", lambda days: True)
+        monkeypatch.setattr(module.ssl_cert, "_cert_expires_within", lambda days: True)
         called = {}
-        monkeypatch.setattr(module, "_generate_self_signed",
+        monkeypatch.setattr(module.ssl_cert, "_generate_self_signed",
                             lambda: called.setdefault("gen", True))
         module.ensure_ssl_cert()
         assert called.get("gen") is True
@@ -112,7 +112,7 @@ class TestEnsureAutoMode:
         # An unrecognized mode behaves like auto (generates when missing).
         module.CONFIG["SSL_CERT_MODE"] = "weird"
         called = {}
-        monkeypatch.setattr(module, "_generate_self_signed",
+        monkeypatch.setattr(module.ssl_cert, "_generate_self_signed",
                             lambda: called.setdefault("gen", True))
         module.ensure_ssl_cert()
         assert called.get("gen") is True
@@ -127,9 +127,9 @@ class TestEnsureManualMode:
         cert, key = ssl_paths
         cert.write_text("operator-cert"); key.write_text("operator-key")
         module.CONFIG["SSL_CERT_MODE"] = "manual"
-        monkeypatch.setattr(module, "_cert_expires_within", lambda days: False)
+        monkeypatch.setattr(module.ssl_cert, "_cert_expires_within", lambda days: False)
         # If generation were attempted, fail loudly.
-        monkeypatch.setattr(module, "_generate_self_signed",
+        monkeypatch.setattr(module.ssl_cert, "_generate_self_signed",
                             lambda: pytest.fail("must not regenerate in manual mode"))
         module.ensure_ssl_cert()
         # Operator files are untouched.
@@ -148,8 +148,8 @@ class TestEnsureManualMode:
         cert, key = ssl_paths
         cert.write_text("operator-cert"); key.write_text("operator-key")
         module.CONFIG["SSL_CERT_MODE"] = "manual"
-        monkeypatch.setattr(module, "_cert_expires_within", lambda days: True)
-        monkeypatch.setattr(module, "_generate_self_signed",
+        monkeypatch.setattr(module.ssl_cert, "_cert_expires_within", lambda days: True)
+        monkeypatch.setattr(module.ssl_cert, "_generate_self_signed",
                             lambda: pytest.fail("must not regenerate in manual mode"))
         with caplog.at_level(logging.WARNING, logger="generator_control"):
             module.ensure_ssl_cert()

@@ -38,10 +38,10 @@ class TestEnsureSslCert:
         key = tmp_path / "key.pem"
         cert.write_text("x")
         key.write_text("y")
-        monkeypatch.setattr(module, "SSL_CERT_PATH", cert)
-        monkeypatch.setattr(module, "SSL_KEY_PATH", key)
+        monkeypatch.setattr(module.ssl_cert, "SSL_CERT_PATH", cert)
+        monkeypatch.setattr(module.ssl_cert, "SSL_KEY_PATH", key)
         # Cert not expiring -> early return, no openssl invocation.
-        monkeypatch.setattr(module, "_cert_expires_within", lambda d: False)
+        monkeypatch.setattr(module.ssl_cert, "_cert_expires_within", lambda d: False)
         run = mock.Mock()
         monkeypatch.setattr(subprocess, "run", run)
         module.ensure_ssl_cert()
@@ -50,8 +50,8 @@ class TestEnsureSslCert:
     def test_generates_when_missing(self, module, monkeypatch, tmp_path):
         cert = tmp_path / "cert.pem"
         key = tmp_path / "key.pem"  # neither exists
-        monkeypatch.setattr(module, "SSL_CERT_PATH", cert)
-        monkeypatch.setattr(module, "SSL_KEY_PATH", key)
+        monkeypatch.setattr(module.ssl_cert, "SSL_CERT_PATH", cert)
+        monkeypatch.setattr(module.ssl_cert, "SSL_KEY_PATH", key)
         run = mock.Mock(return_value=mock.Mock(returncode=0, stderr=""))
         monkeypatch.setattr(subprocess, "run", run)
         # Key file isn't really created (openssl mocked), so chmod is a no-op mock.
@@ -67,9 +67,9 @@ class TestEnsureSslCert:
         key = tmp_path / "key.pem"
         cert.write_text("x")
         key.write_text("y")
-        monkeypatch.setattr(module, "SSL_CERT_PATH", cert)
-        monkeypatch.setattr(module, "SSL_KEY_PATH", key)
-        monkeypatch.setattr(module, "_cert_expires_within", lambda d: True)
+        monkeypatch.setattr(module.ssl_cert, "SSL_CERT_PATH", cert)
+        monkeypatch.setattr(module.ssl_cert, "SSL_KEY_PATH", key)
+        monkeypatch.setattr(module.ssl_cert, "_cert_expires_within", lambda d: True)
         run = mock.Mock(return_value=mock.Mock(returncode=0, stderr=""))
         monkeypatch.setattr(subprocess, "run", run)
         monkeypatch.setattr(module.os, "chmod", mock.Mock())
@@ -79,8 +79,8 @@ class TestEnsureSslCert:
     def test_raises_on_generation_failure(self, module, monkeypatch, tmp_path):
         cert = tmp_path / "cert.pem"
         key = tmp_path / "key.pem"
-        monkeypatch.setattr(module, "SSL_CERT_PATH", cert)
-        monkeypatch.setattr(module, "SSL_KEY_PATH", key)
+        monkeypatch.setattr(module.ssl_cert, "SSL_CERT_PATH", cert)
+        monkeypatch.setattr(module.ssl_cert, "SSL_KEY_PATH", key)
         run = mock.Mock(return_value=mock.Mock(returncode=1, stderr="boom"))
         monkeypatch.setattr(subprocess, "run", run)
         with pytest.raises(RuntimeError, match="SSL certificate generation failed"):

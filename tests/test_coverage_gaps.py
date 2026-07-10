@@ -396,8 +396,8 @@ class TestSslChmodError:
         import subprocess
         cert = tmp_path / "cert.pem"
         key = tmp_path / "key.pem"                          # neither exists -> generation runs
-        monkeypatch.setattr(module, "SSL_CERT_PATH", cert)
-        monkeypatch.setattr(module, "SSL_KEY_PATH", key)
+        monkeypatch.setattr(module.ssl_cert, "SSL_CERT_PATH", cert)
+        monkeypatch.setattr(module.ssl_cert, "SSL_KEY_PATH", key)
         monkeypatch.setattr(subprocess, "run",
                             mock.Mock(return_value=mock.Mock(returncode=0, stderr="")))
         monkeypatch.setattr(module.os, "chmod", mock.Mock(side_effect=OSError("op not permitted")))
