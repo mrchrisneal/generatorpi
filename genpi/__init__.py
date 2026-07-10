@@ -319,6 +319,49 @@ from .routes.push import _push_endpoint_error   # noqa: F401  (re-exported for t
 
 
 # ============================================================================
+# EAGER-IMPORT GUARD  (roadmap #59, Stage 10 -- makes the "all app Python resident" promise verifiable)
+# ============================================================================
+# The design guarantee is that EVERY application submodule is imported at startup (no lazy imports), so
+# all code is compiled + resident in RAM before the first request -- no first-hit import cost and no
+# hidden import-time failure surfacing mid-request on the single-core Pi. _EXPECTED names every code
+# submodule the package must load; the `from . import ...` block above is what loads them. We verify the
+# promise two ways: (1) at import time, right below -- if any is missing from sys.modules the package
+# import FAILS FAST instead of limping along half-loaded; (2) again from main() (logged) as a startup
+# self-check. The UI sentinel additionally proves genpi.ui assembled the inline template from the
+# frontend/* assets (a missing/empty asset would otherwise only surface when the first page was served).
+_EXPECTED = (
+    "config", "logg", "store", "ssl_cert", "ratelimit", "auth", "state",
+    "relay", "control", "fuel", "sysmon", "ui", "lifecycle", "updater", "app",
+    "routes", "routes._helpers", "routes.core", "routes.update", "routes.fuel", "routes.push",
+)
+
+
+def _assert_eager_imports():
+    """Verify the eager-import guarantee: every submodule in _EXPECTED is resident in sys.modules and
+    the inline UI template assembled. Raise ImportError (a submodule missing) / RuntimeError (the UI
+    sentinel failed) so a half-loaded package can never serve. Returns the resident submodule count.
+    Called at import time (fails the import) and again from main() (logs the confirmed count)."""
+    missing = [name for name in _EXPECTED if f"{__name__}.{name}" not in sys.modules]
+    if missing:
+        raise ImportError(
+            "genpi eager-import incomplete -- these submodules are not resident in sys.modules: "
+            + ", ".join(missing)
+        )
+    # UI sentinel: genpi.ui reads frontend/*.{css,js,html} at import and assembles HTML_TEMPLATE; a
+    # missing/empty asset must fail HERE, not silently serve a broken page. Cheap string membership.
+    if not HTML_TEMPLATE or "<style" not in HTML_TEMPLATE or "<script" not in HTML_TEMPLATE:
+        raise RuntimeError(
+            "genpi UI template failed to assemble -- inline <style>/<script> missing from HTML_TEMPLATE"
+        )
+    return len(_EXPECTED)
+
+
+# Enforce the guarantee at import time: if a future peel forgets to import a submodule (or one fails to
+# load), `import genpi` raises immediately instead of running degraded.
+_assert_eager_imports()
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 def main():
@@ -350,6 +393,11 @@ def main():
     log.info(f"Web server: {protocol}://{CONFIG['HOST']}:{CONFIG['PORT']}")
     log.info(f"Web Push: {'available' if push_available() else 'unavailable'}")
     log.info("=" * 60)
+
+    # Eager-import self-check: re-run the import-time guard so the confirmed resident-submodule count
+    # lands in the startup log -- a fast, explicit proof of the "all app Python loaded at startup"
+    # promise (and a last chance to fail loudly before we start serving on the single core).
+    log.info(f"Eager-import OK: {_assert_eager_imports()} modules resident")
 
     # Background fuel monitor: fires a low-fuel push even with no browser open. Daemon
     # so it dies with the process; _monitor_stop lets a clean shutdown end it promptly.

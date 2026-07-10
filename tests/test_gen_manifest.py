@@ -49,3 +49,23 @@ def test_malformed_gate_raises_at_generation_time(gm, bad):
     gm.CLI_ONLY_VERSIONS = bad
     with pytest.raises(ValueError, match="malformed"):
         gm.build_manifest()
+
+
+def test_manifest_covers_every_package_asset(gm):
+    # Roadmap #59 Stage 10: the in-app updater downloads + hash-verifies + swaps EXACTLY the manifest's
+    # file list, so any code/asset file under genpi/ that is absent from the manifest would be silently
+    # left stale (or missing) on an update -- a broken package after a self-update. gen-manifest globs
+    # the package for this reason; this is the belt-and-suspenders that proves the on-disk package and
+    # the generated manifest never drift (catches e.g. a new submodule the glob logic somehow skipped).
+    root = _GM_PATH.resolve().parent.parent
+    exts = {".py", ".css", ".js", ".html"}
+    on_disk = {
+        str(p.relative_to(root))
+        for p in (root / "genpi").rglob("*")
+        if p.is_file() and p.suffix in exts and "__pycache__" not in p.parts
+    }
+    assert on_disk, "expected to find package assets under genpi/"
+    # manifest["files"] is a list of {path, sha256, bytes} entries -- pull the paths.
+    manifest_files = {e["path"] for e in gm.build_manifest()["files"]}
+    missing = on_disk - manifest_files
+    assert not missing, f"package assets absent from the generated manifest: {sorted(missing)}"
