@@ -718,3 +718,67 @@ class TestStatePushObject:
         assert push["reason"] == "ok"
         assert push["vapid_public_key"] == pub
         assert push["subscriptions"] == 1
+
+
+# ---------------------------------------------------------------------------
+# #5 -- POST /api/client/notify-status: durable BROWSER diagnostic event when a
+# client reports web push is unavailable on that device.
+# ---------------------------------------------------------------------------
+class TestClientNotifyStatus:
+    def _last(self, module):
+        evs = module.get_events(limit=1)
+        return evs[0] if evs else None
+
+    def test_blocked_records_browser_event(self, client, module, tmp_store):
+        resp = client.post(_q("/api/client/notify-status"), json={"status": "blocked"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True and body["recorded"] is True
+        e = self._last(module)
+        assert e["type"] == "browser"
+        assert "BLOCKED" in e["message"]
+        assert e["message"].endswith("(by apikey)")   # #63 attribution flows through too
+
+    def test_unsupported_and_insecure_map_to_fixed_messages(self, client, module, tmp_store):
+        client.post(_q("/api/client/notify-status"), json={"status": "unsupported"})
+        assert "does not support" in self._last(module)["message"]
+        client.post(_q("/api/client/notify-status"), json={"status": "insecure"})
+        assert "insecure" in self._last(module)["message"]
+
+    def test_unknown_status_is_400_and_records_nothing(self, client, module, tmp_store):
+        # Anything not in the fixed allowlist -> 400, no event written (no log injection surface).
+        resp = client.post(_q("/api/client/notify-status"), json={"status": "sudo rm -rf"})
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+        # Nothing user-controlled ever reaches the log: no "browser" event was written.
+        assert not [e for e in module.get_events(limit=50) if e["type"] == "browser"]
+
+    def test_non_dict_body_is_400(self, client, module, tmp_store):
+        # A bodyless / non-dict POST must be a clean 400, never a 500.
+        resp = client.post(_q("/api/client/notify-status"))
+        assert resp.status_code == 400
+        assert resp.status_code != 500
+
+    def test_consecutive_duplicate_is_deduped(self, client, module, tmp_store):
+        # First report records; an identical immediately-following report is skipped (recorded=False)
+        # so a repeating client can't flood the log.
+        r1 = client.post(_q("/api/client/notify-status"), json={"status": "blocked"})
+        r2 = client.post(_q("/api/client/notify-status"), json={"status": "blocked"})
+        assert r1.get_json()["recorded"] is True
+        assert r2.get_json()["recorded"] is False
+        browser_events = [e for e in module.get_events(limit=50) if e["type"] == "browser"]
+        assert len(browser_events) == 1
+
+    def test_non_consecutive_duplicate_records_again(self, client, module, tmp_store):
+        # A repeat AFTER other activity is a genuine new occurrence -> recorded again.
+        client.post(_q("/api/client/notify-status"), json={"status": "blocked"})
+        module.record_event("start", "Start sequence initiated")   # intervening event
+        r = client.post(_q("/api/client/notify-status"), json={"status": "blocked"})
+        assert r.get_json()["recorded"] is True
+        browser_events = [e for e in module.get_events(limit=50) if e["type"] == "browser"]
+        assert len(browser_events) == 2
+
+    def test_requires_auth(self, client, module, tmp_store):
+        # @auth_required: no key -> 401, nothing recorded.
+        resp = client.post("/api/client/notify-status", json={"status": "blocked"})
+        assert resp.status_code == 401

@@ -602,14 +602,27 @@ function urlB64ToUint8(base64){
   return out;
 }
 function pushApplyState(p){serverPush.supported=!!p.supported;serverPush.vapidKey=p.vapid_public_key||'';serverPush.reason=p.reason||'';refreshPushUI();}
+// #5: same-load guard so a poll/re-render never re-posts a browser status; sessionStorage extends
+// that across reloads within the tab session (best-effort -- private mode may throw, hence the try).
+var _notifyReported={};
+function reportPushStatus(code){
+  // Tell the server ONCE (per session) that web push is unavailable on THIS device, so the durable
+  // Event Log shows why pushes aren't arriving. Only a fixed CODE is sent; the server owns the text.
+  if(_notifyReported[code])return;_notifyReported[code]=true;
+  try{var k='gpNotifyStatus:'+code;if(sessionStorage.getItem(k))return;sessionStorage.setItem(k,'1');}catch(e){}
+  post('/api/client/notify-status',{status:code}).catch(function(){});   // fire-and-forget; a failure is non-fatal
+}
 function refreshPushUI(){
   // A push flow just settled -> clear any spinner on the push-toggle halves.
   var _pt=$('pushToggle');if(_pt){var _hl=_pt.querySelectorAll('.half.loading');for(var _i=0;_i<_hl.length;_i++)_hl[_i].classList.remove('loading');}
   var testBtn=$('testPushBtn');
   if(!pushSupported){setTog('pushToggle',false);
     // Surface WHY it's unavailable (the two real causes) + a link to the enable guide.
-    var why=(window.isSecureContext!==true)?'Push needs a secure (HTTPS) connection on this device.':'This browser doesn\u2019t support web push.';
-    setPushHelp(why+' In-page alerts still work.','Web-Push-Notifications');testBtn.disabled=true;return;}
+    var insecure=(window.isSecureContext!==true);
+    var why=insecure?'Push needs a secure (HTTPS) connection on this device.':'This browser doesn\u2019t support web push.';
+    setPushHelp(why+' In-page alerts still work.','Web-Push-Notifications');
+    reportPushStatus(insecure?'insecure':'unsupported');   // #5: durable Event-Log diagnostic
+    testBtn.disabled=true;return;}
   if(!serverPush.supported){setTog('pushToggle',false);
     /* Cause-specific reason from the server (push_status) instead of a misleading blanket
        "no VAPID keys": distinguish the missing library, un-generated keys, and bad keys. */
@@ -619,7 +632,7 @@ function refreshPushUI(){
     else if(r==='invalid_keys') sm='The server\u2019s VAPID keys are invalid \u2014 clear the VAPID_* lines in the settings file and restart to regenerate them.';
     else sm='Push isn\u2019t configured on the server.';
     setPushHelp(sm+' In-page alerts still work.','Web-Push-Notifications');testBtn.disabled=true;return;}
-  if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in this browser\u2019s site settings \u2014 allow them to enable push.','Web-Push-Notifications');testBtn.disabled=true;return;}
+  if(Notification.permission==='denied'){setTog('pushToggle',false);setPushHelp('Notifications are blocked in this browser\u2019s site settings \u2014 allow them to enable push.','Web-Push-Notifications');reportPushStatus('blocked');testBtn.disabled=true;return;}
   if(swReg){
     swReg.pushManager.getSubscription().then(function(sub){
       var on=!!sub;setTog('pushToggle',on);

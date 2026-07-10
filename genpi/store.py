@@ -134,11 +134,19 @@ def init_event_store(db_path=None):
     record_event("startup", f"GeneratorPi v{APP_VERSION} started")
 
 
-def record_event(event_type, message):
+def record_event(event_type, message, actor=None):
     """Append an event to the durable store, then evict the oldest rows past cap.
 
     Inserts (ts=time.time(), type, message) and deletes any rows beyond
     CONFIG["EVENT_LOG_MAX"] so the table stays bounded.
+
+    `actor` (#63) attributes a user-issued command to whoever issued it: the route
+    handler passes caller_identity() ("apikey" or the basic-auth username) and it is
+    appended to the stored message as " (by <actor>)" so the Event Log shows WHO did
+    it. It is centralized here (one formatting site) so every attributed event reads
+    identically. System/automatic events (the fuel-monitor low-fuel alert, the hourly
+    "update available") pass no actor and are stored verbatim, as before. A blank/whitespace
+    actor is treated as absent so a mis-set identity never yields a dangling "(by )".
 
     This MUST NOT raise into its caller: recording an event is only a side effect
     of starting/stopping the generator and must never be able to break the relay
@@ -146,6 +154,10 @@ def record_event(event_type, message):
     """
     try:
         max_rows = CONFIG["EVENT_LOG_MAX"]
+        # Attribute the command to its issuer, if one was supplied. str() guards against a
+        # non-string actor slipping through; .strip() drops an all-whitespace value.
+        if actor is not None and str(actor).strip():
+            message = f"{message} (by {str(actor).strip()})"
         with _event_lock:
             if _event_conn is None:
                 # Store not initialized (shouldn't happen in normal operation);

@@ -11,7 +11,7 @@ from flask import Blueprint, request, jsonify, Response
 from .. import store
 from ..logg import log
 from ..auth import auth_required, caller_identity
-from ..store import add_subscription, remove_subscription, subscription_count, push_available
+from ..store import add_subscription, remove_subscription, subscription_count, push_available, get_events
 from ..ui import SERVICE_WORKER_JS
 
 bp = Blueprint("push", __name__)
@@ -131,7 +131,52 @@ def api_push_test():
     if subscription_count() == 0:
         return jsonify({"success": False, "message": "no subscriptions"}), 409
     store.send_push_async("Test notification", "Push notifications are working.", tag="test")
-    store.record_event("push", "Test notification sent")
+    store.record_event("push", "Test notification sent", actor=caller_identity())
     log.info(f"Test push sent by {caller_identity()}")
     return jsonify({"success": True})
+
+
+# #5: fixed, server-defined messages for the small set of BROWSER-side notification states a
+# client may report. The client sends only a STATUS CODE (one of these keys) -- never free text --
+# so nothing user-controlled ever reaches the durable event log, eliminating log injection. An
+# unknown/missing code is a 400. Only browser-side causes are here; server-side push problems
+# (missing library / no keys) are already visible server-side and are NOT client-reportable.
+_BROWSER_NOTIFY_MESSAGES = {
+    "blocked":     "Browser reports notifications are BLOCKED in this device's site settings",
+    "unsupported": "Browser reports it does not support web push notifications",
+    "insecure":    "Browser cannot enable push (insecure / non-HTTPS context on this device)",
+}
+
+
+@bp.route('/api/client/notify-status', methods=['POST'])
+@auth_required
+def api_client_notify_status():
+    """Record a durable BROWSER diagnostic event (#5) when a client reports that web-push
+    notifications are unavailable on THAT device -- so an operator scanning the Event Log can see
+    WHY pushes aren't arriving without opening the browser's dev tools.
+
+    SECURITY: the client sends only a fixed STATUS CODE, which the server maps to its OWN fixed
+    message -- no client free text ever reaches the durable log (no log injection). Authed +
+    CSRF-guarded like every mutating POST. Anti-spam is belt-and-suspenders: the client reports at
+    most once per browser session, AND the server skips recording when the NEWEST event is already
+    this identical browser report, so a misbehaving/repeating client can't flood the log."""
+    # Tolerate a bodyless / non-dict / wrong-content-type POST without a 500 (mirrors the other
+    # endpoints): anything that isn't a dict yields an unknown status -> a clean 400.
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = {}
+    status = data.get("status")
+    # Map the client code to a SERVER-OWNED message; an unknown/non-string code is rejected 400.
+    message = _BROWSER_NOTIFY_MESSAGES.get(status) if isinstance(status, str) else None
+    if message is None:
+        return jsonify({"success": False, "message": "unknown notification status"}), 400
+    # Belt-and-suspenders dedup: don't append an identical consecutive browser event. record_event
+    # appends " (by <actor>)" to the stored text, so compare with startswith() on the base message.
+    newest = get_events(limit=1)
+    if newest and newest[0].get("type") == "browser" \
+            and str(newest[0].get("message", "")).startswith(message):
+        return jsonify({"success": True, "recorded": False})
+    store.record_event("browser", message, actor=caller_identity())
+    log.info(f"Browser notification status '{status}' reported by {caller_identity()}")
+    return jsonify({"success": True, "recorded": True})
 

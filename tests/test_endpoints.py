@@ -25,6 +25,15 @@ def _q(path):
     return f"{path}{sep}key={API_KEY}"
 
 
+@pytest.fixture
+def tmp_store(module, tmp_path):
+    """Redirect the durable event store to a throwaway DB so attribution assertions are
+    hermetic, restoring the default store afterwards (same pattern the other suites use)."""
+    module.init_event_store(db_path=tmp_path / "t.db")
+    yield
+    module.init_event_store()
+
+
 class TestIndex:
     def test_renders_html(self, client):
         resp = client.get(_q("/"))
@@ -48,8 +57,9 @@ class TestApiStart:
         created = {}
 
         class FakeThread:
-            def __init__(self, target=None, daemon=None):
+            def __init__(self, target=None, kwargs=None, daemon=None):
                 created["target"] = target
+                created["kwargs"] = kwargs
                 created["daemon"] = daemon
 
             def start(self):
@@ -63,6 +73,9 @@ class TestApiStart:
         assert created["target"] is module.start_generator
         assert created["daemon"] is True
         assert created["started"] is True
+        # #63: the issuing user is captured in the request context and passed into the
+        # worker thread so the start events are attributed (API-key caller -> "apikey").
+        assert created["kwargs"] == {"actor": "apikey"}
 
     def test_start_returns_409_when_relay_busy(self, client, module):
         # Hold the relay lock to simulate an in-progress sequence.
@@ -88,6 +101,36 @@ class TestApiStop:
         # The relay was toggled on then off at least once.
         assert module.relay_start_stop.on.called
         assert module.relay_start_stop.off.called
+
+
+class TestEventAttributionRoutes:
+    """#63 -- user-issued commands are attributed in the DURABLE event log (not just the app log)."""
+
+    def _last(self, module, etype):
+        for e in module.get_events(limit=50):
+            if e["type"] == etype:
+                return e["message"]
+        return None
+
+    def test_stop_event_attributed(self, client, module, tmp_store, no_sleep):
+        resp = client.post(_q("/api/stop"))
+        assert resp.status_code == 200
+        assert self._last(module, "stop") == "Stop command sent (by apikey)"
+
+    def test_set_running_event_attributed(self, client, module, tmp_store):
+        client.post(_q("/api/set_running"), json={"running": True})
+        assert self._last(module, "set_running").endswith("(by apikey)")
+        assert "RUNNING" in self._last(module, "set_running")
+
+    def test_fuel_event_attributed(self, client, module, tmp_store):
+        client.post(_q("/api/fuel/rate"), json={"rate": 5.0})
+        assert self._last(module, "fuel").endswith("(by apikey)")
+
+    def test_start_generator_records_attributed_events(self, module, tmp_store, no_sleep):
+        # Drive the worker function directly (as the spawned thread would) with an explicit actor.
+        module.start_generator(actor="dave")
+        assert self._last(module, "start") == "Start sequence initiated (by dave)"
+        assert self._last(module, "start_complete").endswith("(by dave)")
 
 
 class TestApiStatus:
@@ -475,11 +518,13 @@ class TestRestartEndpoint:
         monkeypatch.setattr(module.lifecycle, "_schedule_process_restart",
                             lambda *a, **k: called.__setitem__("scheduled", True))
         events = []
-        monkeypatch.setattr(module.store, "record_event", lambda t, m: events.append((t, m)))
+        monkeypatch.setattr(module.store, "record_event",
+                            lambda t, m, actor=None: events.append((t, m, actor)))
         resp = client.post(_q("/api/restart"))
         assert resp.status_code == 200 and resp.get_json()["success"] is True
         assert called.get("scheduled") is True
-        assert any(t == "restart" for t, _ in events)
+        # #63: the restart event is attributed to the issuing user (API key -> "apikey").
+        assert any(t == "restart" and actor == "apikey" for t, _, actor in events)
 
 
 class TestFactoryResetEndpoint:

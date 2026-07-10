@@ -120,6 +120,34 @@ class TestRecordEvent:
 
 
 # ---------------------------------------------------------------------------
+# #63 -- user attribution: record_event(..., actor=...) appends "(by <actor>)"
+# ---------------------------------------------------------------------------
+class TestEventActorAttribution:
+    def test_actor_appended(self, module, event_db):
+        module.record_event("start", "Start sequence initiated", actor="chris")
+        assert module.get_events()[0]["message"] == "Start sequence initiated (by chris)"
+
+    def test_no_actor_leaves_message_verbatim(self, module, event_db):
+        # System/automatic events pass no actor and are stored unchanged (back-compat).
+        module.record_event("fuel", "Low fuel alert")
+        assert module.get_events()[0]["message"] == "Low fuel alert"
+
+    def test_blank_actor_is_treated_as_absent(self, module, event_db):
+        # A blank / all-whitespace identity must not yield a dangling "(by )".
+        module.record_event("stop", "Stop command sent", actor="   ")
+        assert module.get_events()[0]["message"] == "Stop command sent"
+
+    def test_none_actor_is_absent(self, module, event_db):
+        module.record_event("stop", "Stop command sent", actor=None)
+        assert module.get_events()[0]["message"] == "Stop command sent"
+
+    def test_non_string_actor_is_coerced_and_trimmed(self, module, event_db):
+        # Defensive: a non-string actor is str()'d rather than crashing record_event.
+        module.record_event("set_running", "State manually set to RUNNING", actor=42)
+        assert module.get_events()[0]["message"] == "State manually set to RUNNING (by 42)"
+
+
+# ---------------------------------------------------------------------------
 # Eviction: cap enforced, OLDEST evicted, seq keeps climbing (never reused)
 # ---------------------------------------------------------------------------
 class TestEviction:

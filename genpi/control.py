@@ -23,7 +23,7 @@ from .store import record_event                              # durable events
 # ============================================================================
 # GENERATOR CONTROL LOGIC
 # ============================================================================
-def start_generator():
+def start_generator(actor=None):
     """Start the generator with PM9400E one-touch sequence:
     1. Press once to prime
     2. Wait for prime delay
@@ -31,19 +31,24 @@ def start_generator():
     4. Repeat if retries configured
 
     The relay_lock prevents overlapping sequences if multiple requests arrive.
+
+    `actor` (#63) is the identity of the user who issued the start -- captured by the
+    route (caller_identity()) BEFORE it spawns this worker thread, since a background
+    thread has no Flask request context to read it from. It is threaded into every
+    durable event this sequence records so the Event Log attributes the command.
     """
     # Acquire relay lock (non-blocking) -- reject if a sequence is already running
     if not relay_lock.acquire(blocking=False):
         log.warning("Start rejected: relay sequence already in progress")
         # Record the rejection so the event log shows the attempt was refused.
-        record_event("start_rejected", "relay sequence already in progress")
+        record_event("start_rejected", "relay sequence already in progress", actor=actor)
         return {"success": False, "message": "A relay sequence is already in progress"}
 
     try:
         with state_lock:
             if generator_state["running"]:
                 # Reject a start when we already believe the generator is running.
-                record_event("start_rejected", "generator already marked as running")
+                record_event("start_rejected", "generator already marked as running", actor=actor)
                 return {"success": False, "message": "Generator already marked as running"}
             generator_state["last_command"] = "start"
             generator_state["start_attempts"] = 0
@@ -54,7 +59,7 @@ def start_generator():
 
         log.info("Initiating generator start sequence")
         # Durable record that a start sequence began (paired with start_complete).
-        record_event("start", "Start sequence initiated")
+        record_event("start", "Start sequence initiated", actor=actor)
 
         for attempt in range(1, max_retries + 1):
             with state_lock:
@@ -97,7 +102,7 @@ def start_generator():
         log.info("Start sequence finished")
         # Durable record that the start sequence completed (paired with the
         # "start" initiate event above).
-        record_event("start_complete", f"Start sequence completed ({max_retries} attempt(s))")
+        record_event("start_complete", f"Start sequence completed ({max_retries} attempt(s))", actor=actor)
         # Notify subscribed devices (off-thread; no-op if push unavailable).
         store.send_push_async("Generator started", "Start sequence completed. Verify the unit is running.", tag="state")
         return {
@@ -111,10 +116,15 @@ def start_generator():
         relay_lock.release()
 
 
-def stop_generator():
+def stop_generator(actor=None):
     """Stop the generator by simulating stop button press.
 
     The relay_lock prevents overlapping with a start sequence.
+
+    `actor` (#63) is the issuing user's identity (caller_identity()), passed by the
+    stop route so the durable stop event is attributed. stop_generator runs in the
+    request context today, but the param keeps attribution explicit + symmetric with
+    start_generator and safe if it is ever called off-thread.
     """
     # Acquire relay lock (non-blocking) -- reject if a sequence is already running
     if not relay_lock.acquire(blocking=False):
@@ -135,7 +145,7 @@ def stop_generator():
             generator_state["message"] = "Stop command sent"
 
         # Durable record of the stop command.
-        record_event("stop", "Stop command sent")
+        record_event("stop", "Stop command sent", actor=actor)
         store.send_push_async("Generator stopped", "Stop command sent.", tag="state")
         log.info("Stop button pressed")
         return {"success": True, "message": "Stop button pressed. Generator should be stopping."}

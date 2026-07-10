@@ -40,19 +40,23 @@ def index():
 @auth_required
 def api_start():
     """REST endpoint to start generator"""
+    # Capture the issuing user HERE, in the request context (#63) -- the worker thread
+    # we spawn below has no Flask request context to read caller_identity() from.
+    actor = caller_identity()
     # Check lock before spawning a thread to avoid creating throwaway threads
     if relay_lock.locked():
-        log.warning(f"Start rejected (relay busy) for {caller_identity()}@{request.remote_addr}")
-        store.record_event("start_rejected", "relay busy")
+        log.warning(f"Start rejected (relay busy) for {actor}@{request.remote_addr}")
+        store.record_event("start_rejected", "relay busy", actor=actor)
         return jsonify({"success": False, "message": "A relay sequence is already in progress"}), 409
-    threading.Thread(target=start_generator, daemon=True).start()
+    # Pass the captured identity into the worker so every start event is attributed.
+    threading.Thread(target=start_generator, kwargs={"actor": actor}, daemon=True).start()
     return jsonify({"success": True, "message": "Start sequence initiated in background"})
 
 @bp.route('/api/stop', methods=['POST'])
 @auth_required
 def api_stop():
     """REST endpoint to stop generator"""
-    result = stop_generator()
+    result = stop_generator(actor=caller_identity())
     return jsonify(result)
 
 @bp.route('/api/status', methods=['GET'])
@@ -93,8 +97,9 @@ def api_set_running():
             generator_state["last_stop_time"] = datetime.now().isoformat()
         generator_state["message"] = f"Manually set to {'RUNNING' if running else 'STOPPED'}"
 
-    # Durable record of the manual state override.
-    store.record_event("set_running", f"State manually set to {'RUNNING' if running else 'STOPPED'}")
+    # Durable record of the manual state override, attributed to the issuing user (#63).
+    store.record_event("set_running", f"State manually set to {'RUNNING' if running else 'STOPPED'}",
+                       actor=caller_identity())
     # Notify subscribed devices of the manual state change (distinct copy from a real
     # start/stop so it's clear no engine action occurred).
     store.send_push_async(
@@ -121,7 +126,8 @@ def api_runtime_hours():
     # Durable audit trail of the manual odometer correction (old -> new). Uses the
     # MANUAL-tagged "set_running" event type so it reads alongside the other manual
     # overrides in the event log. %g keeps whole numbers clean (250 not 250.000000).
-    store.record_event("set_running", f"Total run-hours set to {new_total:g} h (was {old_live:g} h)")
+    store.record_event("set_running", f"Total run-hours set to {new_total:g} h (was {old_live:g} h)",
+                       actor=caller_identity())
     log.info(f"Total run-hours set to {new_total:g} h (was {old_live:g} h) by {caller_identity()}")
     return jsonify({"success": True, "total_run_hours": new_total})
 
@@ -374,7 +380,7 @@ def api_restart():
     """Restart the server process (self re-exec). Returns 200 FIRST, then re-execs after a
     short delay so the response reaches the client. Authed + CSRF-guarded like every POST."""
     log.warning(f"Application restart requested by {caller_identity()}@{request.remote_addr}")
-    store.record_event("restart", "Application restart requested")
+    store.record_event("restart", "Application restart requested", actor=caller_identity())
     lifecycle._schedule_process_restart()
     return jsonify({"success": True, "message": "Restarting - reconnecting shortly..."})
 
@@ -423,9 +429,10 @@ def api_factory_reset():
     to defaults. No process restart -- factory_reset() resets the live in-memory globals, so
     the running app continues with a clean slate. Authed + CSRF-guarded. The client refreshes
     to reflect the reset state."""
-    log.warning(f"FACTORY RESET requested by {caller_identity()}@{request.remote_addr}")
+    who = caller_identity()
+    log.warning(f"FACTORY RESET requested by {who}@{request.remote_addr}")
     factory_reset()
     # First event written into the freshly-emptied store, so there's an audit trail of it.
-    store.record_event("factory_reset", "Factory reset performed (event store + logs cleared)")
+    store.record_event("factory_reset", "Factory reset performed (event store + logs cleared)", actor=who)
     return jsonify({"success": True, "message": "Factory reset complete."})
 

@@ -26,7 +26,8 @@ def api_fuel_reading():
     # Log the CLAMPED level actually used (0..100), not the raw request value, so the
     # event log doesn't claim e.g. "150%" when 100% was fitted.
     shown = max(0.0, min(100.0, value))
-    store.record_event("fuel", f"Observed level {shown:g}% - drain rate now {rate:g} %/hr")
+    store.record_event("fuel", f"Observed level {shown:g}% - drain rate now {rate:g} %/hr",
+                       actor=caller_identity())
     log.info(f"Fuel reading {shown:g}% by {caller_identity()} -> rate {rate:g} %/hr")
     return jsonify({"success": True, "drain_rate": rate})
 
@@ -39,7 +40,7 @@ def api_fuel_rate():
     if err:
         return jsonify({"success": False, "message": err}), 400
     rate = set_fuel_rate(value)
-    store.record_event("fuel", f"Drain rate set to {rate:g} %/hr")
+    store.record_event("fuel", f"Drain rate set to {rate:g} %/hr", actor=caller_identity())
     log.info(f"Drain rate set to {rate:g} %/hr by {caller_identity()}")
     return jsonify({"success": True, "drain_rate": rate})
 
@@ -49,7 +50,7 @@ def api_fuel_rate():
 def api_fuel_rate_reset():
     """Restore the drain rate to its configured default."""
     rate = reset_fuel_rate()
-    store.record_event("fuel", f"Drain rate reset to default {rate:g} %/hr")
+    store.record_event("fuel", f"Drain rate reset to default {rate:g} %/hr", actor=caller_identity())
     log.info(f"Drain rate reset to {rate:g} %/hr by {caller_identity()}")
     return jsonify({"success": True, "drain_rate": rate})
 
@@ -62,7 +63,7 @@ def api_fuel_fill():
     if err:
         return jsonify({"success": False, "message": err}), 400
     snap = set_fuel_fill(value)
-    store.record_event("fuel", f"Tank filled to {snap['fill_level']:g}%")
+    store.record_event("fuel", f"Tank filled to {snap['fill_level']:g}%", actor=caller_identity())
     log.info(f"Tank filled to {snap['fill_level']:g}% by {caller_identity()}")
     return jsonify({"success": True, "fuel": snap})
 
