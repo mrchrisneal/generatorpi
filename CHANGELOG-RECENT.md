@@ -1,3 +1,11 @@
+## 1.5.1
+Released on July 9, 2026
+
+- **FIX:** The installer (`setup.sh`) now validates the in-app updater's scoped `sudoers` rule **as root** before installing it — `visudo` needs root privileges to run its syntax check, so on a **fresh** install the previous version could silently skip the rule, leaving the in-app updater unable to restart the service without a password. Existing installs are unaffected (their rule was already in place); found and fixed during the on-device 1.5.0 rollout.
+- **FIX:** The installer stages the generated `systemd` unit under a `.service`-suffixed temporary name so the advisory `systemd-analyze verify` check runs cleanly instead of emitting a spurious "Invalid argument" warning during install.
+
+---
+
 ## 1.5.0
 Released on July 9, 2026
 
@@ -33,11 +41,3 @@ Released on July 9, 2026
 - **FEAT:** The update log now ends each stage with a colored count of any warnings (yellow) and errors (red) encountered, so a problem can't be missed, and scrolls to the newest lines at each stage boundary.
 - **SEC:** Web Push requests now refuse HTTP redirects (defense in depth against a redirector endpoint) and use a bounded time-to-live, so an alert still arrives if your phone was briefly offline.
 - **CHORE:** The updater's in-app changelog renders cleaner — no preamble, a horizontal rule between releases, and no mid-sentence line breaks. Test coverage of `generator_control.py` stays at 100%.
-
----
-
-## 1.3.2
-Released on July 8, 2026
-
-- **FEAT:** New **TOTAL RUNTIME** control in Settings ▸ SYSTEM lets you manually set (override) the lifetime run-hours odometer — for example, to match the engine's own hour meter — and it is saved to disk. Like the MARK RUNNING / MARK STOPPED overrides, it corrects the **tracked** value only: it never cranks or stops the engine and never touches the relay. The fuel projection is preserved across the change (the tank gauge doesn't jump), and setting it while the generator is running re-baselines the current run so the odometer reads your value immediately.
-- **CHORE:** New tests cover the override end-to-end — the run-hours math, disk persistence across a restart, input validation, authentication + CSRF, and a relay-safety check — keeping app line coverage at 100%.

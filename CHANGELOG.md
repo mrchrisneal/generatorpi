@@ -5,6 +5,14 @@ releases from **CHANGELOG-RECENT.md** (generated from this file by `tools/change
 each release is `## X.Y.Z` with `Released on Month D, YYYY` directly below, and its changes are tagged
 — **FEAT** (new), **PERF** (speed), **FIX** (bug), **SEC** (security), **DOCS**, **CHORE**.
 
+## 1.5.1
+Released on July 9, 2026
+
+- **FIX:** The installer (`setup.sh`) now validates the in-app updater's scoped `sudoers` rule **as root** before installing it — `visudo` needs root privileges to run its syntax check, so on a **fresh** install the previous version could silently skip the rule, leaving the in-app updater unable to restart the service without a password. Existing installs are unaffected (their rule was already in place); found and fixed during the on-device 1.5.0 rollout.
+- **FIX:** The installer stages the generated `systemd` unit under a `.service`-suffixed temporary name so the advisory `systemd-analyze verify` check runs cleanly instead of emitting a spurious "Invalid argument" warning during install.
+
+---
+
 ## 1.5.0
 Released on July 9, 2026
 

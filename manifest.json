@@ -1,5 +1,5 @@
 {
-  "version": "1.5.0",
+  "version": "1.5.1",
   "files": [
     {
       "path": "genpi/__init__.py",
@@ -143,8 +143,8 @@
     },
     {
       "path": "setup.sh",
-      "sha256": "483e2ca740313c04e277edab9248d5b0e4a2f4e7821b1b815c41248819cb1d17",
-      "bytes": 32061
+      "sha256": "4e75111702a1950bed0fd3cb9e10ef2acc03a3ebfed46593157b0f7e85432eb6",
+      "bytes": 32766
     },
     {
       "path": "update.sh",
@@ -153,13 +153,13 @@
     },
     {
       "path": "VERSION",
-      "sha256": "acb57a7135b2d7d6e665f67f056e21353023b93835f54def1ae523bf76f1bfb3",
+      "sha256": "dfe7d71b3f428eb73ed853f8fded65e2986896e21d69f45ebf06bb623b450e14",
       "bytes": 6
     },
     {
       "path": "CHANGELOG-RECENT.md",
-      "sha256": "61d75ef19cc12a52d5065b5569d2eaadc291278edda54b01c3b220eeea2c2775",
-      "bytes": 6727
+      "sha256": "e009062e127cc7499af01620023106d81235a3a997d4381f0929ce36d077e575",
+      "bytes": 6641
     },
     {
       "path": "tools/gp-monitor.py",

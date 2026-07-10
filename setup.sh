@@ -342,9 +342,13 @@ install_unit() {
         fi
     fi
 
-    # Stage the generated unit in a temp file so we validate BEFORE touching /etc.
+    # Stage the generated unit in a temp file so we validate BEFORE touching /etc. Suffix it with
+    # .service so the advisory `systemd-analyze verify` below accepts the filename -- systemd refuses
+    # to validate a unit whose name lacks a valid unit suffix (it would otherwise always warn "Failed
+    # to prepare filename ... Invalid argument"). Fall back to a plain mktemp where --suffix is
+    # unsupported; the verify step is advisory either way, so the fallback only loses that extra check.
     local tmp_unit
-    tmp_unit="$(mktemp)"
+    tmp_unit="$(mktemp --suffix=.service 2>/dev/null || mktemp)"
     _TMP_FILES+=("${tmp_unit}")
     generate_service_file > "${tmp_unit}"
 
@@ -396,8 +400,10 @@ install_sudoers() {
         "${systemctl_bin}" "${SERVICE_NAME}.service" \
         > "${tmp_sudoers}"
 
-    # Validate the STAGED file before it goes anywhere near /etc.
-    if ! visudo -cf "${tmp_sudoers}" >/dev/null 2>&1; then
+    # Validate the STAGED file before it goes anywhere near /etc. Run visudo WITH privilege: visudo
+    # needs root to run its syntax check (as a non-root user it fails with a permission error even on
+    # a file the user owns), which would otherwise make a fresh install silently skip the rule entirely.
+    if ! priv visudo -cf "${tmp_sudoers}" >/dev/null 2>&1; then
         warn "generated sudoers rule failed 'visudo -cf' validation -- NOT installing it. In-app updates will need passwordless 'systemctl restart ${SERVICE_NAME}.service' configured manually."
         return 0
     fi
