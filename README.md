@@ -54,6 +54,24 @@ The script copies the configuration template, opens the credential editor, and r
 
 ---
 
+## Updating
+
+The in-app **Update** button (Settings ▸ SYSTEM) handles routine releases automatically: it verifies each file's SHA-256 against the release manifest, backs up the current install, swaps atomically, health-checks the result, and rolls back on any failure. Some releases — a change to the systemd service or the package layout — are **manual-install only**; the updater detects these, refuses to apply them in-app, and points you to the command line.
+
+To update manually (or any time you prefer the CLI), run on the device:
+
+```bash
+~/generatorpi/update.sh
+```
+
+`update.sh` fetches the latest release, snapshots the current install to `backups/`, resets the checkout to match the release **exactly** (your credentials, event database, and TLS certificates are gitignored and never touched), re-runs the full setup, verifies the app comes back healthy, and **automatically rolls back** to the previous version if anything goes wrong. Run it inside an SSH session for the most thorough setup (it can prompt for credentials if none are configured yet), or non-interactively:
+
+```bash
+ssh pi@generatorpi "~/generatorpi/update.sh"
+```
+
+---
+
 ## Under the Hood
 
 GeneratorPi is tuned for the hardware most people already have on hand — a **Raspberry Pi Zero 2 W**: one modest CPU core and an onboard Wi-Fi radio that can be temperamental. Nearly every non-obvious design choice falls out of that single constraint:

@@ -72,23 +72,35 @@ DEPENDENCIES = [
 ]
 
 
-# Per-release UPDATE CONSTRAINTS surfaced to the in-app web updater (added v1.5.0).
+# Per-release UPDATE CONSTRAINT surfaced to the in-app web updater (reworked v1.5.0).
 #
-# CLI_ONLY_VERSIONS: versions that can ONLY be installed via the CLI (`./setup.sh reinstall` or
-# `./update.sh`) -- e.g. a release that changes the systemd entrypoint / package layout, which the
-# in-app updater cannot do (its scoped sudo can't rewrite the unit). This is an APPEND-ONLY list of
-# every such "gate" release. The in-app updater REFUSES to apply the latest release when ANY listed
-# version G falls STRICTLY ABOVE the device's installed version and AT-OR-BELOW the latest
-# (installed < G <= latest) -- i.e. a manual gate sits between where the user is and where they'd land.
-# This is what stops a very old install from web-JUMPING across a gate and failing hard: it's blocked
-# and told to install manually (which always jumps straight to latest, crossing every gate at once, so
-# nobody is ever stuck). Append a version here whenever you cut such a release. If the LATEST release is
-# itself a gate, include it too (then everyone below it is blocked -> all install via the CLI).
+# INCOMPATIBLE_VERSIONS: an APPEND-ONLY map { "version": "reason" } of releases the in-app web updater
+# must REFUSE to install -- e.g. a release that changes the systemd entrypoint / package layout (which
+# the updater's scoped sudo can't perform) or is otherwise too structural to swap safely in place. Such
+# releases are installed MANUALLY (`./update.sh`, or `./setup.sh reinstall`). The KEYS are the "gate"
+# versions; each VALUE is the operator guidance shown in the updater's IMPORTANT box for THAT version.
+# The updater REFUSES the web apply when ANY key G falls STRICTLY ABOVE the device's installed version
+# and AT-OR-BELOW the latest (installed < G <= latest) -- a manual gate sits between where the user is
+# and where they'd land -- and shows that version's reason. This stops a very old install from web-
+# JUMPING across a gate and bricking; a manual install jumps straight to latest (crossing every gate at
+# once), so nobody is ever stuck.
 #
-# IMPORTANT_NOTES: operator guidance shown in the updater's IMPORTANT box when a release is blocked
-# (list of strings; a single string is also accepted). Older clients ignore both keys (forward-compat).
-CLI_ONLY_VERSIONS = ["1.4.0"]   # v1.4.0 restructured the app into a package + repointed the systemd entrypoint
-IMPORTANT_NOTES = []
+# NEVER REMOVE an entry -- only ADD. A device on a very old version must still learn that a gate sits
+# between it and the latest, so the ENTIRE history of gate releases stays here forever. If the LATEST
+# release is itself a gate, include it too (then everyone below it is blocked -> all install via the
+# CLI). Each KEY must be a clean dotted-numeric version (validated at build time below -- a 'v'-prefixed
+# or garbage key would parse to a tiny tuple in the updater and silently NEVER block). Older clients
+# that predate this key ignore it (forward-compatible).
+INCOMPATIBLE_VERSIONS = {
+    "1.4.0": "Updating to v1.4.0 repointed the systemd service to 'python3 -m genpi', which the in-app "
+             "updater cannot change (it only restarts the existing unit) -- a web update would relaunch "
+             "the old code and report a false success. Install it manually: on the device, pull the "
+             "release and run ./setup.sh reinstall (or ./update.sh).",
+    "1.5.0": "v1.5.0 completes the internal split of the app into the genpi/ package (~20 modules) -- "
+             "too large and structural a change to apply in place safely. Install it manually: on the "
+             "device, pull the release and run ./setup.sh reinstall (or ./update.sh). Future releases "
+             "update in-app normally again.",
+}
 
 
 def _sha256(path):
@@ -104,13 +116,13 @@ def build_manifest(root=ROOT, files=SHIPPED_FILES):
     """Return the manifest dict for the given root. Missing files are skipped with a
     warning (a release should have them all, but we never crash on a packaging slip)."""
     version = (root / "VERSION").read_text(encoding="utf-8").strip()
-    # Fail LOUD on a malformed CLI-only gate (e.g. the natural 'v1.4.0' typo, or garbage) -- it would
+    # Fail LOUD on a malformed gate version KEY (e.g. the natural 'v1.4.0' typo, or garbage) -- it would
     # parse to a tiny tuple in the updater and silently never block, defeating the feature. Better a
     # broken release build than an inert gate that lets an old install web-jump across it and brick.
-    _bad = [g for g in CLI_ONLY_VERSIONS if not _GATE_VERSION_RE.match(str(g))]
+    _bad = [v for v in INCOMPATIBLE_VERSIONS if not _GATE_VERSION_RE.match(str(v))]
     if _bad:
-        raise ValueError(f"CLI_ONLY_VERSIONS has malformed entries {_bad!r}: each must be a clean "
-                         f"dotted-numeric version like '1.4.0' (NOT 'v1.4.0'). A bad gate fails OPEN.")
+        raise ValueError(f"INCOMPATIBLE_VERSIONS has malformed version keys {_bad!r}: each KEY must be "
+                         f"a clean dotted-numeric version like '1.4.0' (NOT 'v1.4.0'). A bad key fails OPEN.")
     entries = []
     for rel in files:
         p = root / rel
@@ -119,8 +131,7 @@ def build_manifest(root=ROOT, files=SHIPPED_FILES):
             continue
         entries.append({"path": rel, "sha256": _sha256(p), "bytes": p.stat().st_size})
     return {"version": version, "files": entries, "dependencies": DEPENDENCIES,
-            "cli_only_versions": CLI_ONLY_VERSIONS,
-            "important_notes": IMPORTANT_NOTES}
+            "incompatible_versions": INCOMPATIBLE_VERSIONS}
 
 
 def main():

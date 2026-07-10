@@ -745,32 +745,40 @@ def _run_update():
         _update_log("  version string well-formed … ok")
         with _update_lock:
             _update_state["version"] = version
-        # CLI-ONLY GATE: the manifest may list versions installable ONLY via the CLI (a release that
-        # changes the systemd entrypoint / package layout, which the in-app updater can't do). If ANY
-        # listed gate G falls STRICTLY ABOVE the installed version and AT-OR-BELOW the latest
-        # (installed < G <= latest), a manual gate sits between where we are and where we'd land -- so we
-        # REFUSE the web apply HERE, before downloading or touching anything. This stops a very old install
-        # from web-JUMPING across a gate and failing hard; the operator installs manually instead (which
-        # jumps straight to latest, crossing every gate at once). Missing/empty list -> nothing gates ->
-        # applicable (forward-compatible with older manifests). A single string is accepted as one gate.
-        _gates = manifest.get("cli_only_versions") or []
-        if isinstance(_gates, str):
-            _gates = [_gates]
-        # Normalize a gate for comparison: trim + tolerate a 'v'-tagged form ("v1.4.0" -> "1.4.0"). Releases
-        # are TAGGED vX.Y.Z, so that typo is the natural mistake -- and left as-is it would parse to (0,4,0)
-        # and silently NEVER block (fail-OPEN), letting exactly the old install this protects web-jump a gate
-        # and brick. (gen-manifest.py ALSO rejects a malformed gate at generation time -- defense in depth.)
+        # CLI-ONLY / INCOMPATIBLE-VERSION GATE: the manifest's incompatible_versions is an APPEND-ONLY map
+        # { version -> reason } of releases the web updater must REFUSE (a systemd-entrypoint / package-
+        # layout change it can't perform, or a restructure too large to swap in place). The KEYS are the
+        # gates; each VALUE is the guidance shown in the IMPORTANT box. If ANY gate G falls STRICTLY ABOVE
+        # the installed version and AT-OR-BELOW the latest (installed < G <= latest), a manual gate sits
+        # between where we are and where we'd land -- so we REFUSE the web apply HERE, before downloading or
+        # touching anything, and surface THAT version's reason. This stops a very old install from web-
+        # JUMPING across a gate and failing hard; the operator installs manually instead (which jumps
+        # straight to latest, crossing every gate at once). Absent/empty -> nothing gates -> applicable
+        # (forward-compatible with older manifests). A bare list (keys only) or a single string is tolerated
+        # so an unexpected manifest shape can never crash the check.
+        _incompat = manifest.get("incompatible_versions")
+        if isinstance(_incompat, str):
+            _incompat = {_incompat: ""}
+        elif isinstance(_incompat, (list, tuple, set)):
+            _incompat = {str(v): "" for v in _incompat}
+        elif not isinstance(_incompat, dict):
+            _incompat = {}
+        # Normalize a gate version for comparison: trim + tolerate a 'v'-tagged form ("v1.4.0" -> "1.4.0").
+        # Releases are TAGGED vX.Y.Z, so that typo is the natural mistake -- left as-is it would parse to
+        # (0,4,0) and silently NEVER block (fail-OPEN), letting exactly the old install this protects
+        # web-jump a gate and brick. (gen-manifest.py ALSO rejects a malformed KEY at generation time.)
         def _gate_ver(g):
             g = str(g).strip()
             return g[1:] if g[:1] in ("v", "V") else g
         _cur_t, _latest_t = _version_tuple(APP_VERSION), _version_tuple(version)
-        _blocking = sorted({_gate_ver(g) for g in _gates
+        # The blocking gate versions (normalized, de-duped, version-sorted) sitting in (installed, latest].
+        _blocking = sorted({_gate_ver(g) for g in _incompat
                             if _gate_ver(g) and _cur_t < _version_tuple(_gate_ver(g)) <= _latest_t},
                            key=_version_tuple)
-        _notes = manifest.get("important_notes") or []
-        if isinstance(_notes, str):                      # accept a single string OR a list of strings
-            _notes = [_notes]
-        _notes = [str(n).strip() for n in _notes if str(n).strip()]
+        # Each blocking gate's reason, matched by NORMALIZED version key. A gate with a blank/missing message
+        # still blocks -- the IMPORTANT box then falls back to its generic single-sentence text (Case B).
+        _msg_by_ver = {_gate_ver(k): str(v).strip() for k, v in _incompat.items()}
+        _notes = [_msg_by_ver[g] for g in _blocking if _msg_by_ver.get(g)]
         with _update_lock:
             _update_state["installable"] = not _blocking
             # Rendered in the UI's dedicated IMPORTANT box: with notes -> the intro + note(s) + a divider

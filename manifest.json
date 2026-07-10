@@ -1,15 +1,140 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "files": [
     {
       "path": "genpi/__init__.py",
-      "sha256": "0a6c18f42f20a293cf690e44875b4ee0e204861d5af3b7b1c389490e0c39187e",
-      "bytes": 407379
+      "sha256": "af61faac613c71d008d9e5328f54084dd3685309eb095ea1b934bc296bfb12d2",
+      "bytes": 28769
     },
     {
       "path": "genpi/__main__.py",
       "sha256": "a80d6b34c17a0f6248b23b621e884932144114a4be71cfe0a02e7b42e4521b24",
       "bytes": 1019
+    },
+    {
+      "path": "genpi/app.py",
+      "sha256": "7881cf3e1df25079dd5f418ad8b301c904c2186e0f12fa89143f1b0aff11cb48",
+      "bytes": 8654
+    },
+    {
+      "path": "genpi/auth.py",
+      "sha256": "869066e02eaa2091279860f05e048f1bdd130909f6f566b09a2f49ea0d634bb2",
+      "bytes": 11792
+    },
+    {
+      "path": "genpi/config.py",
+      "sha256": "2a346571b0c7e736a7e4f9c7928023407abc0b551415faff20ad0334afe4a2d8",
+      "bytes": 22881
+    },
+    {
+      "path": "genpi/control.py",
+      "sha256": "a8431d87982d87219f0325e4494fa101ba7fa00e90f81e1b829f0cfa8f4ac798",
+      "bytes": 6932
+    },
+    {
+      "path": "genpi/frontend/app.js",
+      "sha256": "4fe64bf2675e7ab6ad0526b5362e89b46b452e630b4303c5904e978ed67f15f9",
+      "bytes": 96033
+    },
+    {
+      "path": "genpi/frontend/body.html",
+      "sha256": "b5bd6e1e7a0d936fc2831c3cd3ff3e9ded2ca0a21270f97e28cb1c93be682a1c",
+      "bytes": 34836
+    },
+    {
+      "path": "genpi/frontend/style.css",
+      "sha256": "76ed531ee037198033b240f6cff08d091f4f34ebcc85e2c398e5162960398b09",
+      "bytes": 54678
+    },
+    {
+      "path": "genpi/frontend/sw.js",
+      "sha256": "426cd6a4c439a8b3f8d48fb2b2d72c230ec820e3abc89667569b15bfcfd34b3d",
+      "bytes": 704
+    },
+    {
+      "path": "genpi/fuel.py",
+      "sha256": "80522385d036e71d0e0c1b5d5de47f1884d39b8de2b8225e01a171f2e63bab5a",
+      "bytes": 11202
+    },
+    {
+      "path": "genpi/lifecycle.py",
+      "sha256": "d9d001a0f3c3ad6613febabea16e225484b8c22644d8e0cc17aa947c46f197af",
+      "bytes": 14805
+    },
+    {
+      "path": "genpi/logg.py",
+      "sha256": "c88dd023ad1748012ea05aae5f879b6fda65f8f10a9370211928fcac09dd4380",
+      "bytes": 2330
+    },
+    {
+      "path": "genpi/ratelimit.py",
+      "sha256": "d4096bedc5efb3f272a7ef93e9eee3132b280c070290d52953d12f0a5b41062f",
+      "bytes": 4193
+    },
+    {
+      "path": "genpi/relay.py",
+      "sha256": "f2e292c41d5c694aec034288709aa585a02e1aa6c4f84f09d203adddf102c273",
+      "bytes": 3334
+    },
+    {
+      "path": "genpi/routes/__init__.py",
+      "sha256": "e647c51f38fdc6d61ee1764d5b9be0531e6a66158b637208b13a44def2f0739b",
+      "bytes": 508
+    },
+    {
+      "path": "genpi/routes/_helpers.py",
+      "sha256": "3caa0a1d2f50c5868eec404c37f1c47127806b2ce6023bb12cfc6590d559b8bb",
+      "bytes": 1861
+    },
+    {
+      "path": "genpi/routes/core.py",
+      "sha256": "d37e2e265c7a7888897e4aaa08f83d769db1f0f0f797c82d0a8ce824d6e566ef",
+      "bytes": 21074
+    },
+    {
+      "path": "genpi/routes/fuel.py",
+      "sha256": "544a2694a5ccb09bcb61d6568db4aa095b7cb3f14128cb3a2a89b08a0e4bf72f",
+      "bytes": 4374
+    },
+    {
+      "path": "genpi/routes/push.py",
+      "sha256": "eb5f671171eac08bd04b4a18eb76e41891e82a9b3e16f05168fa8c46540c8428",
+      "bytes": 5062
+    },
+    {
+      "path": "genpi/routes/update.py",
+      "sha256": "b919295819ad9f0a3d96cc35c3ed92fea5ce5befeb2d9a6f37271b8519c321fc",
+      "bytes": 7142
+    },
+    {
+      "path": "genpi/ssl_cert.py",
+      "sha256": "8dffc1dd77205c3028901e1d1c374156478bc26610c289a39663f3cc3a0c1ecf",
+      "bytes": 9603
+    },
+    {
+      "path": "genpi/state.py",
+      "sha256": "fd0f0ecc8a1c9550ce81341ab5136fc4519ccaba3590e35e07a8e9d1750b60aa",
+      "bytes": 11660
+    },
+    {
+      "path": "genpi/store.py",
+      "sha256": "ccc243e7932bc4eb54fc5aefff59cf6a7b6936c928766c92a9a0b53036e25202",
+      "bytes": 23421
+    },
+    {
+      "path": "genpi/sysmon.py",
+      "sha256": "10a15c0072e90cf01f8e2e01134b505c0edeb0ca2546bf77aa265bf6c7996461",
+      "bytes": 10650
+    },
+    {
+      "path": "genpi/ui.py",
+      "sha256": "7700987d768b6d3cffcf0fd692ec9ae79a264542d3c4d1ec4c0a160ea27b1072",
+      "bytes": 3739
+    },
+    {
+      "path": "genpi/updater.py",
+      "sha256": "63ff18a22425853a7ff706ee8964988fb0d5d46f489a718a9831bdbc7e3bb0a6",
+      "bytes": 64748
     },
     {
       "path": "requirements.txt",
@@ -18,23 +143,23 @@
     },
     {
       "path": "setup.sh",
-      "sha256": "2f31df67c5893acd02c7527a4c60a8446ef34f50ef74d46e766e74ed9e5f4d13",
-      "bytes": 9668
+      "sha256": "483e2ca740313c04e277edab9248d5b0e4a2f4e7821b1b815c41248819cb1d17",
+      "bytes": 32061
     },
     {
       "path": "update.sh",
-      "sha256": "31c4e65ea8ad2fdf70b269062b090c61e9f1bb2a590a044e5afbed346ac68f5d",
-      "bytes": 1055
+      "sha256": "2e83260b249f11d9b5faa378be80e9fbe80337548dd8b6342c34795088212d4b",
+      "bytes": 12863
     },
     {
       "path": "VERSION",
-      "sha256": "78b591400c56b7b67b8cb3b2b8a8e65e9093897f02ce0878e6b5405c68620fa7",
+      "sha256": "acb57a7135b2d7d6e665f67f056e21353023b93835f54def1ae523bf76f1bfb3",
       "bytes": 6
     },
     {
       "path": "CHANGELOG-RECENT.md",
-      "sha256": "cfd0897dc6409a6e996391b6cf46f5a77046fb985d879e3b6962c3178d9d8554",
-      "bytes": 7713
+      "sha256": "61d75ef19cc12a52d5065b5569d2eaadc291278edda54b01c3b220eeea2c2775",
+      "bytes": 6727
     },
     {
       "path": "tools/gp-monitor.py",
@@ -97,8 +222,8 @@
       "feature": "Web Push notifications"
     }
   ],
-  "cli_only_versions": [
-    "1.4.0"
-  ],
-  "important_notes": []
+  "incompatible_versions": {
+    "1.4.0": "Updating to v1.4.0 repointed the systemd service to 'python3 -m genpi', which the in-app updater cannot change (it only restarts the existing unit) -- a web update would relaunch the old code and report a false success. Install it manually: on the device, pull the release and run ./setup.sh reinstall (or ./update.sh).",
+    "1.5.0": "v1.5.0 completes the internal split of the app into the genpi/ package (~20 modules) -- too large and structural a change to apply in place safely. Install it manually: on the device, pull the release and run ./setup.sh reinstall (or ./update.sh). Future releases update in-app normally again."
+  }
 }

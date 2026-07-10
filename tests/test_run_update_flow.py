@@ -173,20 +173,20 @@ class TestManifestForwardCompat:
         assert {d["apt"] for d in module._update_state["missing_deps"]} == {"python3-absent-fc"}
 
 
-class TestCliOnlyGate:
-    """cli_only_versions: the manifest lists versions installable ONLY via the CLI. The web updater
-    REFUSES the latest release when ANY listed gate G satisfies installed < G <= latest -- a manual gate
-    sits between the device and the target -- so a very old install can't web-jump across it and fail. It
-    logs an [ERROR] pointing to the IMPORTANT box, exposes the note(s) via _update_state["important_notes"],
-    and parks with the apply button disabled, WITHOUT downloading or touching anything."""
+class TestIncompatibleVersionGate:
+    """incompatible_versions: the manifest maps { version -> reason } for releases installable ONLY via
+    the CLI. The web updater REFUSES the latest release when ANY gate key G satisfies installed < G <=
+    latest -- a manual gate sits between the device and the target -- so a very old install can't web-jump
+    across it and fail. It logs an [ERROR] pointing to the IMPORTANT box, exposes the blocking gate(s)'
+    reason(s) via _update_state["important_notes"], and parks with the apply button disabled, WITHOUT
+    downloading or touching anything."""
 
-    def _run(self, module, monkeypatch, tmp_path, installed, latest, gates, notes=None, seen=None):
+    def _run(self, module, monkeypatch, tmp_path, installed, latest, incompat, seen=None):
         monkeypatch.setattr(module.updater, "APP_VERSION", installed)   # deterministic "installed" version
         manifest = {"version": latest,
-                    "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}],
-                    "cli_only_versions": gates}
-        if notes is not None:
-            manifest["important_notes"] = notes
+                    "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
+        if incompat is not None:
+            manifest["incompatible_versions"] = incompat
         _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
         def _await(msg, allow_proceed, proceed_label="PROCEED", proceed_disabled=False):
             if seen is not None:
@@ -200,17 +200,17 @@ class TestCliOnlyGate:
     def test_gate_between_installed_and_latest_blocks(self, module, monkeypatch, tmp_path):
         seen = {}
         self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0",
-                  gates=["1.4.0"], notes=["Run ./setup.sh reinstall.", "Then restart the app."], seen=seen)
+                  incompat={"1.4.0": "Run ./setup.sh reinstall, then restart the app."}, seen=seen)
         st = module._update_state
         assert st["installable"] is False
-        # Notes go to the BOX (this state field), NOT dumped into the terminal log.
-        assert st["important_notes"] == ["Run ./setup.sh reinstall.", "Then restart the app."]
+        # The blocking gate's reason goes to the BOX (this state field), NOT dumped into the terminal log.
+        assert st["important_notes"] == ["Run ./setup.sh reinstall, then restart the app."]
         log = "\n".join(st["log"])
         assert "[ERROR] v1.6.0 cannot be installed by the web updater" in log
         assert "manual-install-only version (v1.4.0)" in log     # names the blocking gate
         assert "between your v1.3.4 and v1.6.0" in log
         assert "See the IMPORTANT note below" in log             # log only POINTS to the box
-        assert "Then restart the app." not in log                # note text lives in the box, not the log
+        assert "Run ./setup.sh reinstall, then restart the app." not in log   # reason lives in the box, not the log
         assert "[DOWNLOADING]" not in log and "[STAGED]" not in log   # refused before touching anything
         assert st["phase"] == "failed"
         assert seen["proceed_disabled"] is True and seen["allow_proceed"] is False
@@ -220,7 +220,7 @@ class TestCliOnlyGate:
         # Already crossed the gate (installed == gate) -> web-update to latest is allowed (not < G).
         seen = {}
         self._run(module, monkeypatch, tmp_path, installed="1.4.0", latest="1.6.0",
-                  gates=["1.4.0"], seen=seen)
+                  incompat={"1.4.0": "manual only"}, seen=seen)
         st = module._update_state
         assert st["installable"] is True
         assert "cannot be installed by the web updater" not in "\n".join(st["log"])
@@ -229,19 +229,22 @@ class TestCliOnlyGate:
 
     def test_gate_below_installed_does_not_block(self, module, monkeypatch, tmp_path):
         # A gate the user already passed (G < installed) never blocks.
-        self._run(module, monkeypatch, tmp_path, installed="1.5.0", latest="1.6.0", gates=["1.4.0"])
+        self._run(module, monkeypatch, tmp_path, installed="1.5.0", latest="1.6.0",
+                  incompat={"1.4.0": "manual only"})
         assert module._update_state["installable"] is True
         assert "[STAGED]" in "\n".join(module._update_state["log"])
 
     def test_latest_itself_is_a_gate_blocks_everyone_below(self, module, monkeypatch, tmp_path):
         # When the LATEST release is itself CLI-only (gate == latest), everyone below it is blocked.
-        self._run(module, monkeypatch, tmp_path, installed="1.4.0", latest="1.5.0", gates=["1.5.0"])
+        self._run(module, monkeypatch, tmp_path, installed="1.4.0", latest="1.5.0",
+                  incompat={"1.5.0": "big restructure -- install manually"})
         assert module._update_state["installable"] is False
         assert "[ERROR] v1.5.0 cannot be installed by the web updater" in \
             "\n".join(module._update_state["log"])
 
-    def test_no_cli_only_versions_key_is_forward_compatible(self, module, monkeypatch, tmp_path):
-        # Older/ordinary manifest with no cli_only_versions -> nothing gates -> applicable.
+    def test_no_incompatible_versions_key_is_forward_compatible(self, module, monkeypatch, tmp_path):
+        # Older/ordinary manifest with no incompatible_versions -> nothing gates -> applicable. Also
+        # exercises the "absent/unexpected value -> {}" normalization branch (manifest.get returns None).
         monkeypatch.setattr(module.updater, "APP_VERSION", "1.0.0")
         manifest = {"version": "2.0.0", "files": [{"path": "a.py", "sha256": _sha(b"x"), "bytes": 1}]}
         _wire_stage1(module, monkeypatch, tmp_path, manifest, {"a.py": b"x"})
@@ -254,41 +257,54 @@ class TestCliOnlyGate:
         assert module._update_state["important_notes"] == []
         assert "[STAGED]" in "\n".join(module._update_state["log"])
 
-    def test_blocked_without_notes_leaves_notes_empty_for_case_b(self, module, monkeypatch, tmp_path):
-        # Blocked but no important_notes -> list stays empty (UI renders the Case B fallback box). The
-        # refusal still logs the [ERROR] + pointer, so it is never silent even without a note.
-        self._run(module, monkeypatch, tmp_path, installed="1.3.0", latest="1.6.0", gates=["1.4.0"])
+    def test_blocked_with_blank_reason_leaves_notes_empty_for_case_b(self, module, monkeypatch, tmp_path):
+        # Blocked but the gate carries a BLANK reason -> notes stay empty (UI renders the Case B fallback
+        # box). The refusal still logs the [ERROR] + pointer, so it is never silent even without a reason.
+        self._run(module, monkeypatch, tmp_path, installed="1.3.0", latest="1.6.0",
+                  incompat={"1.4.0": "   "})
         assert module._update_state["important_notes"] == []
         log = "\n".join(module._update_state["log"])
         assert "[ERROR] v1.6.0 cannot be installed by the web updater" in log
         assert "See the IMPORTANT note below" in log
 
-    def test_important_notes_string_is_normalized_to_list(self, module, monkeypatch, tmp_path):
-        # important_notes MAY be a single string -> normalized + trimmed to a one-element list for the box.
+    def test_gate_reason_is_trimmed(self, module, monkeypatch, tmp_path):
+        # A gate reason with surrounding whitespace is trimmed for the box.
         self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0",
-                  gates=["1.4.0"], notes="  Reinstall via setup.sh.  ")
+                  incompat={"1.4.0": "  Reinstall via setup.sh.  "})
         assert module._update_state["important_notes"] == ["Reinstall via setup.sh."]
 
-    def test_cli_only_versions_as_single_string_is_accepted(self, module, monkeypatch, tmp_path):
-        # cli_only_versions MAY be a bare string (one gate) -> normalized + applied.
-        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0", gates="1.4.0")
+    def test_incompatible_versions_as_single_string_is_accepted(self, module, monkeypatch, tmp_path):
+        # incompatible_versions MAY be a bare string (one gate, no reason) -> normalized + applied.
+        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0", incompat="1.4.0")
         assert module._update_state["installable"] is False
+        assert module._update_state["important_notes"] == []      # keys-only -> Case B fallback
 
-    def test_v_prefixed_gate_still_blocks(self, module, monkeypatch, tmp_path):
-        # A gate written in the 'v1.4.0' TAG form (the natural typo) must STILL gate: the updater strips
-        # the leading 'v' before comparing, so it can't silently fail open (parse to (0,4,0) -> never block).
-        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0", gates=["v1.4.0"])
+    def test_incompatible_versions_as_bare_list_is_accepted(self, module, monkeypatch, tmp_path):
+        # A bare LIST of gate versions (keys only, no reasons) is tolerated -> each still gates.
+        self._run(module, monkeypatch, tmp_path, installed="1.2.0", latest="2.0.0",
+                  incompat=["1.4.0", "1.6.0"])
+        assert module._update_state["installable"] is False
+        assert "manual-install-only version (v1.4.0, v1.6.0)" in \
+            "\n".join(module._update_state["log"])
+
+    def test_v_prefixed_gate_key_still_blocks(self, module, monkeypatch, tmp_path):
+        # A gate KEY written in the 'v1.4.0' TAG form (the natural typo) must STILL gate: the updater
+        # strips the leading 'v' before comparing, so it can't fail open (parse to (0,4,0) -> never block).
+        self._run(module, monkeypatch, tmp_path, installed="1.3.4", latest="1.6.0",
+                  incompat={"v1.4.0": "manual only"})
         st = module._update_state
         assert st["installable"] is False
         assert "manual-install-only version (v1.4.0)" in "\n".join(st["log"])   # normalized: a single 'v'
 
     def test_multiple_in_range_gates_listed_ascending(self, module, monkeypatch, tmp_path):
-        # Several gates between installed and latest -> all named in ascending version order.
+        # Several gates between installed and latest -> all named in ascending version order, and their
+        # reasons collected in the same order for the box.
         self._run(module, monkeypatch, tmp_path, installed="1.2.0", latest="2.0.0",
-                  gates=["1.6.0", "1.4.0"])
-        assert module._update_state["installable"] is False
-        assert "manual-install-only version (v1.4.0, v1.6.0)" in \
-            "\n".join(module._update_state["log"])
+                  incompat={"1.6.0": "reason six", "1.4.0": "reason four"})
+        st = module._update_state
+        assert st["installable"] is False
+        assert "manual-install-only version (v1.4.0, v1.6.0)" in "\n".join(st["log"])
+        assert st["important_notes"] == ["reason four", "reason six"]
 
 
 class TestAwaitDecisionProceedDisabled:

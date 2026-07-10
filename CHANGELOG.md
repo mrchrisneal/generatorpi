@@ -5,6 +5,16 @@ releases from **CHANGELOG-RECENT.md** (generated from this file by `tools/change
 each release is `## X.Y.Z` with `Released on Month D, YYYY` directly below, and its changes are tagged
 — **FEAT** (new), **PERF** (speed), **FIX** (bug), **SEC** (security), **DOCS**, **CHORE**.
 
+## 1.5.0
+Released on July 9, 2026
+
+- **CHORE:** The **`genpi/` package split** begun in 1.4.0 is now **complete** — the former ~6,760-line `generator_control.py` monolith is fully decomposed into ~20 focused, eagerly-imported submodules (configuration, logging, the inline UI, the SQLite event store, shared state, SSL certificate management, rate-limiting, authentication, the relay, generator control, fuel projection, system metrics, the server lifecycle, the self-updater, the Flask app, and four route blueprints), with `genpi/__init__.py` reduced from the bulk of the app to a small aggregator. Behavior is **byte-identical** — same UI, REST API, and relay/auth/fuel logic (verified module by module) — and test coverage stays at **100%**.
+- **CHORE:** The "all application code is loaded into RAM at startup" guarantee is now **explicit and enforced**: importing the package fails fast if any submodule is missing, startup logs `Eager-import OK: N modules resident` as a self-check, and a test asserts every packaged file is listed in the release manifest so a module can never be silently dropped from an update.
+- **CHORE:** Like 1.4.0, this release must be installed **manually, not via the in-app Update button** — because it is such a large internal restructure, the in-app updater intentionally blocks it (showing an "install manually" notice with the reason) and you update by pulling and re-running `./setup.sh reinstall` (or `./update.sh`). After this release, the in-app updater applies future versions normally again.
+- **CHORE:** The manual updater (`./update.sh`) is now self-healing and safe to run from any device state: it snapshots the current install to `backups/` first, resets the checkout to **exactly** match the release (your credentials, event database, and TLS certificates are never touched), re-runs the full setup, health-checks the app, and **automatically rolls back** to the previous version if anything goes wrong. The installer (`./setup.sh`) was hardened alongside it — it backs up and validates the systemd unit before installing, stages and validates the scoped sudoers rule before it touches the system, health-checks the service (failing closed so an update can roll back), and degrades with clear warnings on non-Raspberry-Pi hosts.
+
+---
+
 ## 1.4.0
 Released on July 9, 2026
 

@@ -1,7 +1,8 @@
 # test_gen_manifest.py -- the release manifest generator (tools/gen-manifest.py) is a standalone
-# release tool (NOT part of the genpi package), so it's loaded by path. These lock in the two
-# per-release update-constraint keys the in-app updater reads: cli_only_versions (the gate list) +
-# important_notes. (The tool isn't under --cov=genpi; this guards its output contract regardless.)
+# release tool (NOT part of the genpi package), so it's loaded by path. These lock in the per-release
+# update-constraint contract the in-app updater reads: incompatible_versions, an APPEND-ONLY map of
+# { version -> reason } naming the releases that must be installed manually (the gate) and why. (The
+# tool isn't under --cov=genpi; this guards its output contract regardless.)
 import importlib.util
 from pathlib import Path
 
@@ -20,33 +21,35 @@ def gm():
     return mod
 
 
-def test_manifest_declares_update_constraint_keys(gm):
+def test_manifest_declares_incompatible_versions_map(gm):
     m = gm.build_manifest()
-    # Both keys are ALWAYS emitted so every committed manifest carries the contract explicitly.
-    assert "cli_only_versions" in m
-    assert "important_notes" in m
-    assert isinstance(m["cli_only_versions"], list)
-    # v1.4.0 (the package/entrypoint restructure) is the known CLI-only gate.
-    assert "1.4.0" in m["cli_only_versions"]
-    assert m["important_notes"] == []
+    # The key is ALWAYS emitted so every committed manifest carries the contract explicitly, as a
+    # { version -> reason } MAP: keys are the gates, values the guidance shown in the IMPORTANT box.
+    assert "incompatible_versions" in m
+    assert isinstance(m["incompatible_versions"], dict)
+    # v1.4.0 (the package/entrypoint restructure) and v1.5.0 (the full monolith->package split) are
+    # both manual-install-only gates -- neither is applied by the in-app updater.
+    assert "1.4.0" in m["incompatible_versions"]
+    assert "1.5.0" in m["incompatible_versions"]
+    # Every gate carries a non-empty reason string (the per-version IMPORTANT-box guidance).
+    for ver, reason in m["incompatible_versions"].items():
+        assert isinstance(reason, str) and reason.strip(), f"gate {ver} has no reason text"
 
 
-def test_gate_list_and_notes_flow_into_the_manifest(gm):
-    # The append-only gate list + operator notes are reflected verbatim so the in-app updater can
-    # refuse a web-jump across any gate and show the guidance.
-    gm.CLI_ONLY_VERSIONS = ["1.4.0", "2.0.0"]
-    gm.IMPORTANT_NOTES = ["Run ./setup.sh reinstall."]
+def test_incompatible_versions_map_flows_into_the_manifest(gm):
+    # The append-only { version -> reason } map is reflected verbatim so the in-app updater can refuse a
+    # web-jump across any gate and show THAT version's specific reason.
+    gm.INCOMPATIBLE_VERSIONS = {"1.4.0": "systemd entrypoint changed.", "2.0.0": "big rewrite."}
     m = gm.build_manifest()
-    assert m["cli_only_versions"] == ["1.4.0", "2.0.0"]
-    assert m["important_notes"] == ["Run ./setup.sh reinstall."]
+    assert m["incompatible_versions"] == {"1.4.0": "systemd entrypoint changed.", "2.0.0": "big rewrite."}
 
 
-@pytest.mark.parametrize("bad", [["v1.4.0"], ["1.4"], ["garbage"], ["1.4.0", "nope"], ["1.4.0.1"]])
-def test_malformed_gate_raises_at_generation_time(gm, bad):
-    # A 'v'-prefixed / short / garbage gate would parse to a tiny tuple in the updater and silently
-    # NEVER block (fail-OPEN), so the generator must reject it LOUDLY -- a broken build beats shipping
-    # an inert gate that lets an old install web-jump across it and brick.
-    gm.CLI_ONLY_VERSIONS = bad
+@pytest.mark.parametrize("bad_key", ["v1.4.0", "1.4", "garbage", "1.4.0.1"])
+def test_malformed_gate_key_raises_at_generation_time(gm, bad_key):
+    # A 'v'-prefixed / short / garbage gate KEY would parse to a tiny tuple in the updater and silently
+    # NEVER block (fail-OPEN), so the generator must reject it LOUDLY -- a broken build beats shipping an
+    # inert gate that lets an old install web-jump across it and brick.
+    gm.INCOMPATIBLE_VERSIONS = {"1.4.0": "ok", bad_key: "bad reason"}
     with pytest.raises(ValueError, match="malformed"):
         gm.build_manifest()
 
