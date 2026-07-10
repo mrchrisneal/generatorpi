@@ -43,8 +43,8 @@
     },
     {
       "path": "genpi/frontend/style.css",
-      "sha256": "76ed531ee037198033b240f6cff08d091f4f34ebcc85e2c398e5162960398b09",
-      "bytes": 54678
+      "sha256": "5e06cdf429b91c18a8fe0857a2bacd285287af41f71fb5d5a081fdf45bf4307e",
+      "bytes": 55256
     },
     {
       "path": "genpi/frontend/sw.js",
@@ -133,8 +133,8 @@
     },
     {
       "path": "genpi/updater.py",
-      "sha256": "63ff18a22425853a7ff706ee8964988fb0d5d46f489a718a9831bdbc7e3bb0a6",
-      "bytes": 64748
+      "sha256": "2ba48bef52d9a8e08520d936cfa77a79765ee85a7b252198d03d4212f0f6076a",
+      "bytes": 65131
     },
     {
       "path": "requirements.txt",

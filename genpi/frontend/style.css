@@ -488,10 +488,14 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 /* position:fixed (not absolute) so the overlay + card center in the VIEWPORT, not
    within the tall panel -- otherwise on a long page the modal lands mid-document
    instead of mid-screen. */
-.confirm-overlay{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;padding:20px;
+/* overflow-y:auto on the overlay + margin:auto on the card (instead of align/justify centering) so a
+   modal TALLER than the viewport -- a long update log + IMPORTANT note, or any modal on a short phone
+   screen -- SCROLLS with its TOP reachable, instead of being clipped off-screen by perfect flex
+   centering (the old behavior). A modal that fits still centers exactly as before. */
+.confirm-overlay{position:fixed;inset:0;z-index:20;display:none;overflow-y:auto;padding:20px;
   background:rgba(6,6,7,.82);backdrop-filter:blur(2px)}
 .confirm-overlay.show{display:flex}
-.confirm-card{max-width:340px;width:100%;padding:22px;border-radius:12px;text-align:center;
+.confirm-card{max-width:340px;width:100%;margin:auto;padding:22px;border-radius:12px;text-align:center;
   background:linear-gradient(160deg,#2a1a14,#1a1210);border:1px solid #6a3a1a;box-shadow:0 20px 50px rgba(0,0,0,.7)}
 .confirm-badge{display:inline-flex;margin-bottom:12px;color:#ffb347}
 .confirm-card h2{font:800 18px sans-serif;letter-spacing:.08em;color:#ffcf8a;margin-bottom:10px}
@@ -503,7 +507,9 @@ footer .frow.upd.checking .upd-spin{display:inline-block;animation:btnspin .7s l
 
 /* ---- self-update dialog ---- */
 /* Dark/neutral card (NOT the amber warning theme of the START dialog it borrows from). */
-.upd-card{max-width:460px;text-align:left;background:linear-gradient(160deg,#1c1c20,#0e0e10);border:1px solid #2d2d33}
+/* ~30% wider than the 340px start dialog: this modal carries a scrolling log + the IMPORTANT note, so
+   it needs the extra width for readable lines. Still width:100% so it shrinks on narrow phones. */
+.upd-card{max-width:600px;text-align:left;background:linear-gradient(160deg,#1c1c20,#0e0e10);border:1px solid #2d2d33}
 .upd-card h2{text-align:center;color:#e4e0d8}
 /* Changelog / update-log scroller: monospace, bounded height, its own inset well. */
 .upd-scroll{max-height:230px;overflow-y:auto;margin:0 0 16px;padding:10px 12px;border-radius:8px;

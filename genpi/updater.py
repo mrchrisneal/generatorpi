@@ -775,10 +775,17 @@ def _run_update():
         _blocking = sorted({_gate_ver(g) for g in _incompat
                             if _gate_ver(g) and _cur_t < _version_tuple(_gate_ver(g)) <= _latest_t},
                            key=_version_tuple)
-        # Each blocking gate's reason, matched by NORMALIZED version key. A gate with a blank/missing message
-        # still blocks -- the IMPORTANT box then falls back to its generic single-sentence text (Case B).
+        # Show ONLY the LATEST blocking gate's reason in the IMPORTANT box. When several gates sit
+        # between installed and latest, a manual install jumps straight to `latest` (crossing them all
+        # at once), so the newest / most-relevant gate's guidance is what matters -- listing every gate's
+        # reason is noise. _blocking is version-sorted ascending, so [-1] is the highest gate. A blank /
+        # missing message leaves the box on its generic single-sentence fallback (Case B).
         _msg_by_ver = {_gate_ver(k): str(v).strip() for k, v in _incompat.items()}
-        _notes = [_msg_by_ver[g] for g in _blocking if _msg_by_ver.get(g)]
+        _notes = []
+        if _blocking:
+            _latest_msg = _msg_by_ver.get(_blocking[-1], "")
+            if _latest_msg:
+                _notes = [_latest_msg]
         with _update_lock:
             _update_state["installable"] = not _blocking
             # Rendered in the UI's dedicated IMPORTANT box: with notes -> the intro + note(s) + a divider

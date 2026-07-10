@@ -296,15 +296,17 @@ class TestIncompatibleVersionGate:
         assert st["installable"] is False
         assert "manual-install-only version (v1.4.0)" in "\n".join(st["log"])   # normalized: a single 'v'
 
-    def test_multiple_in_range_gates_listed_ascending(self, module, monkeypatch, tmp_path):
-        # Several gates between installed and latest -> all named in ascending version order, and their
-        # reasons collected in the same order for the box.
+    def test_multiple_in_range_gates_log_all_but_box_shows_latest_only(self, module, monkeypatch, tmp_path):
+        # Several gates between installed and latest -> the LOG names all of them in ascending order
+        # (diagnostic), but the IMPORTANT box shows ONLY the LATEST gate's reason: a manual install jumps
+        # straight to `latest`, crossing every gate at once, so the newest gate's guidance is the relevant
+        # one and listing every reason is noise.
         self._run(module, monkeypatch, tmp_path, installed="1.2.0", latest="2.0.0",
                   incompat={"1.6.0": "reason six", "1.4.0": "reason four"})
         st = module._update_state
         assert st["installable"] is False
-        assert "manual-install-only version (v1.4.0, v1.6.0)" in "\n".join(st["log"])
-        assert st["important_notes"] == ["reason four", "reason six"]
+        assert "manual-install-only version (v1.4.0, v1.6.0)" in "\n".join(st["log"])   # log: all gates
+        assert st["important_notes"] == ["reason six"]     # box: latest gate only (not "reason four")
 
 
 class TestAwaitDecisionProceedDisabled:
