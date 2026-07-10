@@ -56,38 +56,38 @@ def _configure_dev(args):
     gc.CONFIG["SYSTEM_HISTORY_POINTS"] = 900     # 900 x 4s = 1h, so the 60m toggle has data
     # The ring buffer was sized from CONFIG at import; re-create it at the dev size so the
     # seed loop + the 60-minute view both have the expected capacity.
-    gc._sys_history = gc.collections.deque(maxlen=900)
+    gc.sysmon._sys_history = gc.collections.deque(maxlen=900)
 
     # A dev Basic-auth user so a BROWSER can authenticate: the page's fetch() calls don't
     # append ?key=, so -- exactly like production -- they rely on the browser resending the
     # cached Basic credentials on every poll. Navigate to http://user:pass@host:port/ once
     # so the browser caches them. Without this, every poll 401s and trips the limiter.
-    gc.AUTH_USERS[args.user] = gc.generate_password_hash(args.password)
+    gc.AUTH_USERS[args.user] = gc.auth.generate_password_hash(args.password)
 
     # Relax the brute-force limiter for local dev so a few stray 401s (e.g. the first
     # navigation before creds are cached) don't lock us out of our own dev box.
     gc.CONFIG["RATE_LIMIT_MAX_FAILURES"] = 100000
-    gc._fail_tracker.clear()
+    gc.ratelimit._fail_tracker.clear()
 
     # --no-auth: fully disable auth for a purely local UI test. The auth_required decorator
     # looks up check_api_key by GLOBAL name at call time, so replacing it here makes EVERY
     # request pass via the key path -- no credentials needed. DEV-ONLY; never do this in prod.
     if args.no_auth:
-        gc.check_api_key = lambda: True
+        gc.auth.check_api_key = lambda: True
 
 
 def _real_snapshot():
     """One point read entirely from the app's REAL readers (no fakery). volt/thr come back
     None off-Pi (no vcgencmd), which is the honest, correct off-Pi behavior."""
-    load1, load5 = gc._read_loadavg()
-    rssi, qual = gc._read_wifi()
+    load1, load5 = gc.sysmon._read_loadavg()
+    rssi, qual = gc.sysmon._read_wifi()
     return {
-        "cpu": gc._cpu_pct(),
-        "mem": gc._read_mem_pct(),
+        "cpu": gc.sysmon._cpu_pct(),
+        "mem": gc.sysmon._read_mem_pct(),
         "load1": load1, "load5": load5,
-        "temp": gc._read_temp_c(),
-        "volt": gc._read_volt(),      # None on a non-Pi host (no vcgencmd) -- honest
-        "thr": gc._read_throttled(),  # None on a non-Pi host -- honest
+        "temp": gc.sysmon._read_temp_c(),
+        "volt": gc.sysmon._read_volt(),      # None on a non-Pi host (no vcgencmd) -- honest
+        "thr": gc.sysmon._read_throttled(),  # None on a non-Pi host -- honest
         "rssi": rssi, "qual": qual,
     }
 
@@ -97,28 +97,28 @@ def _live_sampler():
     open, then run the app's REAL sampler forever on the dev cadence. Every value is real;
     the Pi-only metrics simply read null off-Pi."""
     interval = max(1, int(gc.CONFIG["SYSTEM_HISTORY_SECONDS"]))
-    gc._cpu_pct()                 # prime the CPU delta baseline so the first snapshot has a value
+    gc.sysmon._cpu_pct()                 # prime the CPU delta baseline so the first snapshot has a value
     time.sleep(0.15)
     snap = _real_snapshot()
     now = time.time()
-    n = gc._sys_history.maxlen
+    n = gc.sysmon._sys_history.maxlen
     for i in range(n):            # flat seed at the real current values (volt/thr null off-Pi)
         p = dict(snap)
         p["t"] = int(now - (n - i) * interval)
-        gc._sys_history.append(p)
+        gc.sysmon._sys_history.append(p)
     while True:
-        gc._sample_system()       # 100% real readers, on the dev cadence
+        gc.sysmon._sample_system()       # 100% real readers, on the dev cadence
         time.sleep(interval)
 
 
 def _build_ssl_context(host, port):
     """When --ssl is requested, drive the app's OWN self-signed cert path (ensure_ssl_cert)
     and return the (certfile, keyfile) tuple _serve expects -- exactly what main() does."""
-    gc.ensure_ssl_cert()          # auto-provision/renew the self-signed cert (app's own logic)
-    for path in (gc.SSL_CERT_PATH, gc.SSL_KEY_PATH):
+    gc.ssl_cert.ensure_ssl_cert()          # auto-provision/renew the self-signed cert (app's own logic)
+    for path in (gc.ssl_cert.SSL_CERT_PATH, gc.ssl_cert.SSL_KEY_PATH):
         if not os.access(path, os.R_OK):
             sys.exit(f"SSL file not readable: {path} -- fix its permissions/ownership.")
-    return (str(gc.SSL_CERT_PATH), str(gc.SSL_KEY_PATH))
+    return (str(gc.ssl_cert.SSL_CERT_PATH), str(gc.ssl_cert.SSL_KEY_PATH))
 
 
 def _parse_args(argv=None):
@@ -187,7 +187,7 @@ def main(argv=None):
     # Serve via the app's _serve() (NOT app.run) -- the production cheroot path that can
     # release the listening socket before an os.execv restart. threaded=True is vestigial
     # (cheroot always pools) but matches the app's own call site.
-    gc._serve(host=args.host, port=args.port, ssl_context=ssl_context, threaded=True)
+    gc.lifecycle._serve(host=args.host, port=args.port, ssl_context=ssl_context, threaded=True)
 
 
 if __name__ == "__main__":
