@@ -1,10 +1,10 @@
 {
-  "version": "1.5.1",
+  "version": "1.5.2",
   "files": [
     {
       "path": "genpi/__init__.py",
-      "sha256": "af61faac613c71d008d9e5328f54084dd3685309eb095ea1b934bc296bfb12d2",
-      "bytes": 28769
+      "sha256": "39ee5bf59d831bb7f7a6417e7bd3161636066d59e12fff487bebdd16a364a1c0",
+      "bytes": 29107
     },
     {
       "path": "genpi/__main__.py",
@@ -28,13 +28,13 @@
     },
     {
       "path": "genpi/control.py",
-      "sha256": "a8431d87982d87219f0325e4494fa101ba7fa00e90f81e1b829f0cfa8f4ac798",
-      "bytes": 6932
+      "sha256": "3c28f2e81e205a6e28d80de4c709085eaa94c9e9eb8ff0a5abcc1da218c2ac45",
+      "bytes": 7669
     },
     {
       "path": "genpi/frontend/app.js",
-      "sha256": "4fe64bf2675e7ab6ad0526b5362e89b46b452e630b4303c5904e978ed67f15f9",
-      "bytes": 96033
+      "sha256": "143d5571304d106df08f004ba17bf7eff134066e78d59b1d75fca1d772b40b80",
+      "bytes": 98781
     },
     {
       "path": "genpi/frontend/body.html",
@@ -43,8 +43,8 @@
     },
     {
       "path": "genpi/frontend/style.css",
-      "sha256": "5e06cdf429b91c18a8fe0857a2bacd285287af41f71fb5d5a081fdf45bf4307e",
-      "bytes": 55256
+      "sha256": "76c6a4185e7216b0e6e5aee5c27b4221bc5b6ae7bc5137218ec3cfc9d7b535b7",
+      "bytes": 55610
     },
     {
       "path": "genpi/frontend/sw.js",
@@ -88,18 +88,18 @@
     },
     {
       "path": "genpi/routes/core.py",
-      "sha256": "d37e2e265c7a7888897e4aaa08f83d769db1f0f0f797c82d0a8ce824d6e566ef",
-      "bytes": 21074
+      "sha256": "30b0bcb1e69fb066cd5de7961d1dff519936e12fb9a3d537c64fe0f565bdd3f0",
+      "bytes": 21591
     },
     {
       "path": "genpi/routes/fuel.py",
-      "sha256": "544a2694a5ccb09bcb61d6568db4aa095b7cb3f14128cb3a2a89b08a0e4bf72f",
-      "bytes": 4374
+      "sha256": "7756b3077f9653beb6f45d7fb3dcf4fb179b91e541384d7992ac4d6066ef909e",
+      "bytes": 4497
     },
     {
       "path": "genpi/routes/push.py",
-      "sha256": "eb5f671171eac08bd04b4a18eb76e41891e82a9b3e16f05168fa8c46540c8428",
-      "bytes": 5062
+      "sha256": "6c0502ecd8a7c1da4b8931f47b146c88da51e6470a974a7ef53516eff6302066",
+      "bytes": 9352
     },
     {
       "path": "genpi/routes/update.py",
@@ -118,8 +118,8 @@
     },
     {
       "path": "genpi/store.py",
-      "sha256": "ccc243e7932bc4eb54fc5aefff59cf6a7b6936c928766c92a9a0b53036e25202",
-      "bytes": 23421
+      "sha256": "e42ce71a8ee047428d1fe0e3e0f8d84a6d802cfc4fcca49b92b62f792c3deb7a",
+      "bytes": 24327
     },
     {
       "path": "genpi/sysmon.py",
@@ -133,8 +133,8 @@
     },
     {
       "path": "genpi/updater.py",
-      "sha256": "2ba48bef52d9a8e08520d936cfa77a79765ee85a7b252198d03d4212f0f6076a",
-      "bytes": 65131
+      "sha256": "e5e5f1344e3aca426a99fa40a3ec7e2808a431356f771a336ec7b84adaed6905",
+      "bytes": 67639
     },
     {
       "path": "requirements.txt",
@@ -153,13 +153,13 @@
     },
     {
       "path": "VERSION",
-      "sha256": "dfe7d71b3f428eb73ed853f8fded65e2986896e21d69f45ebf06bb623b450e14",
+      "sha256": "ded1b601e81d31ca1f65c4f3ccf2ebd7992b6390e37bc2a86f3837282f1e00cf",
       "bytes": 6
     },
     {
       "path": "CHANGELOG-RECENT.md",
-      "sha256": "e009062e127cc7499af01620023106d81235a3a997d4381f0929ce36d077e575",
-      "bytes": 6641
+      "sha256": "0328469b5efcc72a97fb3f369f5c16b2ca78723cf35f8c9ad6bebed91a710e12",
+      "bytes": 7495
     },
     {
       "path": "tools/gp-monitor.py",

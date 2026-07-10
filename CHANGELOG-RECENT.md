@@ -1,3 +1,18 @@
+## 1.5.2
+Released on July 10, 2026
+
+- **SEC:** Web Push subscription endpoints are now checked against DNS rebinding — a subscription whose hostname *resolves* to a private, loopback, link-local, or otherwise non-routable address is rejected (previously only literal internal IPs were caught), and a hostname that fails to resolve is rejected fail-closed. This closes a server-side request-forgery vector where a crafted endpoint could point the server's push delivery at an internal service.
+- **FEAT:** The Event Log now attributes each command to the user who issued it — start/stop, manual "mark running/stopped", the run-hours override, fuel changes, the test push, restart, and factory reset all record "(by \<user>)", so the durable audit trail shows *who* did *what*, not just what happened.
+- **FEAT:** When a browser reports that notifications are unavailable on that device (blocked in site settings, unsupported, or a non-HTTPS context), it now records a durable diagnostic entry in the Event Log — so you can see *why* pushes aren't arriving without opening the browser's developer tools. The browser only sends a fixed status code and the server supplies the wording, so nothing typed by a client ever reaches the log.
+- **FEAT:** Startup now logs the service's boot-autostart status — the configured preference plus the actual systemd "is-enabled" state — so you can confirm from the log whether GeneratorPi will come back on its own after a reboot, without SSHing in to run `systemctl`.
+- **FIX:** The update dialog now scrolls when it is taller than the screen (instead of being clipped when centered) and is about 30% wider, so long update notices — especially a manual-install blocker on a small phone screen — are fully readable.
+- **FIX:** When an update is blocked because a manual-install-only version sits between your version and the latest, the notice now shows only the *latest* blocker's reason instead of stacking every intermediate one.
+- **FIX:** After an update is staged, the "staged and verified" banner now reflects what actually happened during the checks — green only when the staging was completely clean, amber when there were warnings, and red (with the counts) when there were any errors — instead of always showing the green "ready to apply" state.
+- **FIX:** Cancelling ("revert") a staged update now shows a single confirmation and settles cleanly on "Update aborted by user." — a race could previously flash a second, stale dialog after the revert.
+- **FIX:** The installer's post-restart health probe waits longer (about 15 seconds) for the web server to bind before warning, so a normal slow start on the Raspberry Pi no longer produces a spurious warning during install/update.
+
+---
+
 ## 1.5.1
 Released on July 9, 2026
 
@@ -29,15 +44,3 @@ Released on July 9, 2026
 Released on July 9, 2026
 
 - **FIX:** The self-updater log now colours the WHOLE warning/error line (amber for warnings, red for errors) instead of only the `[TAG]`, so a problem stands out. Missing dependencies in the Stage-1 check read as clear `WARNING:` / `ERROR:` lines, and the hint tells you to run the shown apt command over SSH and restart the application to resolve. Cosmetic only — no behaviour change.
-
----
-
-## 1.3.3
-Released on July 9, 2026
-
-- **FIX:** Web Push notifications now work on Raspberry Pi OS. The app previously relied on the `pywebpush` library, which has no Raspberry Pi OS package and can't be installed on the Pi's pip-free system Python, so push silently never worked on-device. It now sends notifications itself using three apt-available libraries — **py-vapid** (VAPID signing), **http-ece** (aes128gcm payload encryption), and **requests** — so the device stays 100% apt-only. Install them with `sudo apt install python3-py-vapid python3-http-ece python3-requests`; a VAPID keypair is auto-generated on first start.
-- **FIX:** The push status now tells you *why* it's off instead of a misleading blanket "no VAPID keys" — it distinguishes the server libraries not being installed, no VAPID keypair yet, and an invalid key, each with the right guidance and a link to the setup guide.
-- **FEAT:** The in-app updater now checks the release's declared dependencies during Stage 1 and, if any are missing on the device, lists them with a copy-able `sudo apt install …` one-liner so you can install them before applying. It never auto-installs anything — the update swaps files + restarts, so run the shown command (or `./setup.sh reinstall`) to add new dependencies.
-- **FEAT:** The update log now ends each stage with a colored count of any warnings (yellow) and errors (red) encountered, so a problem can't be missed, and scrolls to the newest lines at each stage boundary.
-- **SEC:** Web Push requests now refuse HTTP redirects (defense in depth against a redirector endpoint) and use a bounded time-to-live, so an alert still arrives if your phone was briefly offline.
-- **CHORE:** The updater's in-app changelog renders cleaner — no preamble, a horizontal rule between releases, and no mid-sentence line breaks. Test coverage of `generator_control.py` stays at 100%.
