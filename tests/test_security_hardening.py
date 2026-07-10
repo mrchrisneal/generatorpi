@@ -9,6 +9,7 @@
 # each request via the same _q() helper the other suites use. The Flask test client's
 # default origin is http://localhost (request.scheme=http, request.host=localhost), so
 # "http://localhost" is the same-origin value the CSRF guard compares against.
+import socket
 import time
 
 import pytest
@@ -148,17 +149,22 @@ class TestPushSubscribeSsrf:
         assert resp.get_json()["success"] is False
         assert module.subscription_count() == 0
 
-    def test_public_hostname_endpoint_is_accepted_200(self, client, module, tmp_store):
-        # A normal push-service DNS hostname (not an IP literal) passes and is stored.
+    def test_public_hostname_endpoint_is_accepted_200(self, client, module, tmp_store, monkeypatch):
+        # A normal push-service DNS hostname that RESOLVES to a public address passes and is stored.
+        # DNS is mocked so the test never depends on real name resolution (#33 added the resolve step).
+        monkeypatch.setattr(module.routes.push.socket, "getaddrinfo",
+                            lambda host, port, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.1.1", port))])
         endpoint = "https://fcm.googleapis.com/fcm/send/abc123"
         resp = client.post(_q("/api/push/subscribe"), json=self._body(endpoint))
         assert resp.status_code == 200
         assert resp.get_json()["success"] is True
         assert module.get_subscriptions()[0]["endpoint"] == endpoint
 
-    def test_endpoint_validator_unit(self, module):
-        # Direct unit coverage of the validator helper: https public host -> None (ok);
-        # http, and internal-IP hosts -> an error string.
+    def test_endpoint_validator_unit(self, module, monkeypatch):
+        # Direct unit coverage of the validator helper: https host resolving public -> None (ok);
+        # http, and internal-IP hosts -> an error string. DNS mocked to a public address (no network).
+        monkeypatch.setattr(module.routes.push.socket, "getaddrinfo",
+                            lambda host, port, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.1.1", port))])
         assert module._push_endpoint_error("https://fcm.googleapis.com/x") is None
         assert module._push_endpoint_error("http://fcm.googleapis.com/x") is not None
         assert module._push_endpoint_error("https://127.0.0.1/x") is not None

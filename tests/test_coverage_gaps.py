@@ -8,6 +8,7 @@
 import builtins
 import errno
 import io
+import socket
 import threading
 from unittest import mock
 
@@ -369,23 +370,67 @@ class TestSystemMonitorLoop:
 # _push_endpoint_error -- the SSRF guard on subscription endpoints
 # ---------------------------------------------------------------------------
 class TestPushEndpointError:
+    @staticmethod
+    def _resolve_to(module, monkeypatch, addr):
+        """Force socket.getaddrinfo (as used by _push_endpoint_error) to resolve ANY hostname to
+        `addr` -- so the SSRF guard's DNS check is exercised deterministically, with no real network."""
+        monkeypatch.setattr(module.routes.push.socket, "getaddrinfo",
+                            lambda host, port, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, port))])
+
     def test_empty_endpoint_rejected(self, module):
         assert module._push_endpoint_error("") == "missing endpoint or keys"
         assert module._push_endpoint_error(None) == "missing endpoint or keys"
+
+    def test_non_https_rejected(self, module):
+        assert module._push_endpoint_error("http://fcm.googleapis.com/x") == "endpoint must be an https:// URL"
 
     def test_no_host_rejected(self, module):
         # A well-formed https URL with no host component (e.g. "https:///path").
         assert module._push_endpoint_error("https:///path") == "endpoint has no host"
 
     def test_public_ip_literal_allowed(self, module):
-        # A routable public IP literal passes the private/loopback/reserved screen.
+        # A routable public IP literal passes the range screen with NO DNS lookup at all.
         assert module._push_endpoint_error("https://8.8.8.8/wp/xyz") is None
 
     def test_private_ip_literal_blocked(self, module):
-        assert module._push_endpoint_error("https://192.168.1.5/x") is not None
+        assert module._push_endpoint_error("https://192.168.1.5/x") == "endpoint host is not a routable public address"
 
-    def test_ordinary_hostname_allowed(self, module):
+    def test_loopback_ip_literal_blocked(self, module):
+        assert module._push_endpoint_error("https://127.0.0.1/x") == "endpoint host is not a routable public address"
+
+    def test_hostname_resolving_public_allowed(self, module, monkeypatch):
+        # A normal push hostname that resolves to a public IP is allowed (DNS mocked -- no network).
+        self._resolve_to(module, monkeypatch, "142.250.1.1")
         assert module._push_endpoint_error("https://fcm.googleapis.com/fcm/send/abc") is None
+
+    def test_hostname_resolving_internal_blocked(self, module, monkeypatch):
+        # #33: a hostname that RESOLVES to an internal address (the SSRF / DNS-rebinding case) is blocked
+        # even though the host itself is not an IP literal -- previously this slipped through unresolved.
+        self._resolve_to(module, monkeypatch, "127.0.0.1")
+        assert module._push_endpoint_error("https://evil.example.com/x") == "endpoint host resolves to a non-routable address"
+
+    def test_hostname_resolving_metadata_ip_blocked(self, module, monkeypatch):
+        # The cloud-metadata link-local address (169.254.169.254) must be blocked.
+        self._resolve_to(module, monkeypatch, "169.254.169.254")
+        assert module._push_endpoint_error("https://metadata.example/x") == "endpoint host resolves to a non-routable address"
+
+    def test_unresolvable_hostname_blocked(self, module, monkeypatch):
+        # Fail CLOSED: a host that cannot be resolved is rejected (it could never receive a push anyway).
+        def boom(host, port, **k):
+            raise socket.gaierror("name resolution failed")
+        monkeypatch.setattr(module.routes.push.socket, "getaddrinfo", boom)
+        assert module._push_endpoint_error("https://nonexistent.invalid/x") == "endpoint host could not be resolved"
+
+    def test_hostname_with_no_addresses_blocked(self, module, monkeypatch):
+        # getaddrinfo returning an empty answer set -> treat as unresolvable (fail closed).
+        monkeypatch.setattr(module.routes.push.socket, "getaddrinfo", lambda host, port, **k: [])
+        assert module._push_endpoint_error("https://empty.example/x") == "endpoint host could not be resolved"
+
+    def test_hostname_resolving_to_garbage_blocked(self, module, monkeypatch):
+        # A resolver returning a non-IP string is rejected rather than crashing the guard.
+        monkeypatch.setattr(module.routes.push.socket, "getaddrinfo",
+                            lambda host, port, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("not-an-ip", port))])
+        assert module._push_endpoint_error("https://weird.example/x") == "endpoint host resolved to an invalid address"
 
 
 # ---------------------------------------------------------------------------

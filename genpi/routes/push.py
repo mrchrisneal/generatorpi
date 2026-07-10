@@ -5,6 +5,7 @@
 # Copyright (C) 2026 Chris Neal <https://neal.media> and Alex Neal <https://neal.tools>
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import ipaddress
+import socket                                # resolve endpoint hostnames to catch hostname->internal SSRF
 from urllib.parse import urlparse
 from flask import Blueprint, request, jsonify, Response
 from .. import store
@@ -35,11 +36,17 @@ def _push_endpoint_error(endpoint):
     Forgery primitive against the Pi's own network (localhost admin panels, LAN
     devices, cloud metadata IPs, etc.). We therefore require:
 
-      * an https:// URL (a real push service is always https; http:// is rejected), and
-      * a host that is NOT an IP literal in a private/loopback/link-local/reserved
-        range. A normal push-service DNS hostname (fcm.googleapis.com, *.notify.
-        windows.com, ...) is NOT an IP literal, so ipaddress.ip_address() raises and it
-        passes. Only a bare private/internal IP is blocked.
+      * an https:// URL (a real push service is always https; http:// is rejected),
+      * an IP-literal host that is NOT in a private/loopback/link-local/reserved range, and
+      * a DNS host that RESOLVES only to routable public addresses -- previously any
+        hostname was allowed unresolved, so `https://evil.example/` pointing at
+        127.0.0.1 / 169.254.169.254 (cloud metadata) / a LAN IP was an SSRF hole
+        (#33). We now resolve it and reject if ANY answer is internal. A host that
+        does not resolve is rejected too (it is unusable anyway, and failing closed
+        beats guessing). NOTE: this does not fully defeat DNS REBINDING (the address
+        could change between this check and the later POST); it closes the common
+        hostname->internal case at subscribe time. This endpoint is auth-gated, so
+        only an authenticated caller can even reach it.
     """
     if not isinstance(endpoint, str) or not endpoint:
         return "missing endpoint or keys"
@@ -50,13 +57,30 @@ def _push_endpoint_error(endpoint):
     if not host:
         return "endpoint has no host"
     try:
-        # If the host parses as an IP literal, block internal/non-routable ranges.
+        # If the host is an IP literal, decide purely on its range (no DNS needed).
         ip = ipaddress.ip_address(host)
     except ValueError:
-        # Not an IP literal -> an ordinary DNS hostname (the normal case) -> allow.
+        ip = None
+    if ip is not None:
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return "endpoint host is not a routable public address"
         return None
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-        return "endpoint host is not a routable public address"
+    # DNS hostname: resolve it and reject if ANY resolved address is internal. Fail closed on
+    # a resolution error -- an unresolvable endpoint can never receive a push anyway.
+    try:
+        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except OSError:
+        return "endpoint host could not be resolved"
+    if not infos:
+        return "endpoint host could not be resolved"
+    for info in infos:
+        addr = info[4][0]                          # sockaddr -> the resolved IP string
+        try:
+            rip = ipaddress.ip_address(addr)
+        except ValueError:
+            return "endpoint host resolved to an invalid address"
+        if rip.is_private or rip.is_loopback or rip.is_link_local or rip.is_reserved:
+            return "endpoint host resolves to a non-routable address"
     return None
 
 

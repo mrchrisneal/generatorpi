@@ -19,6 +19,7 @@
 import base64
 import json
 import os
+import socket
 
 import pytest
 
@@ -250,7 +251,11 @@ class TestSubscriptionStore:
 # 3. HTTP endpoints: subscribe / unsubscribe / test / sw.js
 # ---------------------------------------------------------------------------
 class TestSubscribeEndpoint:
-    def test_valid_subscription_is_stored(self, client, module, tmp_store):
+    def test_valid_subscription_is_stored(self, client, module, tmp_store, monkeypatch):
+        # The endpoint host must resolve to a PUBLIC address to clear the SSRF guard (#33); resolve the
+        # test host deterministically so this exercises a normal accept without a real DNS lookup.
+        monkeypatch.setattr(module.routes.push.socket, "getaddrinfo",
+                            lambda host, port, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))])
         body = {"endpoint": "https://push.example/abc",
                 "keys": {"p256dh": "PPP", "auth": "AAA"}}
         resp = client.post(_q("/api/push/subscribe"), json=body)
