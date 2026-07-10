@@ -22,7 +22,12 @@ import socket          # raw-socket bind probe (a real errno) before handing the
 import ssl             # explicit TLS 1.2 floor on the cheroot SSL adapter
 import threading       # the delayed restart timer thread
 from .logg import log  # server lifecycle + bind-retry logging
-from . import app      # the Flask WSGI application (still defined in __init__ until Stage 9)
+# NOTE: the Flask `app` is NOT imported at module load. In Stage 9 the app moved to genpi/app.py,
+# which imports the route blueprints, one of which (core) imports THIS module for the restart helper
+# -- so a module-level `from . import app` would be an app<->lifecycle import cycle. lifecycle only
+# needs the app at SERVE time, so _serve/_serve_werkzeug fetch it locally with `from . import app`
+# (by then genpi/__init__ has run `from .app import app`, rebinding genpi.app to the Flask instance).
+# The module is still eagerly imported by genpi/__init__; only the app REFERENCE is deferred.
 
 
 # The live Werkzeug WSGI server, stored so the restart path can close its LISTENING SOCKET
@@ -68,6 +73,7 @@ def _serve(host, port, ssl_context=None, threaded=False):
     the werkzeug server so the app STILL serves (minus keep-alive) instead of bricking -- keep-alive
     engages automatically once cheroot is present. `threaded` is retained for call-site compatibility
     (cheroot always uses a thread pool)."""
+    from . import app                                   # the Flask WSGI app (deferred: see module header)
     global _WSGI_SERVER
     try:
         from cheroot import wsgi                         # pure-Python; no compiler on the Pi
@@ -143,6 +149,7 @@ def _serve_werkzeug(host, port, ssl_context=None, threaded=False):
     """Fallback server (NO HTTP keep-alive) -- the proven pre-cheroot werkzeug path, kept verbatim so an
     install without cheroot still serves. Its serve_forever() never returns on its own, so its restart
     re-execs IN the restart thread (see _schedule_process_restart's fallback branch), not here."""
+    from . import app                                   # the Flask WSGI app (deferred: see module header)
     global _WSGI_SERVER
     from werkzeug.serving import make_server            # local import: only needed here to serve
     last_err = None

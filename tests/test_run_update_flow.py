@@ -859,8 +859,8 @@ class TestUpdateResultEndpointEdges:
     def test_corrupt_marker_surfaces_unknown(self, client, module, tmp_path, monkeypatch):
         r = tmp_path / "r.json"
         r.write_text("{ this is not json")
-        monkeypatch.setattr(module, "_UPDATE_RESULT", r)
-        monkeypatch.setattr(module, "_UPDATE_LOG", tmp_path / "absent.log")
+        monkeypatch.setattr(module.updater, "_UPDATE_RESULT", r)
+        monkeypatch.setattr(module.updater, "_UPDATE_LOG", tmp_path / "absent.log")
         d = client.get(_q("/api/update/result")).get_json()
         assert d["pending"] is True and d["status"] == "unknown"
 
@@ -869,14 +869,14 @@ class TestUpdateResultEndpointEdges:
         r.write_text(json.dumps({"status": "success", "version": "2"}))
         a_dir = tmp_path / "logdir"
         a_dir.mkdir()                                      # read_text on a directory raises
-        monkeypatch.setattr(module, "_UPDATE_RESULT", r)
-        monkeypatch.setattr(module, "_UPDATE_LOG", a_dir)
+        monkeypatch.setattr(module.updater, "_UPDATE_RESULT", r)
+        monkeypatch.setattr(module.updater, "_UPDATE_LOG", a_dir)
         d = client.get(_q("/api/update/result")).get_json()
         assert d["pending"] is True and d["log"] == ""
 
     def test_ack_swallows_missing_files(self, client, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "_UPDATE_RESULT", tmp_path / "gone.json")
-        monkeypatch.setattr(module, "_UPDATE_LOG", tmp_path / "gone.log")
+        monkeypatch.setattr(module.updater, "_UPDATE_RESULT", tmp_path / "gone.json")
+        monkeypatch.setattr(module.updater, "_UPDATE_LOG", tmp_path / "gone.log")
         assert client.post(_q("/api/update/result/ack")).status_code == 200
 
 

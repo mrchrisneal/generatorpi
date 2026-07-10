@@ -269,7 +269,7 @@ class TestAppLogEndpoint:
         restore it explicitly in each test via the returned original where needed."""
         p = tmp_path / "app.log"
         p.write_text(text, encoding="utf-8")
-        module.log_path = p
+        module.logg.log_path = p
         return p
 
     def test_requires_auth(self, client):
@@ -277,7 +277,7 @@ class TestAppLogEndpoint:
         assert client.get("/api/logs").status_code == 401
 
     def test_returns_last_n_lines(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             self._point_log(module, tmp_path,
                             "".join(f"line {i}\n" for i in range(1, 11)))
@@ -286,10 +286,10 @@ class TestAppLogEndpoint:
             assert data["lines"] == ["line 8", "line 9", "line 10"]
             assert data["path"] == "app.log"
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_default_lines_is_1000(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             # 1200 lines present; default (no ?lines) returns the last 1000.
             self._point_log(module, tmp_path,
@@ -298,10 +298,10 @@ class TestAppLogEndpoint:
             assert len(lines) == 1000
             assert lines[0] == "L200" and lines[-1] == "L1199"
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_lines_clamped_to_max_1000(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             # 1500 lines; ask for far more than the cap -> exactly 1000 returned.
             self._point_log(module, tmp_path,
@@ -310,50 +310,50 @@ class TestAppLogEndpoint:
             assert len(lines) == 1000
             assert lines[-1] == "L1499"
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_lines_clamped_to_min_1(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             self._point_log(module, tmp_path, "a\nb\nc\n")
             # lines=0 (and negatives) clamp UP to 1 -> just the final line.
             assert client.get(_q("/api/logs?lines=0")).get_json()["lines"] == ["c"]
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_bad_lines_falls_back_to_default(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             self._point_log(module, tmp_path,
                             "".join(f"L{i}\n" for i in range(10)))
             # Non-numeric 'lines' -> type=int yields the 200 default, so all 10 return.
             assert len(client.get(_q("/api/logs?lines=xyz")).get_json()["lines"]) == 10
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_missing_file_returns_empty(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             # Point at a path that does not exist -> [] and HTTP 200 (never a 500).
-            module.log_path = tmp_path / "does-not-exist.log"
+            module.logg.log_path = tmp_path / "does-not-exist.log"
             resp = client.get(_q("/api/logs"))
             assert resp.status_code == 200
             assert resp.get_json()["lines"] == []
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_empty_file_returns_empty(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             self._point_log(module, tmp_path, "")
             assert client.get(_q("/api/logs")).get_json()["lines"] == []
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_tail_spans_multiple_blocks(self, client, module, tmp_path):
         # Each line is ~200 bytes; 100 lines ~= 20KB, forcing several 4096-byte
         # backward reads so the block-boundary stitching in _tail_lines is exercised.
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             body = "".join(f"{i:04d}-" + ("x" * 200) + "\n" for i in range(100))
             self._point_log(module, tmp_path, body)
@@ -361,7 +361,7 @@ class TestAppLogEndpoint:
             assert len(lines) == 5
             assert lines[0].startswith("0095-") and lines[-1].startswith("0099-")
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_tail_lines_helper_handles_no_trailing_newline(self, module, tmp_path):
         # A file whose last line has no trailing "\n" (mid-write) still yields that line.
@@ -379,11 +379,11 @@ class TestAppLogDelta:
     def _point(self, module, tmp_path, text):
         p = tmp_path / "app.log"
         p.write_text(text, encoding="utf-8")
-        module.log_path = p
+        module.logg.log_path = p
         return p
 
     def test_full_tail_is_reset_with_cursor(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             p = self._point(module, tmp_path, "a\nb\nc\n")
             d = client.get(_q("/api/logs")).get_json()
@@ -392,10 +392,10 @@ class TestAppLogDelta:
             # File ends in a newline, so the cursor is the full file size (past last NL).
             assert d["offset"] == p.stat().st_size
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_delta_returns_only_new_lines(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             p = self._point(module, tmp_path, "a\nb\n")
             off = client.get(_q("/api/logs")).get_json()["offset"]
@@ -407,10 +407,10 @@ class TestAppLogDelta:
             assert d["lines"] == ["c", "d"]      # ONLY the new lines, not a/b
             assert d["offset"] == p.stat().st_size
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_idle_poll_is_empty(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             self._point(module, tmp_path, "a\nb\n")
             off = client.get(_q("/api/logs")).get_json()["offset"]
@@ -418,20 +418,20 @@ class TestAppLogDelta:
             d = client.get(_q(f"/api/logs?since={off}")).get_json()
             assert d["reset"] is False and d["lines"] == [] and d["offset"] == off
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_cursor_past_eof_triggers_reset(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             self._point(module, tmp_path, "a\nb\nc\n")
             # A stale cursor past EOF (file rotated/truncated) -> full tail + reset.
             d = client.get(_q("/api/logs?since=999999")).get_json()
             assert d["reset"] is True and d["lines"] == ["a", "b", "c"]
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_partial_line_withheld_until_complete(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             p = self._point(module, tmp_path, "a\nb\n")
             off = client.get(_q("/api/logs")).get_json()["offset"]
@@ -447,10 +447,10 @@ class TestAppLogDelta:
             assert d2["lines"] == ["partial rest"]
             assert d2["offset"] == p.stat().st_size
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
     def test_full_tail_offset_stops_at_last_newline(self, client, module, tmp_path):
-        orig = module.log_path
+        orig = module.logg.log_path
         try:
             # File does NOT end in a newline: the trailing partial is dropped AND the
             # cursor stops just past the last complete line's newline (not at EOF).
@@ -460,7 +460,7 @@ class TestAppLogDelta:
             assert d["offset"] == len("a\nb\n")     # past the 2nd newline, before "half"
             assert d["offset"] < p.stat().st_size
         finally:
-            module.log_path = orig
+            module.logg.log_path = orig
 
 
 class TestRestartEndpoint:
@@ -472,10 +472,10 @@ class TestRestartEndpoint:
     def test_restart_schedules_reexec_and_records_event(self, client, module, monkeypatch):
         called = {}
         # Patch the re-exec scheduler so the test process is NOT actually replaced.
-        monkeypatch.setattr(module, "_schedule_process_restart",
+        monkeypatch.setattr(module.lifecycle, "_schedule_process_restart",
                             lambda *a, **k: called.__setitem__("scheduled", True))
         events = []
-        monkeypatch.setattr(module, "record_event", lambda t, m: events.append((t, m)))
+        monkeypatch.setattr(module.store, "record_event", lambda t, m: events.append((t, m)))
         resp = client.post(_q("/api/restart"))
         assert resp.status_code == 200 and resp.get_json()["success"] is True
         assert called.get("scheduled") is True
@@ -521,7 +521,7 @@ class TestFactoryResetEndpoint:
         # A log file with content -> must end up truncated.
         logf = tmp_path / "app.log"
         logf.write_text("noise\n" * 10, encoding="utf-8")
-        monkeypatch.setattr(module, "log_path", logf)
+        monkeypatch.setattr(module.logg, "log_path", logf)
         # An env file that must be left UNTOUCHED by the reset.
         env = tmp_path / "generator_control.env"
         env.write_text("API_KEY=keepme\n", encoding="utf-8")

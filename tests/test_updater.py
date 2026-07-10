@@ -171,14 +171,14 @@ class TestUpdateEndpoints:
         assert client.get("/api/update/changelog").status_code == 401
 
     def test_changelog_returns_text(self, client, module, monkeypatch):
-        monkeypatch.setattr(module, "_http_get_bytes", lambda url, **k: b"# Changelog\n- x")
+        monkeypatch.setattr(module.updater, "_http_get_bytes", lambda url, **k: b"# Changelog\n- x")
         d = client.get(_q("/api/update/changelog")).get_json()
         assert "Changelog" in d["changelog"]
 
     def test_changelog_soft_fails(self, client, module, monkeypatch):
         def boom(*a, **k):
             raise OSError("offline")
-        monkeypatch.setattr(module, "_http_get_bytes", boom)
+        monkeypatch.setattr(module.updater, "_http_get_bytes", boom)
         d = client.get(_q("/api/update/changelog")).get_json()
         assert d["changelog"] is None
 
@@ -237,7 +237,7 @@ class TestPreflight:
 
 class TestResultEndpoints:
     def test_result_none_without_marker(self, client, module, tmp_path, monkeypatch):
-        monkeypatch.setattr(module, "_UPDATE_RESULT", tmp_path / "none.json")
+        monkeypatch.setattr(module.updater, "_UPDATE_RESULT", tmp_path / "none.json")
         assert client.get(_q("/api/update/result")).get_json()["pending"] is False
 
     def test_result_returns_marker_and_log(self, client, module, tmp_path, monkeypatch):
@@ -245,8 +245,8 @@ class TestResultEndpoints:
         r.write_text(json.dumps({"status": "success", "version": "2", "note": "ok"}))
         lg = tmp_path / "res.log"
         lg.write_text("did the thing")
-        monkeypatch.setattr(module, "_UPDATE_RESULT", r)
-        monkeypatch.setattr(module, "_UPDATE_LOG", lg)
+        monkeypatch.setattr(module.updater, "_UPDATE_RESULT", r)
+        monkeypatch.setattr(module.updater, "_UPDATE_LOG", lg)
         d = client.get(_q("/api/update/result")).get_json()
         assert d["pending"] and d["status"] == "success" and "did the thing" in d["log"]
 
@@ -255,8 +255,8 @@ class TestResultEndpoints:
         r.write_text("{}")
         lg = tmp_path / "res.log"
         lg.write_text("x")
-        monkeypatch.setattr(module, "_UPDATE_RESULT", r)
-        monkeypatch.setattr(module, "_UPDATE_LOG", lg)
+        monkeypatch.setattr(module.updater, "_UPDATE_RESULT", r)
+        monkeypatch.setattr(module.updater, "_UPDATE_LOG", lg)
         assert client.post(_q("/api/update/result/ack")).status_code == 200
         assert not r.exists() and not lg.exists()          # gone for everyone
 
