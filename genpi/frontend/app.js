@@ -1210,7 +1210,7 @@ function openUpdateModal(){
   // Reset any leftover restart state: a prior run hides the log box + shows the "Restarting"
   // spinner panel, so restore them (and clear the _waiting guard) so a re-opened / FORCED update
   // starts clean. This is what makes "Force update" / gpForceUpdate() re-runnable without a reload.
-  _waiting=false;
+  _waiting=false;_reverting=false;
   var _w=$('updWaiting'); if(_w)_w.style.display='none';
   if(cl.parentElement)cl.parentElement.style.display='';
   var _cb=$('updCard').querySelector('.confirm-btns'); if(_cb)_cb.style.display='';
@@ -1257,6 +1257,9 @@ $('updDoBtn').addEventListener('click',function(){
     $('updChangelog').textContent='Could not start the update.';
   });
 });
+// Set while finalizing a REVERT so a racing status poll that still sees 'awaiting' (the worker thread
+// may not have flipped to 'failed' yet) does NOT re-show the decision we just dismissed.
+var _reverting=false;
 // Answer a REVERT/PROCEED prompt, then resume polling the terminal.
 function _decide(choice){
   var doBtn=$('updDoBtn'),cancel=$('updCancelBtn');
@@ -1272,8 +1275,10 @@ function _decide(choice){
     post('/api/update/decide',{choice:choice}).then(_waitBackAndReload).catch(_waitBackAndReload);
     return;
   }
-  post('/api/update/decide',{choice:choice}).catch(function(){});
-  _pollUpdate();
+  // Wait for the decide POST to be accepted, THEN poll -- and flag that we're finalizing a revert so a
+  // racing poll that still sees 'awaiting' keeps the spinner instead of re-showing the dismissed decision.
+  _reverting=true;
+  post('/api/update/decide',{choice:choice}).then(_pollUpdate).catch(_pollUpdate);
 }
 // Build + show the dedicated IMPORTANT note box for a release the web updater refuses to install.
 // `notes` = the operator note list from the manifest: a NON-EMPTY list -> the intro line, the note(s),
@@ -1334,7 +1339,12 @@ function _pollUpdate(){
     if(working){_updWarn(false);_updOk(false);_showImportant(null);}   // no banners/box while actively working
     // Parked on a decision -> STOP polling entirely (zero network traffic while we wait on the
     // human). The REVERT/UPDATE click (_decide) resumes _pollUpdate; nothing changes until then.
-    if(s.phase==='awaiting'){_showDecision(s);_updPoll=null;return;}
+    if(s.phase==='awaiting'){
+      // Absorb ONE racing poll right after a REVERT: the worker may not have flipped to 'failed' yet, so
+      // keep the finalizing spinner rather than re-showing the just-dismissed decision (the phantom second
+      // window). Self-clears, so a genuinely new decision (e.g. a post-revert error park) still shows next.
+      if(_reverting){_reverting=false;_updWorking(true);_updWarn(false);_updOk(false);_updPoll=setTimeout(_pollUpdate,refreshMs);return;}
+      _showDecision(s);_updPoll=null;return;}
     if(s.phase==='failed'){                              // reverted / failed -> allow closing
       updateActive=false;                               // resume routine polling (old version runs)
       _updWorking(false);_updOk(false);
