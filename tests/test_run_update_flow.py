@@ -607,6 +607,68 @@ class TestDeploymentHasSystemd:
         assert module._deployment_has_systemd() is False
 
 
+class TestBootAutostartStatus:
+    """#9 -- the boot-autostart status line logged at startup. Combines the CONFIG preference
+    with the real systemd `is-enabled` state, and degrades gracefully off-systemd. Never raises."""
+
+    def _as_systemd(self, module, monkeypatch, tmp_path):
+        """Make _deployment_has_systemd() report True (unit present + systemctl available)."""
+        unit = tmp_path / "generator_control.service"
+        unit.write_text("x")
+        monkeypatch.setattr(module.updater, "_SERVICE_UNIT", unit)
+        monkeypatch.setattr(module.shutil, "which", lambda n: "/bin/systemctl")
+        return unit
+
+    class _Proc:
+        def __init__(self, out="", err=""):
+            self.stdout, self.stderr = out, err
+
+    def test_not_a_service_install_reports_config_only(self, module, monkeypatch, tmp_path):
+        # Dev box (no unit) -> no boot unit to query; report the config preference only.
+        monkeypatch.setattr(module.updater, "_SERVICE_UNIT", tmp_path / "absent.service")
+        s = module.boot_autostart_status()
+        assert "not a systemd service install" in s
+        assert "enabled in config" in s          # defaults AUTOSTART=1, SERVICE_ENABLED=1
+
+    def test_config_opt_out_reflected(self, module, monkeypatch, tmp_path):
+        # Either knob off -> the preference reads "disabled in config".
+        monkeypatch.setattr(module.updater, "_SERVICE_UNIT", tmp_path / "absent.service")
+        monkeypatch.setitem(module.CONFIG, "AUTOSTART", "off")
+        assert "disabled in config" in module.boot_autostart_status()
+
+    def test_systemd_unit_enabled(self, module, monkeypatch, tmp_path):
+        unit = self._as_systemd(module, monkeypatch, tmp_path)
+        monkeypatch.setattr(module.updater.subprocess, "run",
+                            lambda *a, **k: self._Proc(out="enabled\n"))
+        s = module.boot_autostart_status()
+        assert unit.name in s and "'enabled'" in s and "enabled in config" in s
+
+    def test_systemd_unit_disabled(self, module, monkeypatch, tmp_path):
+        self._as_systemd(module, monkeypatch, tmp_path)
+        monkeypatch.setattr(module.updater.subprocess, "run",
+                            lambda *a, **k: self._Proc(out="disabled\n"))
+        assert "'disabled'" in module.boot_autostart_status()
+
+    def test_state_falls_back_to_stderr_then_unknown(self, module, monkeypatch, tmp_path):
+        # Some not-found cases print to stderr; a totally empty result -> 'unknown'.
+        self._as_systemd(module, monkeypatch, tmp_path)
+        monkeypatch.setattr(module.updater.subprocess, "run",
+                            lambda *a, **k: self._Proc(out="", err="  masked  "))
+        assert "'masked'" in module.boot_autostart_status()
+        monkeypatch.setattr(module.updater.subprocess, "run",
+                            lambda *a, **k: self._Proc(out="", err=""))
+        assert "'unknown'" in module.boot_autostart_status()
+
+    def test_systemctl_failure_is_swallowed(self, module, monkeypatch, tmp_path):
+        # A slow/hung/absent systemd (timeout, OSError) must never crash startup.
+        self._as_systemd(module, monkeypatch, tmp_path)
+        def _boom(*a, **k):
+            raise module.updater.subprocess.TimeoutExpired(cmd="systemctl", timeout=5)
+        monkeypatch.setattr(module.updater.subprocess, "run", _boom)
+        s = module.boot_autostart_status()
+        assert "unable to query systemd" in s and "TimeoutExpired" in s
+
+
 class TestAwaitDecision:
     def test_timeout_defaults_to_revert(self, module, monkeypatch):
         # No decision arrives (wait times out) -> the SAFE default is revert.

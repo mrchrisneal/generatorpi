@@ -251,6 +251,44 @@ def _service_skip_reason():
     return None
 
 
+def boot_autostart_status():
+    """Human-readable summary of whether this install starts on BOOT -- for the STARTUP LOG (#9).
+
+    Combines the operator's declared CONFIG preference (AUTOSTART / SERVICE_ENABLED, both default 1)
+    with the ACTUAL systemd `is-enabled` state of the unit, so an operator reading the log can tell
+    whether GeneratorPi will come back after a reboot WITHOUT having to SSH in and run systemctl --
+    and can spot a mismatch (e.g. config says autostart but the unit was never `enable`d).
+
+    ONE-TIME, boot-only call (never a loop / request path). The Pi 'never shell out for metrics' rule
+    targets the hot path; a single boot-time `systemctl is-enabled` -- bounded by a short timeout and
+    fully exception-guarded -- is fine, and it degrades gracefully off-systemd (dev box -> config-only).
+    NEVER raises: any failure returns a best-effort string so main() can log it unconditionally."""
+    # 1) The operator's declared preference (env/config), using the same "off" rule the updater's
+    #    service opt-out uses so the two stay consistent. Either knob off => autostart is opted out.
+    def _off(v):
+        return str(v).strip().lower() in ("false", "0", "no", "off", "disabled")
+    pref_off = _off(CONFIG.get("AUTOSTART", 1)) or _off(CONFIG.get("SERVICE_ENABLED", 1))
+    pref = "disabled in config" if pref_off else "enabled in config"
+    # 2) Not a systemd/service install (dev box, or run-it-yourself): the config preference is all
+    #    we can report -- there is no boot-managed unit to query.
+    if not _deployment_has_systemd():
+        return f"autostart: not a systemd service install ({pref}; no boot unit to query)"
+    # 3) Query the REAL boot state. `systemctl is-enabled <unit>` prints enabled/disabled/static/
+    #    masked (to stdout for enabled, stderr for some not-found cases) and exits non-zero for the
+    #    not-enabled states -- we read whichever stream carried it. A bounded timeout + broad except
+    #    means a slow / hung / absent systemd can never delay or crash startup.
+    unit = _SERVICE_UNIT.name
+    try:
+        proc = subprocess.run(
+            ["systemctl", "is-enabled", unit],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        state = (proc.stdout or proc.stderr or "").strip() or "unknown"
+    except Exception as e:
+        return f"autostart: unable to query systemd ({pref}; {e.__class__.__name__})"
+    return f"autostart: systemd unit {unit} is '{state}' ({pref})"
+
+
 def _http_get_bytes(url, timeout=30, max_bytes=12_000_000):
     """GET a URL, return the (bounded) body. Raises on any HTTP/size error -- the updater
     treats every failure as 'abort + keep the old version'."""

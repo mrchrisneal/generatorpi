@@ -291,7 +291,8 @@ from .updater import (   # noqa: F401  (re-exported for the /api/update routes, 
     _update_state, _update_lock, _update_decision_event, _update_decision_choice,
     _SEV_MARK, _APT_PKG_RE, _MANIFEST_DENY_SUFFIXES, _VERSION_RE,
     _update_log, _update_log_append, _update_sev, _update_warn, _update_err, _stage_summary,
-    _await_decision, _deployment_has_systemd, _service_skip_reason, _http_get_bytes, _update_phase,
+    _await_decision, _deployment_has_systemd, _service_skip_reason, boot_autostart_status,
+    _http_get_bytes, _update_phase,
     check_manifest_dependencies, dependency_install_command, _download_and_verify,
     _validate_manifest_paths, _validate_version, _ensure_backup_dir, _preflight_check,
     _write_update_result, _make_backup, _prune_backups, _swap, _rollback, _write_bootstrap_script,
@@ -392,6 +393,10 @@ def main():
 
     log.info(f"Web server: {protocol}://{CONFIG['HOST']}:{CONFIG['PORT']}")
     log.info(f"Web Push: {'available' if push_available() else 'unavailable'}")
+    # Boot-autostart status (#9): log whether the service will restart after a reboot -- the
+    # operator's config preference plus the actual systemd is-enabled state (or a graceful
+    # "not a service install" off-systemd). One-time, boot-only, never raises.
+    log.info(f"Boot {boot_autostart_status()}")
     log.info("=" * 60)
 
     # Eager-import self-check: re-run the import-time guard so the confirmed resident-submodule count
