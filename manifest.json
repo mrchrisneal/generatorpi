@@ -143,8 +143,8 @@
     },
     {
       "path": "setup.sh",
-      "sha256": "4e75111702a1950bed0fd3cb9e10ef2acc03a3ebfed46593157b0f7e85432eb6",
-      "bytes": 32766
+      "sha256": "c8cc0b672114cd6f8785a3690b00763b07b27fbf1e36cdefa3730a1509d5448a",
+      "bytes": 33171
     },
     {
       "path": "update.sh",

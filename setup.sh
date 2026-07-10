@@ -468,7 +468,11 @@ health_check() {
         esac
         url="${scheme}://127.0.0.1:${port}/"
         code=""
-        for _attempt in 1 2 3; do
+        # Poll for up to ~15s: right after a restart the Type=simple process is already "active"
+        # but cheroot may not have bound the socket yet (slower on the single ARM core, especially
+        # just after compileall spiked the CPU). A too-short window would warn spuriously even though
+        # the app is fine, so give the socket real time to come up before deciding it's unreachable.
+        for _attempt in $(seq 1 15); do
             # -k tolerate self-signed TLS, -s quiet, -o discard body, -m short timeout,
             # -w print only the status code. `|| true` so a failed probe never trips set -e.
             code="$(curl -k -s -o /dev/null -m 3 -w '%{http_code}' "${url}" 2>/dev/null || true)"
