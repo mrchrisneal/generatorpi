@@ -5,6 +5,14 @@ releases from **CHANGELOG-RECENT.md** (generated from this file by `tools/change
 each release is `## X.Y.Z` with `Released on Month D, YYYY` directly below, and its changes are tagged
 — **FEAT** (new), **PERF** (speed), **FIX** (bug), **SEC** (security), **DOCS**, **CHORE**.
 
+## 1.5.3
+Released on July 11, 2026
+
+- **FIX:** The **APP LOG** view no longer comes up blank. The control panel polls the server every few seconds, and each poll wrote a routine "request handled" line to the log — so on a device that had been running a while, the most recent lines were *all* routine polls, and the log view (which hides routine traffic by default) had nothing left to show. The server now looks *past* that routine noise to surface the last real events, so the APP LOG shows meaningful history again.
+- **FEAT:** A new device-wide **"Record routine HTTP"** switch in Settings → LOG VIEWER controls whether those routine successful requests are written to the log at all. It is **off by default**, which keeps the log readable and cuts needless SD-card writes on the Pi; real events and any errors (4xx/5xx) are always recorded regardless. The setting is saved on the device and shared across every browser (it is no longer a per-browser display preference).
+
+---
+
 ## 1.5.2
 Released on July 10, 2026
 

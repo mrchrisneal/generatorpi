@@ -1,10 +1,10 @@
 {
-  "version": "1.5.2",
+  "version": "1.5.3",
   "files": [
     {
       "path": "genpi/__init__.py",
-      "sha256": "39ee5bf59d831bb7f7a6417e7bd3161636066d59e12fff487bebdd16a364a1c0",
-      "bytes": 29107
+      "sha256": "f3d64b9a1a2732f723ba6595f6647799f6c2fb6305dcb2eba35fe484d2a6978d",
+      "bytes": 29159
     },
     {
       "path": "genpi/__main__.py",
@@ -13,8 +13,8 @@
     },
     {
       "path": "genpi/app.py",
-      "sha256": "7881cf3e1df25079dd5f418ad8b301c904c2186e0f12fa89143f1b0aff11cb48",
-      "bytes": 8654
+      "sha256": "b2e8f49391906edf01bbea846628434ffff01ef004967e13ceff37570c170e0e",
+      "bytes": 9321
     },
     {
       "path": "genpi/auth.py",
@@ -33,13 +33,13 @@
     },
     {
       "path": "genpi/frontend/app.js",
-      "sha256": "143d5571304d106df08f004ba17bf7eff134066e78d59b1d75fca1d772b40b80",
-      "bytes": 98781
+      "sha256": "65cce3550d3f8d7d16c0e6a26968a9ce560bfff813d98dbf44cfdd465032ade3",
+      "bytes": 99553
     },
     {
       "path": "genpi/frontend/body.html",
-      "sha256": "b5bd6e1e7a0d936fc2831c3cd3ff3e9ded2ca0a21270f97e28cb1c93be682a1c",
-      "bytes": 34836
+      "sha256": "a5277be99fd9ecf29f743f2d9f92f69644235c57e24c15dbc522017330df444e",
+      "bytes": 35102
     },
     {
       "path": "genpi/frontend/style.css",
@@ -88,8 +88,8 @@
     },
     {
       "path": "genpi/routes/core.py",
-      "sha256": "30b0bcb1e69fb066cd5de7961d1dff519936e12fb9a3d537c64fe0f565bdd3f0",
-      "bytes": 21591
+      "sha256": "c732cfaabbdb404d70c3fcf96267b1eb1daaadca9a84961b3276fccd8db3a8d1",
+      "bytes": 27775
     },
     {
       "path": "genpi/routes/fuel.py",
@@ -118,8 +118,8 @@
     },
     {
       "path": "genpi/store.py",
-      "sha256": "e42ce71a8ee047428d1fe0e3e0f8d84a6d802cfc4fcca49b92b62f792c3deb7a",
-      "bytes": 24327
+      "sha256": "a84a6b3ddb56a534a7678b2f0ff6cc9a532fae40a08b27644684c9db1577c063",
+      "bytes": 25990
     },
     {
       "path": "genpi/sysmon.py",
@@ -153,13 +153,13 @@
     },
     {
       "path": "VERSION",
-      "sha256": "ded1b601e81d31ca1f65c4f3ccf2ebd7992b6390e37bc2a86f3837282f1e00cf",
+      "sha256": "c03e3824001f39b9518249b8d6522422fc4de7227e12a568c0164662b03b7758",
       "bytes": 6
     },
     {
       "path": "CHANGELOG-RECENT.md",
-      "sha256": "0328469b5efcc72a97fb3f369f5c16b2ca78723cf35f8c9ad6bebed91a710e12",
-      "bytes": 7495
+      "sha256": "980075a35f497ae677d1f92e688c9807e16be985689a1bb452c691fda39f7aa1",
+      "bytes": 8051
     },
     {
       "path": "tools/gp-monitor.py",

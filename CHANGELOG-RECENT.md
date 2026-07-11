@@ -1,3 +1,11 @@
+## 1.5.3
+Released on July 11, 2026
+
+- **FIX:** The **APP LOG** view no longer comes up blank. The control panel polls the server every few seconds, and each poll wrote a routine "request handled" line to the log — so on a device that had been running a while, the most recent lines were *all* routine polls, and the log view (which hides routine traffic by default) had nothing left to show. The server now looks *past* that routine noise to surface the last real events, so the APP LOG shows meaningful history again.
+- **FEAT:** A new device-wide **"Record routine HTTP"** switch in Settings → LOG VIEWER controls whether those routine successful requests are written to the log at all. It is **off by default**, which keeps the log readable and cuts needless SD-card writes on the Pi; real events and any errors (4xx/5xx) are always recorded regardless. The setting is saved on the device and shared across every browser (it is no longer a per-browser display preference).
+
+---
+
 ## 1.5.2
 Released on July 10, 2026
 
@@ -37,10 +45,3 @@ Released on July 9, 2026
 - **CHORE:** GeneratorPi's single ~6,760-line `generator_control.py` is being split into an eagerly-imported **`genpi/` package** (a long-planned maintainability effort). This release lands the package foundation: the app now runs as `python3 -m genpi`, every module is loaded into RAM at startup, and the package is pre-compiled at install (`compileall`) for a faster first boot. There are **no behavior changes** — identical UI, REST API, and relay/auth/fuel logic (verified byte-identical) — and test coverage stays at 100%.
 - **CHORE:** Updating to this release needs a **reinstall, not the in-app Update button.** Because the systemd entrypoint changed (to `python3 -m genpi`), the in-app updater — which only restarts the existing service — would relaunch the old code and report a false success. Update by pulling and re-running `./setup.sh reinstall` (or `./update.sh`); after this one release, the in-app updater works normally again.
 - **CHORE:** Hardening for the new layout: the self-updater now byte-compiles **every** staged `.py` before swapping (not just the main file), and the release manifest enumerates the whole `genpi/` package automatically, so a newly added module can never be silently left out of an update.
-
----
-
-## 1.3.4
-Released on July 9, 2026
-
-- **FIX:** The self-updater log now colours the WHOLE warning/error line (amber for warnings, red for errors) instead of only the `[TAG]`, so a problem stands out. Missing dependencies in the Stage-1 check read as clear `WARNING:` / `ERROR:` lines, and the hint tells you to run the shown apt command over SSH and restart the application to resolve. Cosmetic only — no behaviour change.
