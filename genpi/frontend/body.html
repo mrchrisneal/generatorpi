@@ -158,11 +158,11 @@
               <div class="drawer-divider"></div>
               <div class="alert-cfg-row">
                 <span class="lbl"><span class="engrave"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 17l6-6-6-6"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>ROUTINE HTTP</span>
-                <div class="iotoggle" id="httpToggle" role="switch" aria-checked="false" tabindex="0" aria-label="Show routine HTTP traffic in the app log">
+                <div class="iotoggle" id="httpToggle" role="switch" aria-checked="{{ 'true' if record_http else 'false' }}" tabindex="0" aria-label="Record routine HTTP traffic in the app log">
                   <span class="half i">I</span><span class="half o">O</span>
                 </div>
               </div>
-              <div class="helper">Show routine successful (2xx/3xx) request lines in the APP LOG. Errors (4xx/5xx) are always shown.</div>
+              <div class="helper">Record &amp; show routine successful (2xx/3xx) request lines in the APP LOG. Errors (4xx/5xx) and real events are always kept. <strong>Off (the default) means routine successful traffic is not recorded to the log at all</strong> &mdash; it keeps the log readable and cuts SD-card churn on the Pi. This is a device-wide setting.</div>
             </div>
             <!-- RESET: local + server escape hatches. RESET PREFS is browser-local and
                  harmless; RESTART/FACTORY RESET hit the server (red, confirmation-gated);

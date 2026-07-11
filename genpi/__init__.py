@@ -315,6 +315,7 @@ from .app import app   # noqa: F401  (the Flask application + registered bluepri
 # blueprints, but these helpers are still exercised directly by unit tests).
 from .routes.core import (   # noqa: F401  (re-exported for the tests)
     factory_reset, _read_tail_block, _tail_lines, _tail_with_cursor, _read_log_range,
+    _is_routine_http, _tail_meaningful_with_cursor,
 )
 from .routes.push import _push_endpoint_error   # noqa: F401  (re-exported for the tests)
 

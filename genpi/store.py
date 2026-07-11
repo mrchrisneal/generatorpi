@@ -271,6 +271,36 @@ def kv_set(key, value):
         log.warning(f"Failed to write kv {key!r}: {e}")
 
 
+# --- LOG VIEWER "record routine HTTP" setting (roadmap #99) -------------------------------
+# Whether routine SUCCESSFUL (2xx/3xx) access-audit lines are written to the app log. OFF by
+# DEFAULT: the live UI's own high-frequency self-polls (state/logs/events/history) would other-
+# wise flood the log -- burying real events and churning the Pi's SD card -- so we demote them
+# to DEBUG (i.e. not written at the INFO default level). Real events, mutations, and 4xx/5xx
+# errors are ALWAYS recorded regardless. The value is server-GLOBAL and persisted in kv (toggled
+# from the LOG VIEWER settings panel), and cached in memory so the per-request access-audit hook
+# -- which runs on EVERY request -- never has to touch the DB (keeps the hot path DB-free).
+_KV_RECORD_HTTP = "record_routine_http"
+_record_http_cache = None    # None until first read; thereafter a bool mirror of the kv value
+
+
+def record_routine_http():
+    """True => routine successful (2xx/3xx) access lines are logged at INFO (recorded); False
+    (default) => demoted to DEBUG so they aren't written to the log at the default level. Loaded
+    once from kv then cached; called on the hot per-request audit path, so it must stay DB-free."""
+    global _record_http_cache
+    if _record_http_cache is None:
+        _record_http_cache = bool(kv_get(_KV_RECORD_HTTP, False))
+    return _record_http_cache
+
+
+def set_record_routine_http(enabled):
+    """Persist + cache the (server-global) 'record routine HTTP' setting. Returns the stored bool."""
+    global _record_http_cache
+    _record_http_cache = bool(enabled)
+    kv_set(_KV_RECORD_HTTP, _record_http_cache)
+    return _record_http_cache
+
+
 def add_subscription(endpoint, p256dh, auth):
     """Store (or refresh) a browser push subscription. Never raises into its caller."""
     try:

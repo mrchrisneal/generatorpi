@@ -308,9 +308,14 @@ var _logOffset=null;   // byte cursor into the log file; null forces a full (res
 // When on, routine SUCCESSFUL access lines are hidden from the APP LOG so real events aren't
 // drowned out; errors (4xx/5xx) and non-access lines are ALWAYS shown. The server still logs
 // everything -- this is display-only. Access lines read "<who>@<ip> -> <METHOD> <path> <status>".
-var LS_HIDEHTTP='gp.hidehttp';
-var _hideHttp=true;   // DEFAULT: hide routine 2xx/3xx traffic so real events aren't buried
-try{var _hh=localStorage.getItem(LS_HIDEHTTP);if(_hh!=null)_hideHttp=(_hh==='1');}catch(e){}
+// "Record routine HTTP" is a SERVER-GLOBAL, persisted setting (roadmap #99), NOT a per-browser
+// pref: its initial state is server-rendered into the toggle's aria-checked. _recordHttp mirrors
+// it; _hideHttp (the display filter + the /api/logs hide_http flag) is just its inverse -- when we
+// aren't recording routine traffic we also hide any still sitting in the file. The <script> runs
+// after the toggle markup, so the element is present here.
+var _httpTog=$('httpToggle');
+var _recordHttp=!!(_httpTog&&_httpTog.getAttribute('aria-checked')==='true');
+var _hideHttp=!_recordHttp;
 var _accessRe=/ -> (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) \S+ ([0-9]{3})(?:\s|$)/;
 function _isRoutineHttp(line){var m=line.match(_accessRe);return !!m&&(+m[1])<400;}   // 2xx/3xx only
 function _logHidden(line){return _hideHttp&&_isRoutineHttp(line);}                    // filter predicate
@@ -321,7 +326,7 @@ function _setLogCount(){var n=$('log').querySelectorAll('.logln').length;$('logC
 // get PREPENDED newest-first. We only reach here while scrolled to the top (paused
 // otherwise), so prepending never yanks text the user is reading.
 function loadAppLog(){var lg=$('log');if(!lg.children.length)lg.classList.add('loading');
-  var q='/api/logs?lines=1000';if(_logOffset!=null)q+='&since='+_logOffset;
+  var q='/api/logs?lines=1000';if(_logOffset!=null)q+='&since='+_logOffset;if(_hideHttp)q+='&hide_http=1';
   return pollFetch('logs',q,REQ_TIMEOUT_MS).then(function(d){if(!d||logView!=='log')return;
     var log=$('log');log.classList.remove('loading');
     var lines=d.lines||[];
@@ -546,17 +551,20 @@ function toggleFuel(){var on=$('fuelToggle').getAttribute('aria-checked')==='tru
 $('fuelToggle').addEventListener('click',toggleFuel);
 $('fuelToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleFuel();}});
 
-/* ---------- LOG VIEWER: routine-HTTP display filter (Settings) ---------- */
-// Client-only pref: the httpToggle's I(on)=SHOW routine traffic, so aria-checked === !_hideHttp.
-// Flipping it persists to localStorage and, if the APP LOG is showing, forces a full re-fetch so
-// the 1000-line window is re-filtered (a delta alone couldn't retroactively hide/show old rows).
-function setHideHttp(hide){_hideHttp=!!hide;
-  try{localStorage.setItem(LS_HIDEHTTP,_hideHttp?'1':'0');}catch(e){}
-  setTog('httpToggle',!_hideHttp);
-  // Flipping the filter re-fetches the app-log to re-filter the 1000-line window, so the
-  // toggle DOES make a request -> spin the selected half until that reload settles.
-  if(logView==='log'){_logOffset=null;$('log').innerHTML='';toggleSpin('httpToggle',!_hideHttp,loadAppLog());}}
-function toggleHttp(){setHideHttp($('httpToggle').getAttribute('aria-checked')==='true');}
+/* ---------- LOG VIEWER: routine-HTTP recording (server-global, persisted) ---------- */
+// The httpToggle's I(on)=RECORD routine successful (2xx/3xx) traffic; OFF (default) demotes it
+// server-side so it is neither shown NOR written to the log. Because it is a DEVICE-WIDE setting,
+// flipping it POSTs the new value; we update optimistically, then reconcile to the server's
+// authoritative reply (revert on failure so the switch never lies about server state). A change
+// also re-fetches the app log so the view re-filters the 1000-line window immediately (a delta
+// alone couldn't retroactively hide/show old rows).
+function _applyHttpToggle(){setTog('httpToggle',_recordHttp);_hideHttp=!_recordHttp;
+  if(logView==='log'){_logOffset=null;$('log').innerHTML='';toggleSpin('httpToggle',_recordHttp,loadAppLog());}}
+function setRecordHttp(rec){var prev=_recordHttp;_recordHttp=!!rec;_applyHttpToggle();
+  post('/api/logs/record-http',{enabled:_recordHttp}).then(function(d){
+    if(d&&typeof d.record_http==='boolean'&&d.record_http!==_recordHttp){_recordHttp=d.record_http;_applyHttpToggle();}
+  }).catch(function(){_recordHttp=prev;_applyHttpToggle();});}
+function toggleHttp(){setRecordHttp($('httpToggle').getAttribute('aria-checked')!=='true');}
 $('httpToggle').addEventListener('click',toggleHttp);
 $('httpToggle').addEventListener('keydown',function(e){if(e.key===' '||e.key==='Enter'){e.preventDefault();toggleHttp();}});
 
@@ -882,7 +890,7 @@ buildOdometer();initDrawer('fuelDrawer','fuel');initDrawer('advDrawer','adv');
   seg.addEventListener('click',function(e){var b=e.target.closest('button[data-view]');if(!b)return;setLogView(b.getAttribute('data-view'));});
   var bs=seg.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].classList.toggle('on',bs[i].getAttribute('data-view')===logView);}
   if(logView==='log')$('log').classList.add('applog');
-  setTog('httpToggle',!_hideHttp);})();   // reflect the persisted routine-HTTP filter pref
+  setTog('httpToggle',_recordHttp);})();   // reflect the server-rendered routine-HTTP recording setting
 // SYSTEM drawer: poll history only while open (zero cost when closed). Its persisted open
 // state is restored by initDrawer, which fires this callback -- so a drawer left open
 // resumes polling immediately on load (no more re-opening it every launch).

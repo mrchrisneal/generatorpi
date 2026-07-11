@@ -651,3 +651,207 @@ class TestCheckUpdateEndpoint:
         # "1.10.0" > "1.9.0" numerically (string compare would get this wrong).
         assert module._version_tuple("1.10.0") > module._version_tuple("1.9.0")
         assert module._version_tuple("2.0.0") > module._version_tuple("1.99.99")
+
+
+# ===========================================================================
+# roadmap #99 -- APP LOG blank-panel bug. Two parts:
+#   A) server-side "hide routine HTTP" filter so a poll-saturated tail still
+#      surfaces the buried real events (the client filtered them to nothing).
+#   B) a server-global, persisted "record routine HTTP" gate that demotes the
+#      UI's own self-poll access lines to DEBUG so they stop flooding the log.
+# ===========================================================================
+class TestRoutineHttpPredicate:
+    """_is_routine_http mirrors the client filter EXACTLY: a routine line is an access-audit
+    line '... -> <METHOD> <path> <STATUS>' whose status is < 400 (2xx/3xx). Everything else
+    -- errors and real event lines -- is kept."""
+
+    def test_successful_access_lines_are_routine(self, module):
+        for line in [
+            "2026-07-11 05:19:14 [INFO] chris@100.71.53.88 -> GET /api/logs 200",
+            "2026-07-11 05:19:14 [INFO] apikey@127.0.0.1 -> POST /api/state 204",
+            "2026-07-11 05:19:14 [INFO] u@1.2.3.4 -> HEAD / 304",
+        ]:
+            assert module._is_routine_http(line) is True
+
+    def test_error_access_lines_are_not_routine(self, module):
+        # 4xx/5xx must ALWAYS be surfaced -> never treated as routine noise.
+        assert module._is_routine_http("x [INFO] a@b -> GET /api/logs 404") is False
+        assert module._is_routine_http("x [WARNING] a@b -> POST /api/start 500") is False
+
+    def test_non_access_lines_are_not_routine(self, module):
+        # Real events (no '-> METHOD path STATUS' shape) are always kept.
+        assert module._is_routine_http("2026-07-11 05:00:00 [WARNING] Manual START by chris") is False
+        assert module._is_routine_http("2026-07-11 05:00:00 [INFO] GeneratorPi started") is False
+
+
+class TestAppLogHideHttpFilter:
+    """GET /api/logs?hide_http=1 -- the #99 regression proof: when the tail is dominated by
+    routine self-poll access lines (exactly what the Pi showed), the filtered tail must still
+    surface the buried real events instead of the blank panel the client produced."""
+
+    def _point_log(self, module, tmp_path, text):
+        p = tmp_path / "app.log"
+        p.write_text(text, encoding="utf-8")
+        module.logg.log_path = p
+        return p
+
+    def test_full_tail_hide_http_surfaces_buried_events(self, client, module, tmp_path):
+        orig = module.logg.log_path
+        try:
+            # One real event buried under 2000 routine self-poll access lines (the Pi's state).
+            noise = "".join(
+                f"2026-07-11 05:00:{i % 60:02d} [INFO] chris@1.2.3.4 -> GET /api/state 200\n"
+                for i in range(2000)
+            )
+            real = "2026-07-11 04:00:00 [WARNING] Manual START by chris\n"
+            p = self._point_log(module, tmp_path, real + noise)
+            data = client.get(_q("/api/logs?hide_http=1")).get_json()
+            # WITHOUT the server filter the client saw 0 lines (blank panel). WITH it, the buried
+            # real event comes back and all the routine noise is dropped.
+            assert data["lines"] == ["2026-07-11 04:00:00 [WARNING] Manual START by chris"]
+            assert data["reset"] is True
+            # Cursor still points just past the file's final newline -> delta protocol unchanged.
+            assert data["offset"] == p.stat().st_size
+        finally:
+            module.logg.log_path = orig
+
+    def test_default_no_hide_http_returns_all_lines(self, client, module, tmp_path):
+        orig = module.logg.log_path
+        try:
+            noise = "".join("x@y -> GET /api/state 200\n" for _ in range(5))
+            self._point_log(module, tmp_path, "REAL EVENT\n" + noise)
+            # No hide_http param -> unchanged behaviour: routine lines are INCLUDED.
+            lines = client.get(_q("/api/logs?lines=1000")).get_json()["lines"]
+            assert "x@y -> GET /api/state 200" in lines
+            assert "REAL EVENT" in lines
+        finally:
+            module.logg.log_path = orig
+
+    def test_hide_http_all_noise_returns_empty(self, client, module, tmp_path):
+        orig = module.logg.log_path
+        try:
+            self._point_log(module, tmp_path,
+                            "".join("x@y -> GET /api/logs 200\n" for _ in range(50)))
+            data = client.get(_q("/api/logs?hide_http=1")).get_json()
+            assert data["lines"] == []   # nothing meaningful -> empty, but no crash + no noise
+        finally:
+            module.logg.log_path = orig
+
+    def test_delta_hide_http_filters_routine(self, client, module, tmp_path):
+        orig = module.logg.log_path
+        try:
+            p = self._point_log(module, tmp_path, "seed line\n")
+            off = client.get(_q("/api/logs?hide_http=1")).get_json()["offset"]
+            # Append a routine line + a real event; the filtered delta returns ONLY the event.
+            with open(p, "a", encoding="utf-8") as f:
+                f.write("chris@1.2.3.4 -> GET /api/state 200\n")
+                f.write("2026-07-11 05:00:00 [ERROR] relay fault\n")
+            d = client.get(_q(f"/api/logs?since={off}&hide_http=1")).get_json()
+            assert d["reset"] is False
+            assert d["lines"] == ["2026-07-11 05:00:00 [ERROR] relay fault"]
+        finally:
+            module.logg.log_path = orig
+
+    def test_tail_meaningful_helper_empty_and_missing(self, module, tmp_path):
+        # Empty file and missing file both yield ([], 0) -- never raise.
+        empty = tmp_path / "e.log"
+        empty.write_text("", encoding="utf-8")
+        assert module._tail_meaningful_with_cursor(empty, 5) == ([], 0)
+        assert module._tail_meaningful_with_cursor(tmp_path / "nope.log", 5) == ([], 0)
+
+    def test_tail_meaningful_scan_cap_trims_leading_partial(self, module, tmp_path, monkeypatch):
+        # Force the mid-file start path (start > 0) with a tiny scan cap, and assert the leading
+        # partial line is dropped while the cursor still anchors to the file's final newline.
+        monkeypatch.setattr(module.routes.core, "_APPLOG_FILTER_SCAN_BYTES", 40)
+        p = tmp_path / "big.log"
+        p.write_text("AAAA-partial-leading-line-should-drop\nREAL ONE\nREAL TWO\n",
+                     encoding="utf-8")
+        lines, cursor = module._tail_meaningful_with_cursor(p, 10)
+        assert "REAL TWO" in lines
+        assert not any("partial-leading" in ln for ln in lines)
+        assert cursor == p.stat().st_size
+
+    def test_tail_meaningful_drops_trailing_partial(self, module, tmp_path):
+        # A file whose final line has no trailing newline (a write in flight) -> that partial is
+        # dropped and the cursor stops at the last COMPLETE line, so it's re-read whole next poll.
+        p = tmp_path / "partial.log"
+        p.write_text("REAL EVENT\npartial-in-flight-no-newline", encoding="utf-8")
+        lines, cursor = module._tail_meaningful_with_cursor(p, 10)
+        assert lines == ["REAL EVENT"]
+        assert cursor == len("REAL EVENT\n")   # just past the last complete line's newline
+
+
+class TestRecordRoutineHttpSetting:
+    """Part B: the server-global, persisted 'record routine HTTP' gate + its setter endpoint."""
+
+    def test_default_is_off(self, module, tmp_store):
+        # Fresh store, nothing set -> default OFF (routine traffic NOT recorded at INFO).
+        assert module.store.record_routine_http() is False
+
+    def test_endpoint_requires_auth(self, client):
+        assert client.post("/api/logs/record-http", json={"enabled": True}).status_code == 401
+
+    def test_endpoint_enables_and_persists(self, client, module, tmp_store):
+        r = client.post(_q("/api/logs/record-http"), json={"enabled": True})
+        assert r.status_code == 200
+        assert r.get_json() == {"record_http": True}
+        assert module.store.record_routine_http() is True
+        # Persisted to kv: drop the in-memory cache -> it reloads True from disk.
+        module.store._record_http_cache = None
+        assert module.store.record_routine_http() is True
+
+    def test_endpoint_disables(self, client, module, tmp_store):
+        client.post(_q("/api/logs/record-http"), json={"enabled": True})
+        r = client.post(_q("/api/logs/record-http"), json={"enabled": False})
+        assert r.get_json() == {"record_http": False}
+        assert module.store.record_routine_http() is False
+
+    def test_endpoint_missing_body_defaults_false(self, client, module, tmp_store):
+        # No JSON body -> enabled defaults falsy -> False (never a 500).
+        r = client.post(_q("/api/logs/record-http"))
+        assert r.status_code == 200
+        assert r.get_json() == {"record_http": False}
+
+    def test_index_reflects_setting_in_toggle(self, client, module, tmp_store):
+        # OFF -> the LOG VIEWER toggle renders unchecked...
+        body = client.get(_q("/")).get_data(as_text=True)
+        assert 'id="httpToggle" role="switch" aria-checked="false"' in body
+        # ...ON -> it renders checked (server-seeded, no client round-trip).
+        module.store.set_record_routine_http(True)
+        body = client.get(_q("/")).get_data(as_text=True)
+        assert 'id="httpToggle" role="switch" aria-checked="true"' in body
+
+
+class TestRoutineHttpRecordingGate:
+    """Part B behaviour: the access-audit hook demotes routine 2xx/3xx to DEBUG when recording
+    is OFF (default) and keeps it at INFO when ON; 4xx/5xx are ALWAYS recorded regardless."""
+
+    def test_routine_2xx_not_recorded_at_info_by_default(self, client, module, tmp_store, caplog):
+        with caplog.at_level(logging.INFO, logger="generator_control"):
+            client.get(_q("/api/status"))
+        access = [r.message for r in caplog.records if "-> GET /api/status" in r.message]
+        assert access == []   # default OFF -> demoted to DEBUG -> absent at INFO
+
+    def test_routine_2xx_present_at_debug_when_off(self, client, module, tmp_store, caplog):
+        # It is still emitted at DEBUG (kept for on-demand debugging), just not at INFO.
+        with caplog.at_level(logging.DEBUG, logger="generator_control"):
+            client.get(_q("/api/status"))
+        recs = [r for r in caplog.records if "-> GET /api/status" in r.message]
+        assert recs and recs[-1].levelno == logging.DEBUG
+
+    def test_routine_2xx_recorded_at_info_when_enabled(self, client, module, tmp_store, caplog):
+        module.store.set_record_routine_http(True)
+        with caplog.at_level(logging.INFO, logger="generator_control"):
+            client.get(_q("/api/status"))
+        access = [r.message for r in caplog.records if "-> GET /api/status" in r.message]
+        assert access and access[-1].endswith("200")
+
+    def test_error_status_always_recorded_even_when_off(self, client, module, tmp_store, caplog):
+        # A 4xx on an AUTHENTICATED request (so the audit hook runs) must be recorded at WARNING
+        # regardless of the OFF setting. POST /api/runtime/hours with no 'hours' -> 400.
+        with caplog.at_level(logging.INFO, logger="generator_control"):
+            resp = client.post(_q("/api/runtime/hours"), json={})
+        assert resp.status_code == 400
+        warns = [r for r in caplog.records
+                 if "-> POST /api/runtime/hours 400" in r.message and r.levelno == logging.WARNING]
+        assert warns, "a 4xx access line must always be recorded at WARNING"

@@ -104,6 +104,7 @@ def reset_globals():
 
     gc.AUTH_USERS.clear()
     gc._auth_cache.clear()          # isolate the Basic-auth verification cache between tests
+    gc.store._record_http_cache = None   # drop the cached 'record routine HTTP' setting (#99)
 
     with gc._fail_tracker_lock:
         gc._fail_tracker.clear()
@@ -130,6 +131,7 @@ def reset_globals():
     gc.state._low_fuel_alerted = False
     gc.AUTH_USERS.clear()
     gc._auth_cache.clear()          # isolate the Basic-auth verification cache between tests
+    gc.store._record_http_cache = None   # drop the cached 'record routine HTTP' setting (#99)
     with gc._fail_tracker_lock:
         gc._fail_tracker.clear()
     if gc.relay_lock.locked():

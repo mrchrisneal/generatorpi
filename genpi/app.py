@@ -11,6 +11,7 @@ from flask import Flask, request, jsonify, g
 from .config import CONFIG
 from .logg import log
 from .auth import caller_identity
+from . import store
 
 app = Flask(__name__, static_folder=None)
 
@@ -125,13 +126,18 @@ def _access_audit_log(response):
     them here to avoid a duplicate line. Method + path ONLY -- never request.full_path /
     query_string, which can contain the API key.
 
-    The status lets the APP LOG view's "hide routine HTTP traffic" filter distinguish a
-    routine 2xx/3xx poll from a 4xx/5xx error (errors are always surfaced). We ALWAYS
-    write this line regardless of that toggle -- the toggle is a client-side DISPLAY
-    filter only; the server records all traffic per usual. Severity tracks the status so
-    a failed request stands out (and is colourised) in the log: 5xx error, 4xx warning,
-    else info. caller_identity() reads g.auth_method (not the spoofable Authorization
-    header), so a keyed caller can't forge the audit identity."""
+    The status drives BOTH the severity AND whether a routine line is recorded at all:
+      * 5xx  -> ERROR   (always recorded)
+      * 4xx  -> WARNING (always recorded -- failed/denied requests always stand out)
+      * 2xx/3xx -> INFO if the server-global "record routine HTTP" setting is ON, else DEBUG.
+    That setting is OFF by default (roadmap #99): the live UI polls a few read-only endpoints
+    every few seconds, so recording every routine 2xx/3xx access line floods the log -- burying
+    real events and needlessly churning the Pi's SD card. Demoting them to DEBUG keeps the log
+    readable and cheap while ALWAYS preserving real events (logged by their handlers), mutations'
+    own audit lines, and every 4xx/5xx. Flip the LOG VIEWER toggle to record routine traffic too.
+    caller_identity() reads g.auth_method (not the spoofable Authorization header), so a keyed
+    caller can't forge the audit identity. store.record_routine_http() is an in-memory cached
+    read, so this per-request hook never touches the DB."""
     if getattr(g, "auth_method", None):
         status = response.status_code
         line = (
@@ -142,8 +148,10 @@ def _access_audit_log(response):
             log.error(line)
         elif status >= 400:
             log.warning(line)
+        elif store.record_routine_http():
+            log.info(line)     # routine 2xx/3xx, recording ON -> keep it in the log
         else:
-            log.info(line)
+            log.debug(line)    # routine 2xx/3xx, recording OFF (default) -> not written at INFO
     return response
 
 

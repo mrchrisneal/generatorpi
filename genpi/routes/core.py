@@ -11,6 +11,7 @@ from datetime import datetime
 import threading
 import time
 import os
+import re
 from flask import Blueprint, request, jsonify, render_template_string
 from .. import store, logg, lifecycle, sysmon
 from ..config import CONFIG, APP_VERSION, _STARTED_AT
@@ -34,7 +35,11 @@ def index():
     """Web UI homepage"""
     with state_lock:
         status = generator_state.copy()
-    return render_template_string(HTML_TEMPLATE, status=status, version=APP_VERSION)
+    # record_http seeds the LOG VIEWER "routine HTTP" toggle's initial state server-side (it is a
+    # server-global, persisted setting -- see /api/logs/record-http) so the switch renders correct
+    # on first paint without a client round-trip or any per-browser storage.
+    return render_template_string(HTML_TEMPLATE, status=status, version=APP_VERSION,
+                                  record_http=store.record_routine_http())
 
 @bp.route('/api/start', methods=['POST'])
 @auth_required
@@ -326,6 +331,65 @@ def _read_log_range(path, start, end, n):
     return lines, cursor
 
 
+# ---------------------------------------------------------------------------
+# "Hide routine HTTP" server-side filter (roadmap #99). The live UI polls a few
+# read-only endpoints every few seconds, so the app log's tail can be 100% routine
+# 2xx/3xx access-audit lines. The APP LOG view hides those by default; if that filter
+# ran ONLY client-side (on the last-N raw lines), a poll-saturated tail filtered down
+# to NOTHING and the panel looked empty. So we ALSO filter here: when hide_http is on,
+# the tail/delta return the last N *meaningful* lines, scanning back far enough to
+# surface real events buried under poll noise. Mirrors the client predicate exactly
+# (app.js _isRoutineHttp): a routine line is an access-audit line "... -> <METHOD>
+# <path> <status>" whose status is < 400 (4xx/5xx errors are ALWAYS surfaced).
+_ACCESS_LINE_RE = re.compile(r" -> (?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) \S+ ([0-9]{3})(?:\s|$)")
+# Cap the backward scan for a FILTERED full tail. The log file itself is capped at
+# LOG_MAX_BYTES (~10MB), and a full tail only happens on a view-switch/rotation (never on
+# the per-poll delta path), so a single bounded read + one decode keeps the Pi cost tiny
+# while still reaching real events sitting behind minutes of poll noise.
+_APPLOG_FILTER_SCAN_BYTES = 2 * 1024 * 1024
+
+
+def _is_routine_http(line):
+    """True for a routine SUCCESSFUL (2xx/3xx) access-audit line -- the noise the APP LOG's
+    'hide routine HTTP' filter drops. Non-access lines (real events) and 4xx/5xx access lines
+    return False (kept). Byte-for-byte the same rule as the client so both sides agree."""
+    m = _ACCESS_LINE_RE.search(line)
+    return bool(m) and int(m.group(1)) < 400
+
+
+def _tail_meaningful_with_cursor(path, n):
+    """(last `n` MEANINGFUL complete lines, byte cursor just past the file's final newline).
+
+    Like `_tail_with_cursor`, but drops routine 2xx/3xx access-audit lines so the APP LOG's
+    hide-HTTP view shows real events even when self-poll traffic dominates the tail. Reads at
+    most `_APPLOG_FILTER_SCAN_BYTES` back from EOF (bounded + one decode -> cheap on the Pi),
+    so events older than that window aren't surfaced -- acceptable, they're sparse by then. The
+    cursor is computed EXACTLY as the unfiltered tail (byte past the file's last newline), so
+    the delta protocol is identical regardless of filtering. Missing/empty -> ([], 0)."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if size == 0:
+                return [], 0
+            start = max(0, size - _APPLOG_FILTER_SCAN_BYTES)
+            f.seek(start)
+            data = f.read(size - start)             # ends at EOF (so rfind gives the file's last NL)
+    except (FileNotFoundError, OSError):
+        return [], 0
+    last_nl = data.rfind(b"\n")                      # cursor anchor -- unaffected by front-trim/filter
+    cursor = (start + last_nl + 1) if last_nl >= 0 else 0
+    text = data.decode("utf-8", "replace")
+    if start > 0:                                    # started mid-file -> drop a leading partial line
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl >= 0 else ""
+    if not text.endswith("\n"):                      # drop an in-flight trailing partial (matches cursor)
+        idx = text.rfind("\n")
+        text = text[:idx + 1] if idx >= 0 else ""
+    meaningful = [ln for ln in text.splitlines() if not _is_routine_http(ln)]
+    return meaningful[-n:], cursor
+
+
 @bp.route('/api/logs', methods=['GET'])
 @auth_required
 def api_logs():
@@ -340,6 +404,12 @@ def api_logs():
       since -- byte cursor from a prior response's `offset`. Omitted/invalid -> a full
                tail (the last `lines` lines). A cursor PAST current EOF means the file
                rotated/truncated -> we transparently fall back to a full tail + reset.
+      hide_http -- "1" to drop routine 2xx/3xx access-audit lines SERVER-side (the client's
+               default view). Without this the last-N raw lines can be all poll noise, which
+               the client then filters down to nothing (roadmap #99 -- the blank-panel bug).
+               A filtered full tail scans back through the log to surface real events buried
+               under that noise; the byte cursor is unchanged, so the delta protocol is
+               identical either way (the client re-fetches a full tail when it flips the toggle).
 
     Response JSON:
       {"lines": [<oldest..newest>], "offset": <int byte cursor>, "reset": <bool>,
@@ -352,6 +422,7 @@ def api_logs():
     n = request.args.get("lines", default=1000, type=int)
     n = max(1, min(n, 1000))
     since = request.args.get("since", default=None, type=int)
+    hide_http = request.args.get("hide_http", default="0") == "1"   # server-side routine-HTTP filter
 
     # Current EOF up front so we can classify the request (stat is cheap, never raises here).
     try:
@@ -361,17 +432,45 @@ def api_logs():
 
     # FULL TAIL (reset): no cursor (initial load) OR a cursor that's negative / past EOF
     # (the file was rotated or truncated out from under the client -> its cursor is stale).
+    # hide_http -> the *meaningful* tail (scans back past poll noise); else the raw last-N tail.
     if since is None or since < 0 or since > size:
-        tail, cursor = _tail_with_cursor(logg.log_path, n)
+        if hide_http:
+            tail, cursor = _tail_meaningful_with_cursor(logg.log_path, n)
+        else:
+            tail, cursor = _tail_with_cursor(logg.log_path, n)
         return jsonify({"lines": tail, "offset": cursor, "reset": True, "path": logg.log_path.name})
 
     # Up to date already -> empty delta, cursor unchanged (the common idle poll: ~tiny).
     if since >= size:
         return jsonify({"lines": [], "offset": since, "reset": False, "path": logg.log_path.name})
 
-    # DELTA: return only the bytes appended since the client's cursor.
+    # DELTA: return only the bytes appended since the client's cursor. Filtering the (small)
+    # delta drops any routine lines it contains; the cursor stays raw-byte based so the next
+    # delta continues correctly regardless of what we hid.
     new_lines, cursor = _read_log_range(logg.log_path, since, size, n)
+    if hide_http:
+        new_lines = [ln for ln in new_lines if not _is_routine_http(ln)]
     return jsonify({"lines": new_lines, "offset": cursor, "reset": False, "path": logg.log_path.name})
+
+
+@bp.route('/api/logs/record-http', methods=['POST'])
+@auth_required
+def api_set_record_http():
+    """Toggle the server-GLOBAL, persisted 'record routine HTTP' setting (roadmap #99).
+
+    Body: {"enabled": <bool>}. Returns {"record_http": <bool>} (the stored value).
+
+    When OFF (the default) routine SUCCESSFUL (2xx/3xx) access-audit lines -- dominated by the
+    UI's own high-frequency self-polls -- are demoted to DEBUG, so they are neither shown in the
+    APP LOG nor written to the log file (keeps it readable + cuts SD-card churn on the Pi). Real
+    events, mutations, and every 4xx/5xx are ALWAYS recorded regardless. The value is read on the
+    hot per-request audit path via an in-memory cache, so flipping it is effectively free."""
+    data = request.get_json(silent=True) or {}
+    value = store.set_record_routine_http(bool(data.get("enabled")))
+    # This mutation IS worth an audit line (it changes what gets logged); it is not a routine
+    # 2xx poll, so it is recorded at INFO regardless of the setting it just changed.
+    log.info(f"Routine-HTTP recording {'ENABLED' if value else 'DISABLED'} by {caller_identity()}")
+    return jsonify({"record_http": value})
 
 
 @bp.route('/api/restart', methods=['POST'])
